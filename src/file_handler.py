@@ -66,6 +66,7 @@ class FileHandler:
         """
         upload_dir = self.get_upload_dir(project_name, session_id)
         path = os.path.join(upload_dir, filename)
+        # Counter-based collision avoidance for repeated uploads of same filename
         if os.path.exists(path):
             base, ext = os.path.splitext(filename)
             counter = 1

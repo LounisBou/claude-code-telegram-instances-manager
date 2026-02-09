@@ -88,7 +88,7 @@ def build_app(config_path: str) -> Application:
         MessageHandler(filters.ATTACHMENT & ~filters.COMMAND, handle_file_upload)
     )
 
-    # Text messages (must be last)
+    # Text handler registered last so commands and callbacks take priority
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)
     )
@@ -111,6 +111,7 @@ async def _on_startup(app: Application) -> None:
     """
     db: Database = app.bot_data["db"]
     await db.initialize()
+    # Sessions from a previous run can't survive a bot restart; mark them lost
     lost = await db.mark_active_sessions_lost()
     if lost:
         logger.info(f"Marked {len(lost)} stale sessions as lost on startup")
@@ -138,6 +139,7 @@ async def main() -> None:
     await app.start()
     await app.updater.start_polling()
 
+    # Event().wait() keeps the bot running indefinitely until KeyboardInterrupt
     try:
         await asyncio.Event().wait()
     finally:

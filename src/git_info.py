@@ -70,6 +70,7 @@ async def get_git_info(project_path: str) -> GitInfo:
             ["git", "branch", "--show-current"], cwd=project_path
         )
     except Exception:
+        # git may not be installed or path may not be a repo — fail gracefully
         return GitInfo()
 
     pr_url = None
@@ -86,6 +87,7 @@ async def get_git_info(project_path: str) -> GitInfo:
             pr_title = pr_data.get("title")
             pr_state = pr_data.get("state")
     except Exception:
+        # gh CLI may not be installed or no PR exists — fail gracefully
         pass
 
     return GitInfo(

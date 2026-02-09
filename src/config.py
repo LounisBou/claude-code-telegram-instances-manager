@@ -111,6 +111,7 @@ def load_config(path: str) -> AppConfig:
     if not projects_raw.get("root"):
         raise ConfigError("projects.root is required")
 
+    # `or {}` fallback handles YAML null values for optional sections
     sessions_raw = raw.get("sessions", {}) or {}
     claude_raw = raw.get("claude", {}) or {}
     database_raw = raw.get("database", {}) or {}

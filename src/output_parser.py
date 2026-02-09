@@ -130,6 +130,7 @@ class ScreenEvent:
 
 # --- UI element classification ---
 
+# Trailing \uFFFD allowed because pyte renders partial ANSI sequences as replacement chars
 _SEPARATOR_RE = re.compile(r"^[─━═]{4,}\uFFFD*$")
 _DIFF_DELIMITER_RE = re.compile(r"^[╌]{4,}\uFFFD*$")
 _STATUS_BAR_RE = re.compile(
@@ -139,6 +140,7 @@ _STATUS_BAR_RE = re.compile(
     r"(?:Usage:\s*(?P<usage>\d+)%)?"
 )
 _TIMER_RE = re.compile(r"↻\s*([\d:]+)")
+# (?:\s|$) instead of \s to handle bare ❯ at end of line without trailing space
 _PROMPT_MARKER_RE = re.compile(r"^❯(?:\s|$)")
 _BOX_CHAR_RE = re.compile(r"[╭╮╰╯│├┤┬┴┼]")
 _LOGO_RE = re.compile(r"[▐▛▜▌▝▘█▞▚]")
@@ -160,6 +162,7 @@ _TOOL_HOOKS_RE = re.compile(r"^\s*⎿\s+Running \w+ hooks…")
 _TOOL_DIFF_RE = re.compile(r"^\s*⎿\s+Added (\d+) lines?, removed (\d+) lines?")
 
 # Tool header patterns
+# Optional ⏺ prefix: Claude sometimes wraps tool calls inside response markers
 _TOOL_HEADER_LINE_RE = re.compile(
     r"^\s*(?:⏺\s+)?"
     r"(?:Bash\(|Write\(|Update\(|Read(?:ing)?\s*[\d(]|Searched\s+for\s)"
@@ -241,10 +244,12 @@ def classify_line(line: str) -> str:
         return "agent_tree"
     if _PROMPT_MARKER_RE.match(stripped):
         return "prompt"
+    # Require 2+ box-drawing chars AND length > 10 to avoid false positives
     if _BOX_CHAR_RE.search(stripped) and len(stripped) > 10:
         box_chars = sum(1 for c in stripped if _BOX_CHAR_RE.match(c))
         if box_chars >= 2:
             return "box"
+    # Require 3+ block-element chars to distinguish logo from occasional Unicode in content
     if _LOGO_RE.search(stripped):
         logo_chars = sum(1 for c in stripped if _LOGO_RE.match(c))
         if logo_chars >= 3:
@@ -379,7 +384,8 @@ def detect_prompt(text: str) -> DetectedPrompt | None:
             raw_text=text,
         )
 
-    # Selection menu: ❯ 1. Option / 2. Option
+    # Both ❯-prefixed and plain numbered items may match the same option;
+    # dedup by number to avoid counting an option twice
     sel_matches = _SELECTION_MENU_RE.findall(text)
     other_choices = _MULTI_CHOICE_RE.findall(text)
     all_choices = sel_matches + other_choices
@@ -640,7 +646,8 @@ def detect_tool_request(lines: list[str]) -> dict | None:
             selected_idx = idx
             continue
 
-        # Unselected option: N. text (indented)
+        # Match on raw line (not stripped) — indentation distinguishes menu items
+        # from other numbered lists in content
         m = _SELECTION_UNSELECTED_RE.match(line)
         if m and has_selection:
             options.append((int(m.group(1)), m.group(2).strip()))
@@ -905,7 +912,8 @@ def classify_screen_state(
 
     last_line = lines[active_idx].strip()
 
-    # 8. IDLE: ❯ between separators (allow up to 3 lines gap for artifacts)
+    # 8. IDLE: ❯ between separators — 3-line gap tolerance because pyte
+    #    may insert blank/artifact lines between the separator and prompt
     if _PROMPT_MARKER_RE.match(last_line):
         found_sep_above = False
         for i in range(active_idx - 1, max(-1, active_idx - 4), -1):
@@ -1010,6 +1018,8 @@ def format_telegram(text: str) -> str:
     code_blocks: list[tuple[str, str]] = []
     inline_codes: list[str] = []
 
+    # Replace code blocks/inline code with NUL-byte placeholders before escaping,
+    # then restore them after — this protects code content from being escaped
     def _save_block(match: re.Match) -> str:
         idx = len(code_blocks)
         code_blocks.append((match.group(1), match.group(2)))

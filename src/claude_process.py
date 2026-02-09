@@ -103,6 +103,7 @@ class ClaudeProcess:
                 except pexpect.EOF:
                     break
         except Exception:
+            # Swallow unexpected errors during drain to avoid crashing the read loop
             pass
         result = self._buffer
         self._buffer = ""
@@ -136,6 +137,7 @@ class ClaudeProcess:
         """
         if self._process is None:
             return None
+        # pexpect sets signalstatus (not exitstatus) when process is killed by signal
         if self._process.exitstatus is not None:
             return self._process.exitstatus
         return self._process.signalstatus

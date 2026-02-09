@@ -302,6 +302,7 @@ async def handle_text_message(
     user_id = update.effective_user.id
     config = context.bot_data["config"]
 
+    # Silently ignore unauthorized users for text messages to avoid reply spam
     if not is_authorized(user_id, config.telegram.authorized_users):
         return
 
@@ -346,6 +347,7 @@ async def handle_callback_query(
 
     if data.startswith("project:"):
         project_path = data[len("project:") :]
+        # Extract project name from path to avoid storing it separately in callback_data
         project_name = project_path.rstrip("/").split("/")[-1]
         session = await session_manager.create_session(
             user_id, project_name, project_path
@@ -477,6 +479,7 @@ async def handle_update_claude(
         await update.message.reply_text("You are not authorized to use this bot.")
         return
 
+    # Confirm before updating when sessions are active — update may restart the CLI
     session_manager = context.bot_data["session_manager"]
     if session_manager.has_active_sessions():
         count = session_manager.active_session_count()
@@ -588,6 +591,7 @@ async def handle_file_upload(
     user_id = update.effective_user.id
     config = context.bot_data["config"]
 
+    # Silently ignore unauthorized uploads to avoid reply spam
     if not is_authorized(user_id, config.telegram.authorized_users):
         return
 
@@ -600,6 +604,7 @@ async def handle_file_upload(
     file_handler = context.bot_data["file_handler"]
     document = update.message.document
     if document is None and update.message.photo:
+        # Telegram sends photos as an array of sizes; [-1] is the largest resolution
         document = update.message.photo[-1]
     if document is None:
         return

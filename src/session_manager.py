@@ -78,6 +78,7 @@ class SessionManager:
             SessionError: If the user has reached the maximum number
                 of concurrent sessions.
         """
+        # Check limit before spawning to avoid orphaned processes on rejection
         user_sessions = self._sessions.get(user_id, {})
         if len(user_sessions) >= self._max_per_user:
             raise SessionError(
@@ -181,6 +182,7 @@ class SessionManager:
         self._file_handler.cleanup_session(session.project_name, session_id)
         del self._sessions[user_id][session_id]
 
+        # Auto-promote another session to active so user isn't left with no active session
         remaining = self._sessions.get(user_id, {})
         if remaining:
             self._active[user_id] = next(iter(remaining))
@@ -252,6 +254,7 @@ class OutputBuffer:
         """
         if not self._buffer:
             return False
+        # Force-flush large bursts immediately, even if debounce hasn't elapsed
         if len(self._buffer) >= self._max_buffer:
             return True
         if self._last_append and (time.monotonic() - self._last_append) >= self._debounce_s:
