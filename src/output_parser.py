@@ -88,8 +88,8 @@ class ScreenEvent:
 
 # --- UI element classification ---
 
-_SEPARATOR_RE = re.compile(r"^[─━═]{4,}$")
-_DIFF_DELIMITER_RE = re.compile(r"^[╌]{4,}$")
+_SEPARATOR_RE = re.compile(r"^[─━═]{4,}\uFFFD*$")
+_DIFF_DELIMITER_RE = re.compile(r"^[╌]{4,}\uFFFD*$")
 _STATUS_BAR_RE = re.compile(
     r"(?P<project>[\w\-]+)\s*│\s*"
     r"(?:⎇\s*(?P<branch>[\w\-/]+)(?P<dirty>\*)?)?\s*"
@@ -97,7 +97,7 @@ _STATUS_BAR_RE = re.compile(
     r"(?:Usage:\s*(?P<usage>\d+)%)?"
 )
 _TIMER_RE = re.compile(r"↻\s*([\d:]+)")
-_PROMPT_MARKER_RE = re.compile(r"^❯\s")
+_PROMPT_MARKER_RE = re.compile(r"^❯(?:\s|$)")
 _BOX_CHAR_RE = re.compile(r"[╭╮╰╯│├┤┬┴┼]")
 _LOGO_RE = re.compile(r"[▐▛▜▌▝▘█▞▚]")
 
@@ -694,20 +694,23 @@ def classify_screen_state(
 
     last_line = lines[active_idx].strip()
 
-    # 8. IDLE: ❯ between separators
+    # 8. IDLE: ❯ between separators (allow up to 3 lines gap for artifacts)
     if _PROMPT_MARKER_RE.match(last_line):
-        above = active_idx - 1
-        while above >= 0 and not lines[above].strip():
-            above -= 1
-        below = active_idx + 1
-        while below < len(lines) and not lines[below].strip():
-            below += 1
-        if (
-            above >= 0
-            and _SEPARATOR_RE.match(lines[above].strip())
-            and below < len(lines)
-            and _SEPARATOR_RE.match(lines[below].strip())
-        ):
+        found_sep_above = False
+        for i in range(active_idx - 1, max(-1, active_idx - 4), -1):
+            if i < 0:
+                break
+            s = lines[i].strip()
+            if s and _SEPARATOR_RE.match(s):
+                found_sep_above = True
+                break
+        found_sep_below = False
+        for i in range(active_idx + 1, min(len(lines), active_idx + 4)):
+            s = lines[i].strip()
+            if s and _SEPARATOR_RE.match(s):
+                found_sep_below = True
+                break
+        if found_sep_above and found_sep_below:
             placeholder = re.sub(r"^❯\s*", "", last_line)
             return ScreenEvent(
                 state=ScreenState.IDLE,

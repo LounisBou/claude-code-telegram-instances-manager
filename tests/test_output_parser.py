@@ -1067,6 +1067,59 @@ class TestClassifyScreenState:
         event = classify_screen_state(REAL_IDLE_SCREEN)
         assert event.raw_lines == REAL_IDLE_SCREEN
 
+    def test_idle_bare_prompt_no_trailing_space(self):
+        """Regression: bare ❯ with no trailing text should be IDLE, not UNKNOWN."""
+        lines = [""] * 10
+        lines[5] = "─" * 40
+        lines[6] = "❯"
+        lines[7] = "─" * 40
+        lines[8] = "  my-project │ ⎇ main │ Usage: 5% ▋░░░░░░░░░"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+        assert event.payload["placeholder"] == ""
+
+    def test_idle_separator_with_trailing_fffd_artifacts(self):
+        """Regression: pyte renders trailing U+FFFD on separator lines."""
+        lines = [""] * 10
+        lines[5] = "─" * 38 + "\uFFFD\uFFFD"
+        lines[6] = "❯ Try something"
+        lines[7] = "─" * 40
+        lines[8] = "  my-project │ ⎇ main │ Usage: 5% ▋░░░░░░░░░"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+        assert event.payload["placeholder"] == "Try something"
+
+    def test_idle_with_artifact_between_separator_and_prompt(self):
+        """Regression: pyte artifact line between separator and ❯ prompt."""
+        lines = [""] * 12
+        lines[5] = "─" * 40
+        lines[6] = "\uFFFD─"  # artifact line
+        lines[7] = "❯\xa0Try something"
+        lines[8] = "─" * 40
+        lines[9] = "  my-project │ ⎇ main │ Usage: 5% ▋░░░░░░░░░"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
+    def test_idle_with_startup_logo_and_prompt(self):
+        """Regression: startup_raw has both logo and idle prompt — should be IDLE."""
+        lines = [""] * 15
+        lines[0] = "uuuu"
+        lines[1] = "           Claude Code v2.1.37"
+        lines[2] = " ▐▛███▜▌   Opus 4.6"
+        lines[3] = "▝▜█████▛▘  ~/dev/project"
+        lines[4] = "  ▘▘ ▝▝    Some tip"
+        lines[8] = "─" * 40
+        lines[9] = "❯\xa0Try something"
+        lines[10] = "─" * 40
+        lines[11] = "  my-project │ ⎇ main │ Usage: 6% ▋░░░░░░░░░"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
+    def test_separator_classify_line_with_fffd(self):
+        """Regression: classify_line should return 'separator' for artifact separators."""
+        from src.output_parser import classify_line
+        assert classify_line("─" * 38 + "\uFFFD\uFFFD") == "separator"
+
 
 class TestFormatTelegram:
     def test_escapes_special_chars(self):
