@@ -59,36 +59,139 @@ class TerminalEmulator:
         self._prev_display = [""] * self.rows
 
 
+# --- Screen state model ---
+
+
+class ScreenState(Enum):
+    STARTUP = "startup"
+    IDLE = "idle"
+    THINKING = "thinking"
+    STREAMING = "streaming"
+    USER_MESSAGE = "user_message"
+    TOOL_REQUEST = "tool_request"
+    TOOL_RUNNING = "tool_running"
+    TOOL_RESULT = "tool_result"
+    BACKGROUND_TASK = "background_task"
+    PARALLEL_AGENTS = "parallel_agents"
+    TODO_LIST = "todo_list"
+    ERROR = "error"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class ScreenEvent:
+    state: ScreenState
+    payload: dict = field(default_factory=dict)
+    raw_lines: list[str] = field(default_factory=list)
+    timestamp: float = 0.0
+
+
 # --- UI element classification ---
 
 _SEPARATOR_RE = re.compile(r"^[─━═]{4,}$")
+_DIFF_DELIMITER_RE = re.compile(r"^[╌]{4,}$")
 _STATUS_BAR_RE = re.compile(
     r"(?P<project>[\w\-]+)\s*│\s*"
-    r"(?:⎇\s*(?P<branch>[\w\-/]+))?\s*"
-    r"(?:⇡\d+\s*)?│?\s*"
+    r"(?:⎇\s*(?P<branch>[\w\-/]+)(?P<dirty>\*)?)?\s*"
+    r"(?:⇡(?P<ahead>\d+)\s*)?│?\s*"
     r"(?:Usage:\s*(?P<usage>\d+)%)?"
 )
+_TIMER_RE = re.compile(r"↻\s*([\d:]+)")
 _PROMPT_MARKER_RE = re.compile(r"^❯\s")
 _BOX_CHAR_RE = re.compile(r"[╭╮╰╯│├┤┬┴┼]")
 _LOGO_RE = re.compile(r"[▐▛▜▌▝▘█▞▚]")
+
+# Thinking stars: ✶✳✻✽✢· followed by text ending with …
+_THINKING_STAR_RE = re.compile(r"^[✶✳✻✽✢·]\s+(.+…(?:\s*\(.+\))?)$")
+
+# Claude response marker
+_RESPONSE_MARKER_RE = re.compile(r"^⏺\s+(.*)")
+
+# Tool connector
+_TOOL_CONNECTOR_RE = re.compile(r"^\s*⎿")
+
+# Tool running/waiting status
+_TOOL_STATUS_RE = re.compile(r"^\s*⎿\s+(Running|Waiting)…")
+_TOOL_HOOKS_RE = re.compile(r"^\s*⎿\s+Running \w+ hooks…")
+
+# Tool diff result
+_TOOL_DIFF_RE = re.compile(r"^\s*⎿\s+Added (\d+) lines?, removed (\d+) lines?")
+
+# Tool header patterns
+_TOOL_HEADER_LINE_RE = re.compile(
+    r"^\s*(?:⏺\s+)?"
+    r"(?:Bash\(|Write\(|Update\(|Read(?:ing)?\s*[\d(]|Searched\s+for\s)"
+)
+_TOOL_BASH_RE = re.compile(r"Bash\((.+?)\)")
+_TOOL_FILE_RE = re.compile(r"(?:Write|Update|Read(?:ing)?)\((.+?)\)")
+_TOOL_READ_COLLAPSED_RE = re.compile(r"Read (\d+) files? \(ctrl\+o")
+_TOOL_SEARCH_COLLAPSED_RE = re.compile(r"Searched for (.+?) \(ctrl\+o")
+
+# Selection menu
+_SELECTION_SELECTED_RE = re.compile(r"^\s*❯\s+(\d+)\.\s+(.+)$")
+_SELECTION_UNSELECTED_RE = re.compile(r"^\s+(\d+)\.\s+(.+)$")
+_SELECTION_HINT_RE = re.compile(r"Esc to cancel")
+
+# Background task
+_BACKGROUND_RE = re.compile(r"in the background")
+
+# Parallel agents
+_AGENTS_LAUNCHED_RE = re.compile(r"(\d+) agents? launched")
+_AGENT_TREE_ITEM_RE = re.compile(r"^\s*[├└]\s*─\s*(.*)")
+_AGENT_COMPLETE_RE = re.compile(r'Agent "(.+?)" completed')
+_LOCAL_AGENTS_RE = re.compile(r"(\d+) local agents?")
+
+# TODO list
+_TODO_HEADER_RE = re.compile(
+    r"(\d+) tasks? \((\d+) done(?:, (\d+) in progress)?, (\d+) open\)"
+)
+_TODO_ITEM_RE = re.compile(r"^[◻◼✔]\s+")
+
+# Error patterns
+_ERROR_RE = re.compile(
+    r"MCP server failed|(?:^|\s)Error:|ENOENT|EPERM", re.IGNORECASE
+)
+
+# Startup
+_STARTUP_RE = re.compile(r"Claude Code v[\d.]+")
+
+# Extra status line
+_EXTRA_BASH_RE = re.compile(r"(\d+) bash")
+_EXTRA_AGENTS_RE = re.compile(r"(\d+) local agents?")
+_EXTRA_FILES_RE = re.compile(r"(\d+) files? \+(\d+) -(\d+)")
 
 
 def classify_line(line: str) -> str:
     """Classify a screen line as ui element or content.
 
-    Returns: 'separator', 'status_bar', 'prompt', 'box', 'logo', 'empty', or 'content'.
+    Returns one of: 'separator', 'diff_delimiter', 'status_bar', 'thinking',
+    'tool_header', 'response', 'tool_connector', 'todo_item', 'agent_tree',
+    'prompt', 'box', 'logo', 'empty', or 'content'.
     """
     stripped = line.strip()
     if not stripped:
         return "empty"
     if _SEPARATOR_RE.match(stripped):
         return "separator"
+    if _DIFF_DELIMITER_RE.match(stripped):
+        return "diff_delimiter"
     if _STATUS_BAR_RE.search(stripped):
         return "status_bar"
+    if _THINKING_STAR_RE.match(stripped):
+        return "thinking"
+    if _TOOL_HEADER_LINE_RE.match(stripped):
+        return "tool_header"
+    if stripped.startswith("⏺"):
+        return "response"
+    if _TOOL_CONNECTOR_RE.match(stripped):
+        return "tool_connector"
+    if _TODO_ITEM_RE.match(stripped):
+        return "todo_item"
+    if re.match(r"^[├└]\s*─", stripped):
+        return "agent_tree"
     if _PROMPT_MARKER_RE.match(stripped):
         return "prompt"
     if _BOX_CHAR_RE.search(stripped) and len(stripped) > 10:
-        # Box drawing lines (welcome screen)
         box_chars = sum(1 for c in stripped if _BOX_CHAR_RE.match(c))
         if box_chars >= 2:
             return "box"
@@ -269,14 +372,17 @@ def detect_context_usage(text: str) -> ContextUsage | None:
 class StatusBar:
     project: str | None = None
     branch: str | None = None
+    dirty: bool = False
+    commits_ahead: int = 0
     usage_pct: int | None = None
+    timer: str | None = None
     raw_text: str = ""
 
 
 def parse_status_bar(text: str) -> StatusBar | None:
     """Parse Claude Code's status bar line.
 
-    Real format: "claude-instance-manager │ ⎇ main ⇡7 │ Usage: 32% ███▎░░░░░░ ↻ 5:00"
+    Real format: "claude-instance-manager │ ⎇ main* ⇡12 │ Usage: 7% ▋░░░░░░░░░ ↻ 9:59"
     """
     if not text.strip():
         return None
@@ -288,12 +394,41 @@ def parse_status_bar(text: str) -> StatusBar | None:
     usage = match.group("usage")
     if not project:
         return None
+    dirty = bool(match.group("dirty"))
+    ahead = match.group("ahead")
+    timer_match = _TIMER_RE.search(text)
     return StatusBar(
         project=project,
         branch=branch,
+        dirty=dirty,
+        commits_ahead=int(ahead) if ahead else 0,
         usage_pct=int(usage) if usage else None,
+        timer=timer_match.group(1) if timer_match else None,
         raw_text=text,
     )
+
+
+def parse_extra_status(text: str) -> dict:
+    """Parse the extra status line below the main status bar.
+
+    Real formats:
+      "1 bash · 1 file +194 -192"
+      "4 local agents · 1 file +194 -192"
+      "1 file +194 -192"
+    """
+    result: dict = {}
+    m = _EXTRA_BASH_RE.search(text)
+    if m:
+        result["bash_tasks"] = int(m.group(1))
+    m = _EXTRA_AGENTS_RE.search(text)
+    if m:
+        result["local_agents"] = int(m.group(1))
+    m = _EXTRA_FILES_RE.search(text)
+    if m:
+        result["files_changed"] = int(m.group(1))
+        result["lines_added"] = int(m.group(2))
+        result["lines_removed"] = int(m.group(3))
+    return result
 
 
 # --- File path detection ---
@@ -310,6 +445,312 @@ def detect_file_paths(text: str) -> list[str]:
         return []
     matches = _FILE_PATH_RE.findall(text)
     return [m for m in matches if len(m) > 5]
+
+
+# --- Screen state detector functions ---
+
+
+def detect_thinking(lines: list[str]) -> dict | None:
+    """Detect thinking indicator from screen lines."""
+    for line in lines:
+        m = _THINKING_STAR_RE.match(line.strip())
+        if m:
+            text = m.group(1)
+            elapsed = None
+            elapsed_m = re.search(r"\(thought for (\d+s)\)", text)
+            if elapsed_m:
+                elapsed = elapsed_m.group(1)
+            return {"text": text, "elapsed": elapsed}
+    return None
+
+
+def detect_tool_request(lines: list[str]) -> dict | None:
+    """Detect tool approval selection menu from screen lines."""
+    has_selection = False
+    has_hint = False
+    options: list[tuple[int, str]] = []
+    selected_idx: int | None = None
+    question: str | None = None
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Question line (e.g., "Do you want to create test_capture.txt?")
+        if stripped.endswith("?") and not stripped.startswith("❯"):
+            question = stripped
+
+        # Selected option: ❯ N. text
+        m = _SELECTION_SELECTED_RE.match(stripped)
+        if m:
+            has_selection = True
+            idx = int(m.group(1))
+            options.append((idx, m.group(2).strip()))
+            selected_idx = idx
+            continue
+
+        # Unselected option: N. text (indented)
+        m = _SELECTION_UNSELECTED_RE.match(line)
+        if m and has_selection:
+            options.append((int(m.group(1)), m.group(2).strip()))
+            continue
+
+        # Hint line
+        if _SELECTION_HINT_RE.search(stripped):
+            has_hint = True
+
+    if has_selection and len(options) >= 2:
+        options.sort(key=lambda x: x[0])
+        return {
+            "question": question,
+            "options": [opt[1] for opt in options],
+            "selected": (selected_idx - 1) if selected_idx else 0,
+            "has_hint": has_hint,
+        }
+    return None
+
+
+def detect_todo_list(lines: list[str]) -> dict | None:
+    """Detect TODO list display from screen lines."""
+    header: dict | None = None
+    items: list[dict] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        m = _TODO_HEADER_RE.search(stripped)
+        if m:
+            header = {
+                "total": int(m.group(1)),
+                "done": int(m.group(2)),
+                "in_progress": int(m.group(3)) if m.group(3) else 0,
+                "open": int(m.group(4)),
+            }
+            continue
+
+        if re.match(r"^◻\s+(.+)$", stripped):
+            items.append({"text": re.match(r"^◻\s+(.+)$", stripped).group(1), "status": "pending"})
+            continue
+
+        if re.match(r"^◼\s+(.+)$", stripped):
+            items.append({"text": re.match(r"^◼\s+(.+)$", stripped).group(1), "status": "in_progress"})
+            continue
+
+        if re.match(r"^✔\s+(.+)$", stripped):
+            items.append({"text": re.match(r"^✔\s+(.+)$", stripped).group(1), "status": "completed"})
+            continue
+
+    if header or items:
+        return {
+            **(header or {}),
+            "items": items,
+        }
+    return None
+
+
+def detect_background_task(lines: list[str]) -> dict | None:
+    """Detect background task indicator from screen lines."""
+    for line in lines:
+        if _BACKGROUND_RE.search(line):
+            return {"raw": line.strip()}
+    return None
+
+
+def detect_parallel_agents(lines: list[str]) -> dict | None:
+    """Detect parallel agents display from screen lines."""
+    count: int | None = None
+    agents: list[str] = []
+    completed: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        m = _AGENTS_LAUNCHED_RE.search(stripped)
+        if m:
+            count = int(m.group(1))
+            continue
+
+        m = _AGENT_COMPLETE_RE.search(stripped)
+        if m:
+            completed.append(m.group(1))
+            continue
+
+        # Agent tree items: ├─ name (description)
+        m = _AGENT_TREE_ITEM_RE.match(stripped)
+        if m and m.group(1).strip():
+            agents.append(m.group(1).strip())
+
+    if count is not None or agents or completed:
+        return {
+            "count": count,
+            "agents": agents,
+            "completed": completed,
+        }
+    return None
+
+
+# --- Screen state classifier ---
+
+
+def _extract_tool_info(lines: list[str]) -> dict:
+    """Extract tool name and target from screen lines."""
+    for line in lines:
+        m = _TOOL_BASH_RE.search(line)
+        if m:
+            return {"tool": "Bash", "command": m.group(1)}
+        m = _TOOL_FILE_RE.search(line)
+        if m:
+            tool_name = "Write" if "Write" in line else "Update" if "Update" in line else "Read"
+            return {"tool": tool_name, "target": m.group(1)}
+    return {}
+
+
+def classify_screen_state(
+    lines: list[str],
+    prev_state: ScreenState | None = None,
+) -> ScreenEvent:
+    """Classify the current screen state from terminal display lines.
+
+    Examines all screen lines and returns the most prominent current state
+    with extracted payload data. Uses priority-ordered detection to resolve
+    ambiguity when multiple patterns are present.
+    """
+    non_empty = [l for l in lines if l.strip()]
+
+    if not non_empty:
+        return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
+
+    # --- First pass: screen-wide patterns (need full context) ---
+
+    # 1. Tool approval / selection menu (needs user action - highest priority)
+    payload = detect_tool_request(lines)
+    if payload:
+        return ScreenEvent(state=ScreenState.TOOL_REQUEST, payload=payload, raw_lines=lines)
+
+    # 2. TODO list
+    payload = detect_todo_list(lines)
+    if payload:
+        return ScreenEvent(state=ScreenState.TODO_LIST, payload=payload, raw_lines=lines)
+
+    # 3. Parallel agents
+    payload = detect_parallel_agents(lines)
+    if payload:
+        return ScreenEvent(state=ScreenState.PARALLEL_AGENTS, payload=payload, raw_lines=lines)
+
+    # --- Second pass: bottom-up scan for current activity ---
+
+    # Find last meaningful line (skip status bar, separators, empty lines)
+    active_idx = len(lines) - 1
+    while active_idx >= 0:
+        stripped = lines[active_idx].strip()
+        if (
+            stripped
+            and not _STATUS_BAR_RE.search(stripped)
+            and not _SEPARATOR_RE.match(stripped)
+            and not _EXTRA_BASH_RE.search(stripped)
+            and not _EXTRA_AGENTS_RE.search(stripped)
+            and not _EXTRA_FILES_RE.search(stripped)
+        ):
+            break
+        active_idx -= 1
+
+    if active_idx < 0:
+        return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
+
+    # Check the bottom content area (last ~8 meaningful lines)
+    bottom_start = max(0, active_idx - 7)
+    bottom_lines = lines[bottom_start : active_idx + 1]
+
+    # 4. Thinking indicator
+    payload = detect_thinking(bottom_lines)
+    if payload:
+        return ScreenEvent(state=ScreenState.THINKING, payload=payload, raw_lines=lines)
+
+    # 5. Tool running/waiting
+    for line in reversed(bottom_lines):
+        if _TOOL_STATUS_RE.search(line) or _TOOL_HOOKS_RE.search(line):
+            tool_info = _extract_tool_info(lines)
+            return ScreenEvent(
+                state=ScreenState.TOOL_RUNNING, payload=tool_info, raw_lines=lines
+            )
+
+    # 6. Tool result (diff summary)
+    for line in reversed(bottom_lines):
+        m = _TOOL_DIFF_RE.search(line)
+        if m:
+            return ScreenEvent(
+                state=ScreenState.TOOL_RESULT,
+                payload={"added": int(m.group(1)), "removed": int(m.group(2))},
+                raw_lines=lines,
+            )
+
+    # 7. Background task
+    payload = detect_background_task(bottom_lines)
+    if payload:
+        return ScreenEvent(
+            state=ScreenState.BACKGROUND_TASK, payload=payload, raw_lines=lines
+        )
+
+    # --- Third pass: check last meaningful line ---
+
+    last_line = lines[active_idx].strip()
+
+    # 8. IDLE: ❯ between separators
+    if _PROMPT_MARKER_RE.match(last_line):
+        above = active_idx - 1
+        while above >= 0 and not lines[above].strip():
+            above -= 1
+        below = active_idx + 1
+        while below < len(lines) and not lines[below].strip():
+            below += 1
+        if (
+            above >= 0
+            and _SEPARATOR_RE.match(lines[above].strip())
+            and below < len(lines)
+            and _SEPARATOR_RE.match(lines[below].strip())
+        ):
+            placeholder = re.sub(r"^❯\s*", "", last_line)
+            return ScreenEvent(
+                state=ScreenState.IDLE,
+                payload={"placeholder": placeholder},
+                raw_lines=lines,
+            )
+
+    # 9. Streaming: last line starts with ⏺
+    m = _RESPONSE_MARKER_RE.match(last_line)
+    if m:
+        return ScreenEvent(
+            state=ScreenState.STREAMING,
+            payload={"text": m.group(1)},
+            raw_lines=lines,
+        )
+
+    # 10. User message: ❯ followed by text (not between separators)
+    if _PROMPT_MARKER_RE.match(last_line):
+        user_text = re.sub(r"^❯\s*", "", last_line)
+        return ScreenEvent(
+            state=ScreenState.USER_MESSAGE,
+            payload={"text": user_text},
+            raw_lines=lines,
+        )
+
+    # 11. Startup
+    for line in non_empty[:10]:
+        if _STARTUP_RE.search(line):
+            return ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines)
+        stripped = line.strip()
+        if _LOGO_RE.search(stripped) and sum(1 for c in stripped if _LOGO_RE.match(c)) >= 3:
+            return ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines)
+
+    # 12. Error
+    for line in non_empty:
+        if _ERROR_RE.search(line):
+            return ScreenEvent(
+                state=ScreenState.ERROR,
+                payload={"text": line.strip()},
+                raw_lines=lines,
+            )
+
+    return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
 
 
 # --- Telegram formatting ---

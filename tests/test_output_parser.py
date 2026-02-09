@@ -2,6 +2,8 @@ import os
 
 from src.output_parser import (
     TerminalEmulator,
+    ScreenState,
+    ScreenEvent,
     classify_line,
     extract_content,
     strip_ansi,
@@ -16,8 +18,15 @@ from src.output_parser import (
     format_telegram,
     split_message,
     parse_status_bar,
+    parse_extra_status,
     StatusBar,
     TELEGRAM_MAX_LENGTH,
+    detect_thinking,
+    detect_tool_request,
+    detect_todo_list,
+    detect_background_task,
+    detect_parallel_agents,
+    classify_screen_state,
 )
 
 
@@ -59,6 +68,150 @@ REAL_BOX_ANSI = (
     "\x1b[38;5;246mv2.1.37\x1b[1C"
     "\x1b[38;5;174m──────────────────────────────────────────────────────╮\x1b[39m"
 )
+
+
+# ---- Real captured screen data (from docs/claude-ui-patterns.md) ----
+
+# Real IDLE screen
+REAL_IDLE_SCREEN = [
+    "",
+    "⏺ ping",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "❯ Try \"write a test for config.py\"",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main* ⇡12 │ Usage: 6% ▋░░░░░░░░░ ↻ 9:59",
+]
+
+# Real THINKING screen
+REAL_THINKING_SCREEN = [
+    "",
+    "❯ What is 2+2?",
+    "",
+    "✶ Activating sleeper agents…",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main* ⇡12 │ Usage: 6% ▋░░░░░░░░░ ↻ 9:59",
+]
+
+# Real STREAMING screen
+REAL_STREAMING_SCREEN = [
+    "",
+    "❯ What is 2+2?",
+    "",
+    "⏺ The answer is 4.",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░ ↻ 9:59",
+]
+
+# Real TOOL_REQUEST screen (approval menu)
+REAL_TOOL_REQUEST_SCREEN = [
+    "",
+    "────────────────────────────────",
+    " Create file",
+    " ../../../../tmp/test_capture.txt",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    "  1 hello",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " Do you want to create test_capture.txt?",
+    " ❯ 1. Yes",
+    "   2. Yes, allow all edits during this session (shift+tab)",
+    "   3. No",
+    "",
+    " Esc to cancel · Tab to amend",
+]
+
+# Real TOOL_RUNNING screen
+REAL_TOOL_RUNNING_SCREEN = [
+    "",
+    "  Bash(echo 'capture_test_ok')",
+    "  ⎿  Running…",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░",
+]
+
+# Real TOOL_RESULT screen
+REAL_TOOL_RESULT_SCREEN = [
+    "",
+    "  ⎿  Added 4 lines, removed 1 line",
+    "       91  self.raw_log.extend(chunk)",
+    "       92  ...",
+    "       94 -  except (pexpect.TIMEOUT, pexpect.EOF):",
+    "       94 +  except pexpect.TIMEOUT:",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░",
+]
+
+# Real TODO_LIST screen
+REAL_TODO_LIST_SCREEN = [
+    "  5 tasks (2 done, 1 in progress, 2 open) · ctrl+t to hide tasks",
+    "  ◼ Fix substring-vs-set check in smoke test",
+    "  ◻ Fix stale docstring \"steps 1-8\" to \"steps 1-5\"",
+    "  ✔ Separate pexpect.EOF from TIMEOUT in feed()",
+    "  ✔ Replace bare except Exception: pass in close()",
+    "  ✔ Remove dead since_last variable",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░",
+]
+
+# Real PARALLEL_AGENTS screen
+REAL_PARALLEL_AGENTS_SCREEN = [
+    "⏺ 4 agents launched (ctrl+o to expand)",
+    "   ├─ pr-review-toolkit:code-reviewer (Code review of PR changes)",
+    "   │  ⎿  Running in the background (shift+↑ to manage)",
+    "   ├─ pr-review-toolkit:silent-failure-hunter (Silent failure hunting)",
+    "   │  ⎿  Running in the background (shift+↑ to manage)",
+    "   ├─ pr-review-toolkit:code-simplifier (Code simplification review)",
+    "   │  ⎿  Running in the background (shift+↑ to manage)",
+    "   └─ pr-review-toolkit:comment-analyzer (Comment accuracy analysis)",
+    "      ⎿  Running in the background (shift+↑ to manage)",
+    "",
+    "  4 local agents · 1 file +194 -192",
+]
+
+# Real BACKGROUND_TASK screen
+REAL_BACKGROUND_SCREEN = [
+    "",
+    "⏺ 60-second timer launched.",
+    "     Running in the background (↓ to manage)",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░",
+    "  1 bash · 1 file +194 -192",
+]
+
+# Real STARTUP screen
+REAL_STARTUP_SCREEN = [
+    " uuuu",
+    "            Claude Code v2.1.37",
+    "  ▐▛███▜▌   Opus 4.6 · Claude Max",
+    " ▝▜█████▛▘  ~/dev/claude-instance-manager",
+    "   ▘▘ ▝▝    Opus 4.6 is here · ...",
+    "",
+    "   General tip: Leave code cleaner than found",
+]
+
+# Real USER_MESSAGE screen (no separators around ❯)
+REAL_USER_MESSAGE_SCREEN = [
+    "",
+    "❯ What is 2+2? Reply with just the number, nothing else.",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░",
+]
+
+# Real ERROR screen
+REAL_ERROR_SCREEN = [
+    "",
+    "1 MCP server failed · /mcp",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░",
+]
 
 
 class TestTerminalEmulator:
@@ -174,6 +327,46 @@ class TestTerminalEmulator:
         assert "claude-instance-manager" in text
 
 
+class TestScreenState:
+    def test_all_states_exist(self):
+        assert ScreenState.STARTUP.value == "startup"
+        assert ScreenState.IDLE.value == "idle"
+        assert ScreenState.THINKING.value == "thinking"
+        assert ScreenState.STREAMING.value == "streaming"
+        assert ScreenState.USER_MESSAGE.value == "user_message"
+        assert ScreenState.TOOL_REQUEST.value == "tool_request"
+        assert ScreenState.TOOL_RUNNING.value == "tool_running"
+        assert ScreenState.TOOL_RESULT.value == "tool_result"
+        assert ScreenState.BACKGROUND_TASK.value == "background_task"
+        assert ScreenState.PARALLEL_AGENTS.value == "parallel_agents"
+        assert ScreenState.TODO_LIST.value == "todo_list"
+        assert ScreenState.ERROR.value == "error"
+        assert ScreenState.UNKNOWN.value == "unknown"
+
+    def test_enum_count(self):
+        assert len(ScreenState) == 13
+
+
+class TestScreenEvent:
+    def test_default_values(self):
+        event = ScreenEvent(state=ScreenState.UNKNOWN)
+        assert event.state == ScreenState.UNKNOWN
+        assert event.payload == {}
+        assert event.raw_lines == []
+        assert event.timestamp == 0.0
+
+    def test_with_payload(self):
+        event = ScreenEvent(
+            state=ScreenState.THINKING,
+            payload={"text": "Deploying robot army…"},
+            raw_lines=["✶ Deploying robot army…"],
+            timestamp=1234.5,
+        )
+        assert event.state == ScreenState.THINKING
+        assert event.payload["text"] == "Deploying robot army…"
+        assert len(event.raw_lines) == 1
+
+
 class TestClassifyLine:
     def test_empty(self):
         assert classify_line("") == "empty"
@@ -183,15 +376,68 @@ class TestClassifyLine:
         assert classify_line("────────────────────") == "separator"
         assert classify_line("━━━━━━━━━━━━━━━━━━━━") == "separator"
 
+    def test_diff_delimiter(self):
+        assert classify_line("╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌") == "diff_delimiter"
+
     def test_status_bar(self):
         assert classify_line("my-project │ ⎇ main │ Usage: 50%") == "status_bar"
-        assert classify_line("claude-instance-manager │ ⎇ main ⇡7 │ Usage: 32% ███▎░░░░░░ ↻ 5:00") == "status_bar"
+        assert (
+            classify_line(
+                "claude-instance-manager │ ⎇ main ⇡7 │ Usage: 32% ███▎░░░░░░ ↻ 5:00"
+            )
+            == "status_bar"
+        )
+
+    def test_thinking_star(self):
+        assert classify_line("✶ Activating sleeper agents…") == "thinking"
+        assert classify_line("✳ Deploying robot army…") == "thinking"
+        assert classify_line("✻ Deploying robot army… (thought for 1s)") == "thinking"
+        assert classify_line("✽ Fixing error handling in close()…") == "thinking"
+        assert classify_line("· Assimilating human knowledge…") == "thinking"
+
+    def test_tool_header(self):
+        assert classify_line("  Bash(echo 'capture_test_ok')") == "tool_header"
+        assert classify_line("⏺ Write(/tmp/test_capture.txt)") == "tool_header"
+        assert classify_line("⏺ Update(scripts/capture_claude_ui.py)") == "tool_header"
+        assert classify_line("⏺ Read 1 file (ctrl+o to expand)") == "tool_header"
+        assert classify_line("  Searched for *.py (ctrl+o to expand)") == "tool_header"
+        assert classify_line("  Reading 1 file… (ctrl+o to expand)") == "tool_header"
+
+    def test_response(self):
+        assert classify_line("⏺ ping") == "response"
+        assert classify_line("⏺ The project name is claude-instance-manager.") == "response"
+        assert classify_line("⏺ Done. Created /tmp/test_capture.txt.") == "response"
+        assert classify_line("⏺ 4 agents launched (ctrl+o to expand)") == "response"
+
+    def test_tool_connector(self):
+        assert classify_line("  ⎿  Running…") == "tool_connector"
+        assert classify_line("  ⎿  Waiting…") == "tool_connector"
+        assert classify_line("  ⎿  Added 4 lines, removed 1 line") == "tool_connector"
+        assert classify_line("  ⎿  Running PreToolUse hooks…") == "tool_connector"
+
+    def test_todo_item(self):
+        assert classify_line("◻ Fix stale docstring") == "todo_item"
+        assert classify_line("◼ Fix substring-vs-set check") == "todo_item"
+        assert classify_line("✔ Separate pexpect.EOF from TIMEOUT") == "todo_item"
+
+    def test_agent_tree(self):
+        assert (
+            classify_line("├─ pr-review-toolkit:code-reviewer (Code review)")
+            == "agent_tree"
+        )
+        assert (
+            classify_line("└─ pr-review-toolkit:comment-analyzer (Comment analysis)")
+            == "agent_tree"
+        )
 
     def test_prompt_marker(self):
-        assert classify_line("❯ Try \"how does <filepath> work?\"") == "prompt"
+        assert classify_line('❯ Try "how does <filepath> work?"') == "prompt"
 
     def test_box_drawing(self):
-        assert classify_line("╭─── Claude Code v2.1.37 ─────────────────────────╮") == "box"
+        assert (
+            classify_line("╭─── Claude Code v2.1.37 ─────────────────────────╮")
+            == "box"
+        )
         assert classify_line("│            Welcome back!           │") == "box"
         assert classify_line("╰──────────────────────────────────────╯") == "box"
 
@@ -387,7 +633,9 @@ class TestDetectContextUsage:
         assert result.percentage == 75
 
     def test_detects_compact_suggestion(self):
-        result = detect_context_usage("Context window is almost full. Consider using /compact")
+        result = detect_context_usage(
+            "Context window is almost full. Consider using /compact"
+        )
         assert result is not None
         assert result.needs_compact is True
 
@@ -448,6 +696,68 @@ class TestParseStatusBar:
     def test_no_match(self):
         assert parse_status_bar("just some random text") is None
 
+    def test_dirty_branch(self):
+        text = "claude-instance-manager │ ⎇ main* ⇡12 │ Usage: 6% ▋░░░░░░░░░ ↻ 9:59"
+        result = parse_status_bar(text)
+        assert result is not None
+        assert result.dirty is True
+        assert result.branch == "main"
+
+    def test_commits_ahead(self):
+        text = "claude-instance-manager │ ⎇ main ⇡12 │ Usage: 6%"
+        result = parse_status_bar(text)
+        assert result is not None
+        assert result.commits_ahead == 12
+
+    def test_timer(self):
+        text = "claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░ ↻ 9:59"
+        result = parse_status_bar(text)
+        assert result is not None
+        assert result.timer == "9:59"
+
+    def test_no_timer(self):
+        text = "claude-instance-manager │ ⎇ main │ Usage: 7%"
+        result = parse_status_bar(text)
+        assert result is not None
+        assert result.timer is None
+
+    def test_all_fields(self):
+        text = "claude-instance-manager │ ⎇ main* ⇡12 │ Usage: 6% ▋░░░░░░░░░ ↻ 9:59"
+        result = parse_status_bar(text)
+        assert result is not None
+        assert result.project == "claude-instance-manager"
+        assert result.branch == "main"
+        assert result.dirty is True
+        assert result.commits_ahead == 12
+        assert result.usage_pct == 6
+        assert result.timer == "9:59"
+
+
+class TestParseExtraStatus:
+    def test_bash_tasks(self):
+        result = parse_extra_status("  1 bash · 1 file +194 -192")
+        assert result["bash_tasks"] == 1
+
+    def test_local_agents(self):
+        result = parse_extra_status("  4 local agents · 1 file +194 -192")
+        assert result["local_agents"] == 4
+
+    def test_file_changes(self):
+        result = parse_extra_status("  1 file +194 -192")
+        assert result["files_changed"] == 1
+        assert result["lines_added"] == 194
+        assert result["lines_removed"] == 192
+
+    def test_combined(self):
+        result = parse_extra_status("  1 bash · 1 file +194 -192")
+        assert result["bash_tasks"] == 1
+        assert result["files_changed"] == 1
+        assert result["lines_added"] == 194
+
+    def test_empty(self):
+        result = parse_extra_status("just random text")
+        assert result == {}
+
 
 class TestDetectFilePaths:
     def test_detects_wrote_to(self):
@@ -477,6 +787,285 @@ class TestDetectFilePaths:
     def test_ignores_short_paths(self):
         paths = detect_file_paths("Wrote to /tmp")
         assert paths == []
+
+
+class TestDetectThinking:
+    def test_basic_thinking(self):
+        lines = ["✶ Activating sleeper agents…"]
+        result = detect_thinking(lines)
+        assert result is not None
+        assert result["text"] == "Activating sleeper agents…"
+        assert result["elapsed"] is None
+
+    def test_thinking_with_elapsed(self):
+        lines = ["✻ Deploying robot army… (thought for 1s)"]
+        result = detect_thinking(lines)
+        assert result is not None
+        assert "Deploying robot army…" in result["text"]
+        assert result["elapsed"] == "1s"
+
+    def test_thinking_with_hook(self):
+        lines = ["✶ Enslaving smart toasters… (running stop hook)"]
+        result = detect_thinking(lines)
+        assert result is not None
+        assert "Enslaving smart toasters…" in result["text"]
+
+    def test_minimal_thinking_dot(self):
+        lines = ["· Assimilating human knowledge…"]
+        result = detect_thinking(lines)
+        assert result is not None
+        assert "Assimilating human knowledge…" in result["text"]
+
+    def test_all_star_variants(self):
+        for star in "✶✳✻✽✢·":
+            lines = [f"{star} Working on something…"]
+            result = detect_thinking(lines)
+            assert result is not None, f"Failed for star: {star}"
+
+    def test_no_thinking(self):
+        lines = ["Hello, this is normal text", "More text here"]
+        assert detect_thinking(lines) is None
+
+    def test_empty_lines(self):
+        assert detect_thinking([]) is None
+        assert detect_thinking([""]) is None
+
+    def test_mixed_content(self):
+        lines = [
+            "❯ What is 2+2?",
+            "",
+            "✶ Activating sleeper agents…",
+        ]
+        result = detect_thinking(lines)
+        assert result is not None
+        assert result["text"] == "Activating sleeper agents…"
+
+
+class TestDetectToolRequest:
+    def test_approval_menu(self):
+        lines = [
+            " Do you want to create test_capture.txt?",
+            " ❯ 1. Yes",
+            "   2. Yes, allow all edits during this session (shift+tab)",
+            "   3. No",
+            "",
+            " Esc to cancel · Tab to amend",
+        ]
+        result = detect_tool_request(lines)
+        assert result is not None
+        assert result["options"] == [
+            "Yes",
+            "Yes, allow all edits during this session (shift+tab)",
+            "No",
+        ]
+        assert result["selected"] == 0
+        assert result["has_hint"] is True
+        assert result["question"] == "Do you want to create test_capture.txt?"
+
+    def test_trust_prompt(self):
+        lines = [
+            "❯ 1. Yes, I trust this folder",
+            "   2. No, exit",
+        ]
+        result = detect_tool_request(lines)
+        assert result is not None
+        assert len(result["options"]) == 2
+        assert "Yes, I trust this folder" in result["options"][0]
+        assert result["selected"] == 0
+
+    def test_no_menu(self):
+        lines = ["Hello", "World", "Just text"]
+        assert detect_tool_request(lines) is None
+
+    def test_empty_lines(self):
+        assert detect_tool_request([]) is None
+        assert detect_tool_request([""]) is None
+
+    def test_single_option_not_menu(self):
+        lines = ["❯ 1. Yes"]
+        assert detect_tool_request(lines) is None
+
+
+class TestDetectTodoList:
+    def test_full_todo(self):
+        lines = [
+            "  5 tasks (2 done, 1 in progress, 2 open) · ctrl+t to hide tasks",
+            "  ◼ Fix substring-vs-set check in smoke test",
+            '  ◻ Fix stale docstring "steps 1-8" to "steps 1-5"',
+            "  ✔ Separate pexpect.EOF from TIMEOUT in feed()",
+            "  ✔ Replace bare except Exception: pass in close()",
+            "  ✔ Remove dead since_last variable",
+        ]
+        result = detect_todo_list(lines)
+        assert result is not None
+        assert result["total"] == 5
+        assert result["done"] == 2
+        assert result["in_progress"] == 1
+        assert result["open"] == 2
+        assert len(result["items"]) == 5
+
+    def test_item_statuses(self):
+        lines = [
+            "  ◻ Pending task",
+            "  ◼ In-progress task",
+            "  ✔ Completed task",
+        ]
+        result = detect_todo_list(lines)
+        assert result is not None
+        items = result["items"]
+        assert items[0]["status"] == "pending"
+        assert items[0]["text"] == "Pending task"
+        assert items[1]["status"] == "in_progress"
+        assert items[1]["text"] == "In-progress task"
+        assert items[2]["status"] == "completed"
+        assert items[2]["text"] == "Completed task"
+
+    def test_header_without_in_progress(self):
+        lines = [
+            "  3 tasks (1 done, 2 open)",
+            "  ✔ Done task",
+            "  ◻ Open task 1",
+            "  ◻ Open task 2",
+        ]
+        result = detect_todo_list(lines)
+        assert result is not None
+        assert result["total"] == 3
+        assert result["in_progress"] == 0
+
+    def test_no_todo(self):
+        lines = ["Hello", "World"]
+        assert detect_todo_list(lines) is None
+
+    def test_empty_lines(self):
+        assert detect_todo_list([]) is None
+        assert detect_todo_list([""]) is None
+
+
+class TestDetectBackgroundTask:
+    def test_background_down_hint(self):
+        lines = ["     Running in the background (↓ to manage)"]
+        result = detect_background_task(lines)
+        assert result is not None
+        assert "in the background" in result["raw"]
+
+    def test_background_shift_hint(self):
+        lines = ["   ⎿  Running in the background (shift+↑ to manage)"]
+        result = detect_background_task(lines)
+        assert result is not None
+
+    def test_no_background(self):
+        lines = ["Hello", "World"]
+        assert detect_background_task(lines) is None
+
+    def test_empty_lines(self):
+        assert detect_background_task([]) is None
+
+
+class TestDetectParallelAgents:
+    def test_agents_launched(self):
+        lines = [
+            "⏺ 4 agents launched (ctrl+o to expand)",
+            "   ├─ pr-review-toolkit:code-reviewer (Code review of PR changes)",
+            "   ├─ pr-review-toolkit:silent-failure-hunter (Silent failure hunting)",
+            "   ├─ pr-review-toolkit:code-simplifier (Code simplification review)",
+            "   └─ pr-review-toolkit:comment-analyzer (Comment accuracy analysis)",
+        ]
+        result = detect_parallel_agents(lines)
+        assert result is not None
+        assert result["count"] == 4
+        assert len(result["agents"]) == 4
+
+    def test_agent_completion(self):
+        lines = [
+            '⏺ Agent "Code simplification review" completed',
+            "⏺ Code review is done. 2 of 4 agents complete.",
+        ]
+        result = detect_parallel_agents(lines)
+        assert result is not None
+        assert len(result["completed"]) == 1
+        assert result["completed"][0] == "Code simplification review"
+
+    def test_no_agents(self):
+        lines = ["Hello", "World"]
+        assert detect_parallel_agents(lines) is None
+
+    def test_empty_lines(self):
+        assert detect_parallel_agents([]) is None
+
+
+class TestClassifyScreenState:
+    def test_idle_screen(self):
+        event = classify_screen_state(REAL_IDLE_SCREEN)
+        assert event.state == ScreenState.IDLE
+        assert "placeholder" in event.payload
+
+    def test_thinking_screen(self):
+        event = classify_screen_state(REAL_THINKING_SCREEN)
+        assert event.state == ScreenState.THINKING
+        assert "Activating sleeper agents…" in event.payload["text"]
+
+    def test_streaming_screen(self):
+        event = classify_screen_state(REAL_STREAMING_SCREEN)
+        assert event.state == ScreenState.STREAMING
+        assert "The answer is 4" in event.payload["text"]
+
+    def test_tool_request_screen(self):
+        event = classify_screen_state(REAL_TOOL_REQUEST_SCREEN)
+        assert event.state == ScreenState.TOOL_REQUEST
+        assert len(event.payload["options"]) == 3
+        assert event.payload["options"][0] == "Yes"
+
+    def test_tool_running_screen(self):
+        event = classify_screen_state(REAL_TOOL_RUNNING_SCREEN)
+        assert event.state == ScreenState.TOOL_RUNNING
+        assert event.payload.get("tool") == "Bash"
+
+    def test_tool_result_screen(self):
+        event = classify_screen_state(REAL_TOOL_RESULT_SCREEN)
+        assert event.state == ScreenState.TOOL_RESULT
+        assert event.payload["added"] == 4
+        assert event.payload["removed"] == 1
+
+    def test_todo_list_screen(self):
+        event = classify_screen_state(REAL_TODO_LIST_SCREEN)
+        assert event.state == ScreenState.TODO_LIST
+        assert event.payload["total"] == 5
+        assert len(event.payload["items"]) == 5
+
+    def test_parallel_agents_screen(self):
+        event = classify_screen_state(REAL_PARALLEL_AGENTS_SCREEN)
+        assert event.state == ScreenState.PARALLEL_AGENTS
+        assert event.payload["count"] == 4
+
+    def test_background_task_screen(self):
+        event = classify_screen_state(REAL_BACKGROUND_SCREEN)
+        assert event.state == ScreenState.BACKGROUND_TASK
+
+    def test_startup_screen(self):
+        event = classify_screen_state(REAL_STARTUP_SCREEN)
+        assert event.state == ScreenState.STARTUP
+
+    def test_user_message_screen(self):
+        event = classify_screen_state(REAL_USER_MESSAGE_SCREEN)
+        assert event.state == ScreenState.USER_MESSAGE
+        assert "2+2" in event.payload["text"]
+
+    def test_error_screen(self):
+        event = classify_screen_state(REAL_ERROR_SCREEN)
+        assert event.state == ScreenState.ERROR
+        assert "MCP server failed" in event.payload["text"]
+
+    def test_empty_screen(self):
+        event = classify_screen_state(["", "", ""])
+        assert event.state == ScreenState.UNKNOWN
+
+    def test_unknown_content(self):
+        event = classify_screen_state(["Some random content that matches nothing"])
+        assert event.state == ScreenState.UNKNOWN
+
+    def test_preserves_raw_lines(self):
+        event = classify_screen_state(REAL_IDLE_SCREEN)
+        assert event.raw_lines == REAL_IDLE_SCREEN
 
 
 class TestFormatTelegram:
