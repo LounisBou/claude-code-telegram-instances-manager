@@ -102,3 +102,41 @@ def detect_prompt(text: str) -> DetectedPrompt | None:
         )
 
     return None
+
+
+@dataclass
+class ContextUsage:
+    percentage: int | None = None
+    needs_compact: bool = False
+    raw_text: str = ""
+
+
+_CONTEXT_PCT_RE = re.compile(r"(?:context|ctx)[:\s]*(\d+)\s*%", re.IGNORECASE)
+_CONTEXT_TOKENS_RE = re.compile(r"(\d+)k\s*/\s*(\d+)k\s*tokens", re.IGNORECASE)
+_COMPACT_RE = re.compile(r"compact|context.*(?:full|almost|running out)", re.IGNORECASE)
+
+
+def detect_context_usage(text: str) -> ContextUsage | None:
+    if not text.strip():
+        return None
+
+    pct_match = _CONTEXT_PCT_RE.search(text)
+    token_match = _CONTEXT_TOKENS_RE.search(text)
+    compact_match = _COMPACT_RE.search(text)
+
+    if not any([pct_match, token_match, compact_match]):
+        return None
+
+    percentage = None
+    if pct_match:
+        percentage = int(pct_match.group(1))
+    elif token_match:
+        used = int(token_match.group(1))
+        total = int(token_match.group(2))
+        percentage = round(used / total * 100) if total > 0 else None
+
+    return ContextUsage(
+        percentage=percentage,
+        needs_compact=compact_match is not None,
+        raw_text=text,
+    )

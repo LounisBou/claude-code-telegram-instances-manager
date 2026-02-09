@@ -1,4 +1,12 @@
-from src.output_parser import strip_ansi, filter_spinners, detect_prompt, PromptType, DetectedPrompt
+from src.output_parser import (
+    strip_ansi,
+    filter_spinners,
+    detect_prompt,
+    PromptType,
+    DetectedPrompt,
+    detect_context_usage,
+    ContextUsage,
+)
 
 
 class TestStripAnsi:
@@ -88,3 +96,27 @@ class TestDetectPrompt:
     def test_empty_string(self):
         result = detect_prompt("")
         assert result is None
+
+
+class TestDetectContextUsage:
+    def test_detects_percentage(self):
+        result = detect_context_usage("Context: 75% used")
+        assert result is not None
+        assert result.percentage == 75
+
+    def test_detects_compact_suggestion(self):
+        result = detect_context_usage("Context window is almost full. Consider using /compact")
+        assert result is not None
+        assert result.needs_compact is True
+
+    def test_no_context_info(self):
+        result = detect_context_usage("Hello world, just some normal output")
+        assert result is None
+
+    def test_empty_string(self):
+        result = detect_context_usage("")
+        assert result is None
+
+    def test_detects_token_count(self):
+        result = detect_context_usage("Context: 150k/200k tokens used")
+        assert result is not None
