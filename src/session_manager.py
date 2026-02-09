@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -122,3 +123,30 @@ class SessionManager:
 
     def active_session_count(self) -> int:
         return sum(len(s) for s in self._sessions.values())
+
+
+class OutputBuffer:
+    def __init__(self, debounce_ms: int, max_buffer: int) -> None:
+        self._debounce_s = debounce_ms / 1000.0
+        self._max_buffer = max_buffer
+        self._buffer: str = ""
+        self._last_append: float = 0
+
+    def append(self, text: str) -> None:
+        self._buffer += text
+        self._last_append = time.monotonic()
+
+    def flush(self) -> str:
+        result = self._buffer
+        self._buffer = ""
+        self._last_append = 0
+        return result
+
+    def is_ready(self) -> bool:
+        if not self._buffer:
+            return False
+        if len(self._buffer) >= self._max_buffer:
+            return True
+        if self._last_append and (time.monotonic() - self._last_append) >= self._debounce_s:
+            return True
+        return False

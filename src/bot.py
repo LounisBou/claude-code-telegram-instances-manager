@@ -340,6 +340,86 @@ async def handle_update_claude(
     await update.message.reply_text(f"Update result:\n{result}")
 
 
+async def handle_context(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+
+    if not is_authorized(user_id, config.telegram.authorized_users):
+        await update.message.reply_text("You are not authorized to use this bot.")
+        return
+
+    session_manager = context.bot_data["session_manager"]
+    active = session_manager.get_active_session(user_id)
+    if not active:
+        await update.message.reply_text("No active session.")
+        return
+
+    await active.process.write("/context\n")
+    await update.message.reply_text("Context info requested. Output will follow.")
+
+
+async def handle_download(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+
+    if not is_authorized(user_id, config.telegram.authorized_users):
+        await update.message.reply_text("You are not authorized to use this bot.")
+        return
+
+    file_handler = context.bot_data["file_handler"]
+    text = update.message.text
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        await update.message.reply_text("Usage: /download /path/to/file")
+        return
+
+    file_path = parts[1].strip()
+    if not file_handler.file_exists(file_path):
+        await update.message.reply_text(f"File not found: {file_path}")
+        return
+
+    await update.message.reply_document(
+        document=open(file_path, "rb"), filename=file_path.split("/")[-1]
+    )
+
+
+async def handle_file_upload(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+
+    if not is_authorized(user_id, config.telegram.authorized_users):
+        return
+
+    session_manager = context.bot_data["session_manager"]
+    active = session_manager.get_active_session(user_id)
+    if not active:
+        await update.message.reply_text("No active session. Upload ignored.")
+        return
+
+    file_handler = context.bot_data["file_handler"]
+    document = update.message.document
+    if document is None and update.message.photo:
+        document = update.message.photo[-1]
+    if document is None:
+        return
+
+    file_obj = await context.bot.get_file(document.file_id)
+    filename = getattr(document, "file_name", None) or f"{document.file_id}.bin"
+    save_path = file_handler.get_upload_path(
+        active.project_name, active.session_id, filename
+    )
+    await file_obj.download_to_drive(save_path)
+
+    await active.process.write(f"User uploaded a file: {save_path}\n")
+    await update.message.reply_text(f"File uploaded: `{save_path}`")
+
+
 async def _run_update_command(command: str) -> str:
     proc = await asyncio.create_subprocess_shell(
         command,

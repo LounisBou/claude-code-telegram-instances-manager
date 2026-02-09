@@ -574,3 +574,25 @@ class TestHandleUpdateClaude:
         await handle_update_claude(update, context)
         call_text = update.message.reply_text.call_args[0][0]
         assert "2" in call_text
+
+
+class TestBuildApp:
+    def test_builds_app_with_handlers(self, tmp_path):
+        import yaml
+
+        from src.main import build_app
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "telegram": {
+                        "bot_token": "fake-token",
+                        "authorized_users": [111],
+                    },
+                    "projects": {"root": "/tmp"},
+                }
+            )
+        )
+        app = build_app(str(config_file))
+        assert app is not None
