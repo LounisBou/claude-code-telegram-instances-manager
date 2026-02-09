@@ -1,5 +1,6 @@
 from src.output_parser import (
     strip_ansi,
+    clean_terminal_output,
     filter_spinners,
     detect_prompt,
     PromptType,
@@ -9,6 +10,8 @@ from src.output_parser import (
     detect_file_paths,
     format_telegram,
     split_message,
+    parse_status_bar,
+    StatusBar,
     TELEGRAM_MAX_LENGTH,
 )
 
@@ -40,6 +43,66 @@ class TestStripAnsi:
 
     def test_strips_erase_line(self):
         assert strip_ansi("\x1b[2Ksome text") == "some text"
+
+    def test_cursor_forward_becomes_space(self):
+        """Real Claude output: words separated by ESC[1C instead of spaces."""
+        assert strip_ansi("Hello\x1b[1Cworld") == "Hello world"
+
+    def test_cursor_forward_multiple(self):
+        """ESC[3C = 3 spaces (used for indentation)."""
+        assert strip_ansi("\x1b[3Cindented") == "   indented"
+
+    def test_real_claude_word_spacing(self):
+        """Real captured: 'Accessing\x1b[1Cworkspace:' """
+        text = "\x1b[1mAccessing\x1b[1Cworkspace:\x1b[22m"
+        assert strip_ansi(text) == "Accessing workspace:"
+
+    def test_strips_private_mode_sequences(self):
+        """ESC[?2026h, ESC[?25l etc."""
+        text = "\x1b[?2026h\x1b[?25lhello\x1b[?25h"
+        assert strip_ansi(text) == "hello"
+
+    def test_real_claude_status_line(self):
+        """Real captured status bar with ESC[1C spacing."""
+        text = "\x1b[34mtmp\x1b[1C\x1b[90m│\x1b[1C\x1b[38;5;100mUsage:\x1b[1C32%\x1b[1C███▎░░░░░░\x1b[39m"
+        result = strip_ansi(text)
+        assert "tmp" in result
+        assert "Usage: 32%" in result
+
+    def test_real_claude_rgb_color(self):
+        """Real captured: ESC[38;2;177;185;249m for /exit command color."""
+        text = "\x1b[38;2;177;185;249m/exit\x1b[39m"
+        assert strip_ansi(text) == "/exit"
+
+
+class TestCleanTerminalOutput:
+    def test_strips_terminal_modes(self):
+        text = "\x1b[?2026h\x1b[?2004hhello\x1b[?2026l"
+        assert clean_terminal_output(text) == "hello"
+
+    def test_normalizes_crlf(self):
+        text = "line1\r\r\nline2\r\r\n"
+        assert clean_terminal_output(text) == "line1\nline2"
+
+    def test_collapses_blank_lines(self):
+        text = "a\n\n\n\n\nb"
+        assert clean_terminal_output(text) == "a\n\nb"
+
+    def test_removes_screen_clear(self):
+        text = "\x1b[2J\x1b[3J\x1b[Hhello"
+        assert clean_terminal_output(text) == "hello"
+
+    def test_full_real_startup(self):
+        """Test with fragment of real Claude startup output."""
+        text = (
+            "\x1b[?2026h\r\r\n"
+            "\x1b[38;5;220m────────\x1b[39m\r\r\n"
+            "\x1b[1C\x1b[1mAccessing\x1b[1Cworkspace:\x1b[22m\r\r\n"
+        )
+        result = clean_terminal_output(text)
+        assert "Accessing workspace:" in result
+        assert "\x1b" not in result
+        assert "\r" not in result
 
 
 class TestFilterSpinners:
@@ -124,6 +187,52 @@ class TestDetectContextUsage:
     def test_detects_token_count(self):
         result = detect_context_usage("Context: 150k/200k tokens used")
         assert result is not None
+
+    def test_detects_real_claude_usage_format(self):
+        """Real Claude status bar: 'Usage: 32% ███▎░░░░░░'"""
+        result = detect_context_usage("Usage: 32% ███▎░░░░░░")
+        assert result is not None
+        assert result.percentage == 32
+
+    def test_detects_usage_in_status_line(self):
+        """Real status bar after ANSI stripping."""
+        text = "claude-instance-manager │ ⎇ main ⇡7 │ Usage: 32% ███▎░░░░░░ ↻ 5:00"
+        result = detect_context_usage(text)
+        assert result is not None
+        assert result.percentage == 32
+
+
+class TestParseStatusBar:
+    def test_parses_full_status_bar(self):
+        text = "claude-instance-manager │ ⎇ main ⇡7 │ Usage: 32% ███▎░░░░░░ ↻ 5:00"
+        result = parse_status_bar(text)
+        assert result is not None
+        assert result.project == "claude-instance-manager"
+        assert result.branch == "main"
+        assert result.usage_pct == 32
+
+    def test_parses_status_bar_no_branch(self):
+        text = "my-project │ Usage: 50% █████░░░░░"
+        result = parse_status_bar(text)
+        assert result is not None
+        assert result.project == "my-project"
+        assert result.usage_pct == 50
+
+    def test_parses_real_captured_status_bar(self):
+        """After strip_ansi, real captured status bar."""
+        raw = "\x1b[34mclaude-instance-manager\x1b[1C\x1b[90m│\x1b[1C\x1b[32m⎇\x1b[1Cmain\x1b[1C⇡7\x1b[1C\x1b[90m│\x1b[1C\x1b[38;5;100mUsage:\x1b[1C32%\x1b[1C███▎░░░░░░\x1b[39m"
+        clean = strip_ansi(raw)
+        result = parse_status_bar(clean)
+        assert result is not None
+        assert result.project == "claude-instance-manager"
+        assert result.branch == "main"
+        assert result.usage_pct == 32
+
+    def test_empty_string(self):
+        assert parse_status_bar("") is None
+
+    def test_no_match(self):
+        assert parse_status_bar("just some random text") is None
 
 
 class TestDetectFilePaths:

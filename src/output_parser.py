@@ -4,18 +4,56 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+# Cursor forward: ESC[NC — replace with N spaces (Claude uses ESC[1C between words)
+_CURSOR_FORWARD_RE = re.compile(r"\x1b\[(\d+)C")
+
+# All other ANSI sequences: CSI, OSC, SGR — remove entirely
 _ANSI_FULL_RE = re.compile(
     r"\x1b"
     r"(?:"
-    r"\[[0-9;]*[a-zA-Z]"
-    r"|\][^\x07]*\x07"
-    r"|\[[0-9;]*m"
+    r"\[[0-9;]*[a-zA-Z]"       # CSI sequences: ESC [ ... letter
+    r"|\][^\x07]*\x07"         # OSC sequences: ESC ] ... BEL
+    r"|\[[0-9;]*m"             # SGR (color) sequences
+    r"|\[\?[0-9;]*[a-zA-Z]"   # Private mode sequences: ESC[?...
+    r"|>[0-9]*[a-zA-Z]"        # DEC sequences: ESC>...
+    r"|<[a-zA-Z]"              # ESC< sequences
     r")"
 )
 
+# Terminal control sequences to strip before any other processing
+_TERMINAL_MODES_RE = re.compile(
+    r"\x1b\[\?(?:2026|2004|1004|25|1)[hlHL]"  # Synchronized output, bracketed paste, etc.
+)
+_SCREEN_CLEAR_RE = re.compile(r"\x1b\[2J|\x1b\[3J|\x1b\[H")
+_ERASE_LINE_RE = re.compile(r"\x1b\[2?K")
+_CURSOR_UP_RE = re.compile(r"\x1b\[\d*A")
+
 
 def strip_ansi(text: str) -> str:
+    """Strip ANSI escape codes, converting cursor-forward to spaces."""
+    # First convert cursor-forward to spaces (ESC[1C -> " ")
+    text = _CURSOR_FORWARD_RE.sub(lambda m: " " * int(m.group(1)), text)
+    # Then remove everything else
     return _ANSI_FULL_RE.sub("", text)
+
+
+def clean_terminal_output(text: str) -> str:
+    """Full terminal output cleanup: strip all ANSI, normalize whitespace, remove UI chrome."""
+    # Remove terminal mode switches
+    text = _TERMINAL_MODES_RE.sub("", text)
+    # Remove screen clears
+    text = _SCREEN_CLEAR_RE.sub("", text)
+    # Remove erase-line sequences
+    text = _ERASE_LINE_RE.sub("", text)
+    # Remove cursor-up (used for status bar repositioning)
+    text = _CURSOR_UP_RE.sub("", text)
+    # Strip ANSI (converts cursor-forward to spaces)
+    text = strip_ansi(text)
+    # Normalize \r\r\n and \r\n to \n
+    text = text.replace("\r\r\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    # Collapse multiple blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 _BRAILLE_SPINNER = re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*")
@@ -111,6 +149,9 @@ class ContextUsage:
     raw_text: str = ""
 
 
+# Real Claude status bar format: "Usage: 32% ███▎░░░░░░"
+_USAGE_PCT_RE = re.compile(r"Usage:\s*(\d+)%", re.IGNORECASE)
+# Also handle generic context patterns
 _CONTEXT_PCT_RE = re.compile(r"(?:context|ctx)[:\s]*(\d+)\s*%", re.IGNORECASE)
 _CONTEXT_TOKENS_RE = re.compile(r"(\d+)k\s*/\s*(\d+)k\s*tokens", re.IGNORECASE)
 _COMPACT_RE = re.compile(r"compact|context.*(?:full|almost|running out)", re.IGNORECASE)
@@ -120,15 +161,18 @@ def detect_context_usage(text: str) -> ContextUsage | None:
     if not text.strip():
         return None
 
+    usage_match = _USAGE_PCT_RE.search(text)
     pct_match = _CONTEXT_PCT_RE.search(text)
     token_match = _CONTEXT_TOKENS_RE.search(text)
     compact_match = _COMPACT_RE.search(text)
 
-    if not any([pct_match, token_match, compact_match]):
+    if not any([usage_match, pct_match, token_match, compact_match]):
         return None
 
     percentage = None
-    if pct_match:
+    if usage_match:
+        percentage = int(usage_match.group(1))
+    elif pct_match:
         percentage = int(pct_match.group(1))
     elif token_match:
         used = int(token_match.group(1))
@@ -138,6 +182,45 @@ def detect_context_usage(text: str) -> ContextUsage | None:
     return ContextUsage(
         percentage=percentage,
         needs_compact=compact_match is not None,
+        raw_text=text,
+    )
+
+
+@dataclass
+class StatusBar:
+    project: str | None = None
+    branch: str | None = None
+    usage_pct: int | None = None
+    raw_text: str = ""
+
+
+_STATUS_BAR_RE = re.compile(
+    r"(?P<project>[\w\-]+)\s*│\s*"
+    r"(?:⎇\s*(?P<branch>[\w\-/]+))?\s*"
+    r"(?:⇡\d+\s*)?│?\s*"
+    r"(?:Usage:\s*(?P<usage>\d+)%)?"
+)
+
+
+def parse_status_bar(text: str) -> StatusBar | None:
+    """Parse Claude Code's status bar line.
+
+    Real format: "claude-instance-manager │ ⎇ main ⇡7 │ Usage: 32% ███▎░░░░░░ ↻ 5:00"
+    """
+    if not text.strip():
+        return None
+    match = _STATUS_BAR_RE.search(text)
+    if not match:
+        return None
+    project = match.group("project")
+    branch = match.group("branch")
+    usage = match.group("usage")
+    if not project:
+        return None
+    return StatusBar(
+        project=project,
+        branch=branch,
+        usage_pct=int(usage) if usage else None,
         raw_text=text,
     )
 
