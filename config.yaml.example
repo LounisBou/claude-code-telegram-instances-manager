@@ -1,0 +1,22 @@
+telegram:
+  bot_token: "YOUR_BOT_TOKEN_HERE"
+  authorized_users:
+    - 123456789
+
+projects:
+  root: "/home/lounis/dev"
+  scan_depth: 1
+
+sessions:
+  max_per_user: 3
+  output_debounce_ms: 500
+  output_max_buffer: 2000
+  silence_warning_minutes: 10
+
+claude:
+  command: "claude"
+  default_args: []
+  update_command: "claude update"
+
+database:
+  path: "data/sessions.db"

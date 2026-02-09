@@ -1,0 +1,4 @@
+python-telegram-bot[ext]>=21.0
+pexpect>=4.9
+pyyaml>=6.0
+aiosqlite>=0.20

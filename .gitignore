@@ -1,3 +1,14 @@
 # Version documentation of this project
 !docs/
 !docs/**
+
+config.yaml
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+venv/
+.venv/
