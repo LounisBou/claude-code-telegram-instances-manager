@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -8,20 +10,14 @@ from telegram.ext import ContextTypes
 from src.git_info import get_git_info
 from src.project_scanner import Project, scan_projects
 
+logger = logging.getLogger(__name__)
+
 
 # --- Auth ---
 
 
 def is_authorized(user_id: int, authorized_users: list[int]) -> bool:
-    """Check whether a Telegram user is allowed to interact with the bot.
-
-    Args:
-        user_id: The Telegram user ID to verify.
-        authorized_users: List of Telegram user IDs permitted to use the bot.
-
-    Returns:
-        True if the user ID is present in the authorized list, False otherwise.
-    """
+    """Check whether a Telegram user is allowed to interact with the bot."""
     return user_id in authorized_users
 
 
@@ -373,6 +369,16 @@ async def handle_callback_query(
         await query.answer()
         await query.edit_message_text(f"Session #{session_id} killed.")
 
+    elif data.startswith("update:"):
+        action = data[len("update:"):]
+        if action == "confirm":
+            result = await _run_update_command(config.claude.update_command)
+            await query.answer()
+            await query.edit_message_text(f"Update result:\n{result}")
+        else:
+            await query.answer()
+            await query.edit_message_text("Update cancelled.")
+
     elif data.startswith("page:"):
         page = int(data[len("page:") :])
         projects = scan_projects(
@@ -563,13 +569,27 @@ async def handle_download(
         return
 
     file_path = parts[1].strip()
+
+    # Path traversal protection: resolve symlinks and verify the path falls
+    # within the active session's project or an upload directory
+    session_manager = context.bot_data["session_manager"]
+    active = session_manager.get_active_session(user_id)
+    resolved = os.path.realpath(file_path)
+    allowed_dirs = [file_handler._base_dir]
+    if active:
+        allowed_dirs.append(os.path.realpath(active.project_path))
+    if not any(resolved.startswith(os.path.realpath(d)) for d in allowed_dirs):
+        await update.message.reply_text("Access denied: path outside allowed directories.")
+        return
+
     if not file_handler.file_exists(file_path):
         await update.message.reply_text(f"File not found: {file_path}")
         return
 
-    await update.message.reply_document(
-        document=open(file_path, "rb"), filename=file_path.split("/")[-1]
-    )
+    with open(file_path, "rb") as f:
+        await update.message.reply_document(
+            document=f, filename=file_path.split("/")[-1]
+        )
 
 
 async def handle_file_upload(
@@ -639,5 +659,10 @@ async def _run_update_command(command: str) -> str:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    stdout, _ = await proc.communicate()
-    return stdout.decode().strip()
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return "Error: update command timed out after 60s"
+    prefix = "OK" if proc.returncode == 0 else f"FAILED (exit {proc.returncode})"
+    return f"{prefix}: {stdout.decode().strip()}"

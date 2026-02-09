@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pexpect
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeProcess:
@@ -33,9 +36,6 @@ class ClaudeProcess:
         Builds the full command string from the stored command and args,
         then creates a pexpect.spawn instance on a background thread
         to avoid blocking the event loop.
-
-        Returns:
-            None.
         """
         cmd = self._command
         if self._args:
@@ -71,9 +71,6 @@ class ClaudeProcess:
 
         Args:
             text: The string to send to the process.
-
-        Returns:
-            None.
         """
         if not self.is_alive():
             return
@@ -102,9 +99,8 @@ class ClaudeProcess:
                     break
                 except pexpect.EOF:
                     break
-        except Exception:
-            # Swallow unexpected errors during drain to avoid crashing the read loop
-            pass
+        except Exception as exc:
+            logger.warning("Unexpected error draining PTY buffer: %s", exc)
         result = self._buffer
         self._buffer = ""
         return result
@@ -114,9 +110,6 @@ class ClaudeProcess:
 
         Calls pexpect close with force=True on a background thread.
         Does nothing if the process was never spawned.
-
-        Returns:
-            None.
         """
         if self._process is None:
             return

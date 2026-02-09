@@ -44,15 +44,15 @@ Responses flow right to left: PTY output -> pyte terminal -> parser/classifier -
 ```
 1. User sends message via Telegram
 2. bot.py receives update, resolves active session via session_manager
-3. session_manager writes user text to the PTY fd (send + \r, separated by 0.15s delay)
+3. session_manager writes user text to the PTY via pexpect send()
 4. claude_process reads raw bytes from the PTY
 5. Raw bytes are fed into pyte virtual terminal (Screen object)
 6. output_parser reads the pyte screen buffer:
    a. classify_screen_state() determines one of 13 ScreenState values
    b. classify_line() tags each line (one of 14 line types)
-   c. Formatter builds Telegram-ready HTML from classified lines
+   c. Formatter builds Telegram-ready MarkdownV2 from classified lines
 7. session_manager buffers output, detects stable state, sends to Telegram
-8. If ScreenState is TOOL_APPROVAL, an inline keyboard is sent for user confirmation
+8. If ScreenState is TOOL_REQUEST, an inline keyboard is sent for user confirmation
 ```
 
 ## Key Design Decisions
@@ -61,15 +61,15 @@ Responses flow right to left: PTY output -> pyte terminal -> parser/classifier -
 
 The parser uses a 13-state enum (`ScreenState`) to classify the full terminal screen rather than reacting to individual lines. Classification runs a 3-pass priority detection:
 
-- **Pass 1 (high priority):** error banners, permission prompts, tool approval dialogs.
-- **Pass 2 (structural):** cost/token status bars, streaming output indicators.
-- **Pass 3 (fallback):** idle prompt, compact prompt, unknown.
+- **Pass 1 (screen-wide):** tool approval menus, TODO lists, parallel agents.
+- **Pass 2 (bottom-up):** thinking indicators, running tools, tool results, background tasks.
+- **Pass 3 (last line):** idle prompt, streaming, user message, startup, error, unknown.
 
 Five dedicated detector functions feed into `classify_screen_state()`, which returns a single authoritative state used by downstream formatting and control logic.
 
 ### 2. Capture-Driven Parsing
 
-Every parser change is validated against 161 real terminal snapshots captured from live Claude Code sessions using `scripts/capture_claude_ui.py`. This ensures:
+Every parser change is validated against a corpus of real terminal snapshots captured from live Claude Code sessions using `scripts/capture_claude_ui.py`. This ensures:
 
 - Zero UNKNOWN classifications across all captured states.
 - Regressions from pyte rendering artifacts (e.g., trailing U+FFFD on separator lines) are caught immediately.

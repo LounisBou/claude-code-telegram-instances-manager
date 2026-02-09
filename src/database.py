@@ -25,9 +25,6 @@ class Database:
 
     Provides methods to create, query, and update session rows
     that track a user's Claude Code interactions within a project.
-
-    Args:
-        path: Filesystem path to the SQLite database file.
     """
 
     def __init__(self, path: str) -> None:

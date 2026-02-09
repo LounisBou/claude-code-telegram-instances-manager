@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,7 +50,14 @@ async def _run_command(cmd: list[str], cwd: str) -> str:
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
     )
-    stdout, _ = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        logger.warning("Command timed out after 10s: %s", cmd)
+        return ""
+    if stderr and stderr.strip():
+        logger.debug("stderr from %s: %s", cmd[0], stderr.decode().strip())
     return stdout.decode().strip()
 
 
@@ -69,8 +79,8 @@ async def get_git_info(project_path: str) -> GitInfo:
         branch = await _run_command(
             ["git", "branch", "--show-current"], cwd=project_path
         )
-    except Exception:
-        # git may not be installed or path may not be a repo — fail gracefully
+    except Exception as exc:
+        logger.warning("Failed to get git branch for %s: %s", project_path, exc)
         return GitInfo()
 
     pr_url = None
@@ -86,9 +96,8 @@ async def get_git_info(project_path: str) -> GitInfo:
             pr_url = pr_data.get("url")
             pr_title = pr_data.get("title")
             pr_state = pr_data.get("state")
-    except Exception:
-        # gh CLI may not be installed or no PR exists — fail gracefully
-        pass
+    except Exception as exc:
+        logger.warning("Failed to get PR info for %s: %s", project_path, exc)
 
     return GitInfo(
         branch=branch or None,

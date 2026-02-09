@@ -74,14 +74,7 @@ class AppConfig:
     debug: DebugConfig = field(default_factory=DebugConfig)
 
     def is_authorized(self, user_id: int) -> bool:
-        """Check whether a Telegram user is allowed to use the bot.
-
-        Args:
-            user_id: Telegram numeric user ID to check.
-
-        Returns:
-            True if the user ID appears in the authorized_users list.
-        """
+        """Check whether a Telegram user is allowed to use the bot."""
         return user_id in self.telegram.authorized_users
 
 

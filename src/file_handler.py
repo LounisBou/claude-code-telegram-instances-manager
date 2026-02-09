@@ -1,16 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 
 
 class FileHandler:
-    """Manage file uploads and session directories for Claude instances.
-
-    Args:
-        base_dir: Root directory under which per-session subdirectories
-            are created.
-    """
+    """Manage file uploads and session directories for Claude instances."""
 
     def __init__(self, base_dir: str = "/tmp/claude") -> None:
         """Initialize the file handler.
@@ -22,14 +18,14 @@ class FileHandler:
         self._base_dir = base_dir
 
     def _session_dir(self, project_name: str, session_id: int) -> str:
-        """Build the absolute path to a session's directory.
+        """Build the path to a session's directory.
 
         Args:
             project_name: Name of the project owning the session.
             session_id: Numeric identifier of the session.
 
         Returns:
-            Absolute path to the session directory (may not exist yet).
+            Path to the session directory (may not exist yet).
         """
         return os.path.join(self._base_dir, f"{project_name}_{session_id}")
 
@@ -41,7 +37,7 @@ class FileHandler:
             session_id: Numeric identifier of the session.
 
         Returns:
-            Absolute path to the existing upload directory.
+            Path to the existing upload directory.
         """
         d = self._session_dir(project_name, session_id)
         os.makedirs(d, exist_ok=True)
@@ -62,7 +58,7 @@ class FileHandler:
             filename: Original name of the file being uploaded.
 
         Returns:
-            Absolute path where the uploaded file should be written.
+            Path where the uploaded file should be written.
         """
         upload_dir = self.get_upload_dir(project_name, session_id)
         path = os.path.join(upload_dir, filename)
@@ -111,4 +107,5 @@ class FileHandler:
         try:
             return os.path.getsize(path)
         except OSError:
+            logging.getLogger(__name__).debug("Cannot stat file: %s", path)
             return None

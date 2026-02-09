@@ -33,9 +33,11 @@ sessions:
   max_per_user: 3                       # Maximum concurrent Claude sessions per user
   output_debounce_ms: 500               # Debounce interval for output forwarding (ms)
   output_max_buffer: 2000               # Maximum output buffer size (characters)
+  silence_warning_minutes: 10           # Minutes of silence before warning the user
 
 claude:
   command: "claude"                     # Path or name of the Claude Code CLI binary
+  env: {}                               # Extra environment variables for Claude processes
   default_args: []                      # Default arguments passed to every Claude invocation
   update_command: "claude update"       # Command used to update Claude Code CLI
 

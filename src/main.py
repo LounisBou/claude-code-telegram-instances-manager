@@ -84,11 +84,15 @@ def build_app(config_path: str, debug: bool = False) -> Application:
     app.bot_data["session_manager"] = session_manager
     app.bot_data["file_handler"] = file_handler
 
-    # Apply DebugIt decorator to key sync functions when debug mode is on
+    # Apply DebugIt decorator to key sync functions when debug mode is on.
+    # DebugIt wraps at the module attribute level — callers that import
+    # classify_screen_state by name won't see the wrapper; only callers
+    # accessing it via src.output_parser.classify_screen_state will.
     if config.debug.enabled:
         import src.output_parser as op
 
-        op.classify_screen_state = DebugIt()(op.classify_screen_state)
+        _original_classify = op.classify_screen_state
+        op.classify_screen_state = DebugIt()(_original_classify)
 
     # Command handlers
     app.add_handler(CommandHandler(["start", "new"], handle_start))
@@ -125,9 +129,6 @@ async def _on_startup(app: Application) -> None:
     Args:
         app: The Telegram application instance whose bot_data contains
             the Database dependency.
-
-    Returns:
-        None.
     """
     logger = logging.getLogger(__name__)
     db: Database = app.bot_data["db"]
@@ -158,9 +159,6 @@ async def main() -> None:
     Parses command-line arguments, sets up logging, builds the application,
     registers the startup hook, and runs the bot with long-polling until
     interrupted. On shutdown, gracefully stops the updater and the application.
-
-    Returns:
-        None.
     """
     args = _parse_args()
     logger = _setup_logging(args.debug)

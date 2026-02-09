@@ -579,6 +579,7 @@ def detect_file_paths(text: str) -> list[str]:
     if not text.strip():
         return []
     matches = _FILE_PATH_RE.findall(text)
+    # Min-length 5 filters out false-positive short paths like "/a.b"
     return [m for m in matches if len(m) > 5]
 
 
@@ -1067,8 +1068,8 @@ def split_message(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[str]
             TELEGRAM_MAX_LENGTH (4096).
 
     Returns:
-        List of message chunks. Returns [text] if it already fits,
-        or [""] if input is empty.
+        List of message chunks. Returns [text] if it already fits
+        (including empty strings).
     """
     if not text or len(text) <= max_length:
         return [text]

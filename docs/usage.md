@@ -25,7 +25,7 @@ A session follows a simple flow: **select project -> chat -> exit**.
 
 ## File Uploads
 
-You can send documents or photos directly in the Telegram chat. Uploaded files are saved to the active session's project directory, and the Claude process is notified of the new file so it can reference or process it.
+You can send documents or photos directly in the Telegram chat. Uploaded files are saved to a temporary session directory (under `/tmp/claude/`), and the Claude process is notified of the new file so it can reference or process it.
 
 ## Multi-Session Management
 
