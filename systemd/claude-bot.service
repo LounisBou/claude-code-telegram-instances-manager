@@ -1,0 +1,15 @@
+[Unit]
+Description=Claude Instance Manager Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=lounis
+WorkingDirectory=/opt/claude-instance-manager
+ExecStart=/opt/claude-instance-manager/.venv/bin/python -m src.main /opt/claude-instance-manager/config.yaml
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
