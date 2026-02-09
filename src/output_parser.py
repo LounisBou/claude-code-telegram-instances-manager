@@ -154,3 +154,55 @@ def detect_file_paths(text: str) -> list[str]:
         return []
     matches = _FILE_PATH_RE.findall(text)
     return [m for m in matches if len(m) > 5]
+
+
+_TG_ESCAPE_CHARS = r"_*[]()~`>#+-=|{}.!\\"
+_TG_ESCAPE_RE = re.compile(r"([" + re.escape(_TG_ESCAPE_CHARS) + r"])")
+
+_CODE_BLOCK_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+
+
+def _escape_telegram(text: str) -> str:
+    return _TG_ESCAPE_RE.sub(r"\\\1", text)
+
+
+def format_telegram(text: str) -> str:
+    if not text:
+        return ""
+
+    code_blocks: list[tuple[str, str]] = []
+    inline_codes: list[str] = []
+
+    def _save_block(match: re.Match) -> str:
+        idx = len(code_blocks)
+        code_blocks.append((match.group(1), match.group(2)))
+        return f"\x00CODEBLOCK{idx}\x00"
+
+    def _save_inline(match: re.Match) -> str:
+        idx = len(inline_codes)
+        inline_codes.append(match.group(1))
+        return f"\x00INLINE{idx}\x00"
+
+    result = _CODE_BLOCK_RE.sub(_save_block, text)
+    result = _INLINE_CODE_RE.sub(_save_inline, result)
+
+    result = _BOLD_RE.sub(lambda m: f"\x00BOLDOPEN{m.group(1)}\x00BOLDCLOSE", result)
+    result = _ITALIC_RE.sub(lambda m: f"\x00ITALICOPEN{m.group(1)}\x00ITALICCLOSE", result)
+
+    result = _escape_telegram(result)
+
+    result = result.replace("\x00BOLDOPEN", "*").replace("\x00BOLDCLOSE", "*")
+    result = result.replace("\x00ITALICOPEN", "_").replace("\x00ITALICCLOSE", "_")
+
+    for idx, (lang, code) in enumerate(code_blocks):
+        placeholder = _escape_telegram(f"\x00CODEBLOCK{idx}\x00")
+        result = result.replace(placeholder, f"```{lang}\n{code}```")
+
+    for idx, code in enumerate(inline_codes):
+        placeholder = _escape_telegram(f"\x00INLINE{idx}\x00")
+        result = result.replace(placeholder, f"`{code}`")
+
+    return result

@@ -7,6 +7,7 @@ from src.output_parser import (
     detect_context_usage,
     ContextUsage,
     detect_file_paths,
+    format_telegram,
 )
 
 
@@ -151,3 +152,37 @@ class TestDetectFilePaths:
     def test_ignores_short_paths(self):
         paths = detect_file_paths("Wrote to /tmp")
         assert paths == []
+
+
+class TestFormatTelegram:
+    def test_escapes_special_chars(self):
+        result = format_telegram("Hello! How are you?")
+        assert "\\!" in result
+
+    def test_preserves_code_blocks(self):
+        text = "Here is code:\n```python\nprint('hello')\n```"
+        result = format_telegram(text)
+        assert "```python" in result
+        assert "print('hello')" in result
+
+    def test_preserves_inline_code(self):
+        text = "Use the `print()` function"
+        result = format_telegram(text)
+        assert "`print()`" in result
+
+    def test_converts_bold(self):
+        text = "This is **bold** text"
+        result = format_telegram(text)
+        assert "*bold*" in result
+
+    def test_converts_italic(self):
+        text = "This is *italic* text"
+        result = format_telegram(text)
+        assert "_italic_" in result
+
+    def test_empty_string(self):
+        assert format_telegram("") == ""
+
+    def test_plain_text_with_dots(self):
+        result = format_telegram("version 1.2.3 is out")
+        assert "\\." in result
