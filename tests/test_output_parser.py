@@ -1,4 +1,4 @@
-from src.output_parser import strip_ansi
+from src.output_parser import strip_ansi, filter_spinners
 
 
 class TestStripAnsi:
@@ -28,3 +28,28 @@ class TestStripAnsi:
 
     def test_strips_erase_line(self):
         assert strip_ansi("\x1b[2Ksome text") == "some text"
+
+
+class TestFilterSpinners:
+    def test_collapses_braille_spinners(self):
+        text = "⠋ Working...\n⠙ Working...\n⠹ Working...\n⠸ Working..."
+        result = filter_spinners(text)
+        assert result == "Working..."
+
+    def test_preserves_non_spinner_text(self):
+        text = "Hello world\nThis is normal text"
+        assert filter_spinners(text) == text
+
+    def test_collapses_dots_spinner(self):
+        text = "Loading.\nLoading..\nLoading..."
+        result = filter_spinners(text)
+        assert result == "Loading..."
+
+    def test_empty_string(self):
+        assert filter_spinners("") == ""
+
+    def test_mixed_content(self):
+        text = "Starting\n⠋ Thinking...\n⠙ Thinking...\nDone!"
+        result = filter_spinners(text)
+        assert "Done!" in result
+        assert result.count("Thinking") == 1
