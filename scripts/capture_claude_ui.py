@@ -26,6 +26,10 @@ CWD = os.path.expanduser("~/dev/claude-instance-manager")
 ROWS, COLS = 40, 120
 CAPTURE_DIR = Path(__file__).parent / "captures"
 
+# Delay between typing text and pressing Enter.
+# Prevents the TUI from treating text+Enter as a paste (multi-line input).
+SUBMIT_DELAY = 0.15
+
 
 class CaptureSession:
     """Manages a Claude Code session with detailed UI state capture."""
@@ -87,8 +91,11 @@ class CaptureSession:
                     self.raw_log.extend(chunk)
                     self.stream.feed(chunk.decode("utf-8", errors="replace"))
                     total += len(chunk)
-            except (pexpect.TIMEOUT, pexpect.EOF):
+                except pexpect.TIMEOUT:
                 pass
+            except pexpect.EOF:
+                self.log("eof", "Child process has exited")
+                break
         return total
 
     def wait_stable(self, max_wait=60, stable_for=6, min_wait=3):
@@ -145,12 +152,22 @@ class CaptureSession:
             data = data.encode("utf-8")
         self.child.send(data)
 
-    def send_line(self, text, label=None):
-        """Send text + Enter."""
-        self.log("send_line", label or text[:60])
+    def submit(self, text, label=None):
+        """Type text, then press Enter separately (like a real user).
+
+        Sending text+Enter as a single write makes Ink treat it as a paste,
+        adding the Enter as a newline in multi-line input instead of submitting.
+        """
+        label = label or text[:60]
+        self.log("submit", label)
         if isinstance(text, str):
             text = text.encode("utf-8")
-        self.child.sendline(text)
+        # Step 1: type the text
+        self.child.send(text)
+        # Step 2: small delay so TUI processes the text
+        time.sleep(SUBMIT_DELAY)
+        # Step 3: press Enter to submit
+        self.child.send(b"\r")
 
     def send_key(self, key_name):
         """Send special keys."""
@@ -166,69 +183,92 @@ class CaptureSession:
         self.log("send_key", key_name)
         self.child.send(data)
 
-    def wait_for_approval(self, max_wait=90):
-        """Wait for tool approval prompt, take snapshot, approve it."""
+    def wait_for_response(self, max_wait=90, stable_for=6, snap_prefix="resp"):
+        """Wait for Claude to respond. Captures streaming snapshots.
+
+        Returns True if screen changed (response received), False if timeout.
+        """
         start = time.time()
         prev = self.screen_text()
+        snap_n = 0
+        last_change = time.time()
+
         while time.time() - start < max_wait:
-            self.feed(1)
+            self.feed(0.5)
             curr = self.screen_text()
             if curr != prev:
+                snap_n += 1
+                last_change = time.time()
+                if snap_n <= 15:
+                    self.snapshot(f"{snap_prefix}_{snap_n}")
+                prev = curr
+            else:
+                since_change = time.time() - last_change
+                if snap_n > 0 and since_change > stable_for:
+                    break
+
+        return snap_n > 0
+
+    def wait_for_approval_and_response(self, max_wait=90, stable_for=6, snap_prefix="tool"):
+        """Wait for possible tool approval prompt, approve it, wait for response."""
+        start = time.time()
+        prev = self.screen_text()
+        approved = False
+        snap_n = 0
+        last_change = time.time()
+
+        while time.time() - start < max_wait:
+            self.feed(0.5)
+            curr = self.screen_text()
+            if curr != prev:
+                snap_n += 1
+                last_change = time.time()
+                if snap_n <= 10:
+                    self.snapshot(f"{snap_prefix}_{snap_n}")
                 prev = curr
                 lower = curr.lower()
-                # Tool approval patterns
-                if any(k in lower for k in [
-                    "[y/n]", "(y)", "allow", "approve",
-                    "do you want", "permission",
+
+                if not approved and any(k in lower for k in [
+                    "[y/n]", "(y)", "allow", "approve", "permission",
                 ]):
-                    self.dump("tool_approval_detected")
-                    self.log("tool_approval", "detected — sending Y")
-                    self.send_line("y", label="approve tool")
+                    self.dump(f"{snap_prefix}_approval")
+                    self.log("tool_approval", "detected — approving")
+                    self.submit("y", label="approve tool")
+                    approved = True
                     self.feed(2)
-                    return True
+            else:
+                since_change = time.time() - last_change
+                if snap_n > 0 and since_change > stable_for:
+                    break
+                elif snap_n == 0 and (time.time() - start) > 25:
+                    break
 
-            # Check if response came without approval (auto-approved or no tool)
-            elapsed = time.time() - start
-            if elapsed > 20:
-                self.log("no_approval", "no tool prompt seen after 20s")
-                return False
-
-        self.log("timeout", "wait_for_approval timed out")
-        return False
+        return snap_n > 0
 
     def save(self, session_name):
         """Save all capture data to disk."""
         outdir = CAPTURE_DIR / session_name
         outdir.mkdir(parents=True, exist_ok=True)
 
-        # Raw PTY bytes
         (outdir / "raw_pty.bin").write_bytes(bytes(self.raw_log))
-
-        # Snapshots
         (outdir / "snapshots.json").write_text(
             json.dumps(self.snapshots, indent=2, ensure_ascii=False)
         )
-
-        # Events
         (outdir / "events.json").write_text(
             json.dumps(self.events, indent=2, ensure_ascii=False)
         )
 
-        # Human-readable report
         with open(outdir / "report.txt", "w") as f:
-            f.write(f"Claude Code UI Capture Report\n")
-            f.write(f"{'=' * 50}\n")
+            f.write(f"Claude Code UI Capture Report\n{'=' * 50}\n")
             f.write(f"Session: {session_name}\n")
             f.write(f"Date: {datetime.now().isoformat()}\n")
             f.write(f"Terminal: {ROWS}x{COLS}\n")
             f.write(f"Raw bytes: {len(self.raw_log)}\n")
             f.write(f"Snapshots: {len(self.snapshots)}\n")
             f.write(f"Events: {len(self.events)}\n\n")
-
             f.write("EVENTS:\n")
             for ev in self.events:
                 f.write(f"  [{ev['t']:7.2f}s] {ev['type']}: {ev['detail']}\n")
-
             f.write(f"\nSNAPSHOTS:\n")
             for snap in self.snapshots:
                 f.write(f"\n--- {snap['label']} (t={snap['t']:.2f}s) ---\n")
@@ -243,168 +283,138 @@ class CaptureSession:
 
     def close(self):
         try:
-            self.send_line("/exit", label="/exit")
+            self.submit("/exit", label="/exit")
             time.sleep(3)
-            self.child.close()
-        except Exception:
-            pass
+        except (pexpect.EOF, pexpect.TIMEOUT, OSError) as e:
+            print(f"  Warning: could not send /exit to Claude: {e}")
+        try:
+            if self.child is not None:
+                self.child.close()
+        except (pexpect.ExceptionPexpect, OSError) as e:
+            print(f"  Warning: could not close child process: {e}")
+
+
+# ─── Smoke Test ──────────────────────────────────────────────────────
+
+def run_smoke_test(s):
+    """Quick test: submit one message, verify Claude responds.
+
+    Returns True if working, False if submission is broken.
+    """
+    print("\n┌──────────────────────────────────────────┐")
+    print("│  SMOKE TEST: Verifying submission works   │")
+    print("└──────────────────────────────────────────┘")
+
+    # Record screen before sending
+    before = s.screen_text()
+    before_lines = set(line.rstrip() for line in s.screen.display)
+    before_usage_line = None
+    for line in s.screen.display:
+        if "Usage:" in line:
+            before_usage_line = line.rstrip()
+
+    s.submit("Say just the word 'ping'.")
+
+    # Wait up to 45s for screen to change significantly
+    # "significantly" = new lines appear that weren't in the input area
+    start = time.time()
+    got_response = False
+    while time.time() - start < 45:
+        s.feed(1)
+        curr = s.screen_text()
+        if curr == before:
+            continue
+
+        # Check for signs of a real response:
+        # 1. Usage % changed (means tokens were consumed)
+        # 2. New content appeared beyond the input line
+        # 3. The input line was replaced by response text
+        for line in s.screen.display:
+            stripped = line.rstrip()
+            if not stripped:
+                continue
+            low = stripped.lower()
+            # Response text containing "ping" or "pong"
+            if "ping" in low and "❯" not in stripped:
+                got_response = True
+                break
+            # Any line that looks like Claude's response (not input, not UI)
+            if stripped and "❯" not in stripped and "───" not in stripped and "│" not in stripped and "▐" not in stripped and "▝" not in stripped and "▘" not in stripped:
+                # Check if it's a new line not in the startup screen
+                if stripped not in before_lines:
+                    got_response = True
+                    break
+
+        # Also check if usage changed
+        for line in s.screen.display:
+            if "Usage:" in line and before_usage_line and line.rstrip() != before_usage_line:
+                got_response = True
+                break
+
+        if got_response:
+            break
+
+    s.dump("smoke_test_result")
+
+    if got_response:
+        print("  ✓ SMOKE TEST PASSED: Claude responded!")
+        s.log("smoke_test", "PASSED")
+        # Wait for full response to settle
+        s.wait_stable(max_wait=30, stable_for=5)
+        return True
+    else:
+        print("  ✗ SMOKE TEST FAILED: No response detected after 45s.")
+        print("    Messages may not be submitting correctly.")
+        print("    Check the screen dump above for clues.")
+        s.log("smoke_test", "FAILED")
+        return False
 
 
 # ─── Automated Scenario ─────────────────────────────────────────────
 
 def run_automated(s):
-    """Run the automated capture scenario."""
+    """Run the full automated capture scenario (steps 1-5)."""
 
-    # ── Step 1: Startup ──
+    # ── Step 1: File read (tool approval) ──
     print("\n┌──────────────────────────────────────────┐")
-    print("│  Step 1/8: Startup                       │")
+    print("│  Step 1/5: File Read (tool approval)      │")
     print("└──────────────────────────────────────────┘")
-    s.feed(12)
-    s.dump("startup_raw")
-
-    # ── Step 2: Trust prompt ──
-    print("\n┌──────────────────────────────────────────┐")
-    print("│  Step 2/8: Trust Prompt                   │")
-    print("└──────────────────────────────────────────┘")
-    if s.screen_has("trust", "Yes, I trust", "trust this folder"):
-        s.dump("trust_prompt")
-        s.send_raw(b"\r", label="confirm trust (\\r)")
-        s.feed(10)
-        s.dump("after_trust")
-    else:
-        s.log("skip", "no trust prompt detected")
-
-    # Wait for fully ready
-    s.wait_stable(max_wait=20, stable_for=4)
-    s.dump("ready_state")
-
-    # ── Step 3: Idle state ──
-    print("\n┌──────────────────────────────────────────┐")
-    print("│  Step 3/8: Idle State (prompt + status)   │")
-    print("└──────────────────────────────────────────┘")
-    s.dump("idle_state")
-
-    # ── Step 4: Simple question (streaming) ──
-    print("\n┌──────────────────────────────────────────┐")
-    print("│  Step 4/8: Simple Question (streaming)    │")
-    print("└──────────────────────────────────────────┘")
-    s.send_line("What is 2+2? Reply with just the number, nothing else.")
-
-    # Capture streaming with frequent snapshots
-    start = time.time()
-    prev = s.screen_text()
-    snap_n = 0
-    while time.time() - start < 60:
-        s.feed(0.3)
-        curr = s.screen_text()
-        if curr != prev:
-            snap_n += 1
-            # Capture first 15 screen changes to see streaming progression
-            if snap_n <= 15:
-                s.snapshot(f"streaming_{snap_n}")
-            prev = curr
-        else:
-            # If stable for 6s after at least one change, we're done
-            if snap_n > 0:
-                s.feed(5)
-                if s.screen_text() == curr:
-                    break
-
-    s.dump("simple_response_final")
-
-    # ── Step 5: File read (tool approval) ──
-    print("\n┌──────────────────────────────────────────┐")
-    print("│  Step 5/8: File Read (tool approval)      │")
-    print("└──────────────────────────────────────────┘")
-    s.send_line("Read the file pyproject.toml and tell me the project name only.")
-
-    # Watch for tool approval or direct response
-    start = time.time()
-    prev = s.screen_text()
-    approved = False
-    snap_n = 0
-    while time.time() - start < 90:
-        s.feed(0.5)
-        curr = s.screen_text()
-        if curr != prev:
-            snap_n += 1
-            if snap_n <= 10:
-                s.snapshot(f"tool_read_{snap_n}")
-            prev = curr
-            lower = curr.lower()
-
-            # Check for tool approval
-            if not approved and any(k in lower for k in [
-                "[y/n]", "(y)", "allow", "approve", "permission",
-            ]):
-                s.dump("file_read_approval")
-                s.send_line("y", label="approve file read")
-                approved = True
-                s.feed(2)
-                s.snapshot("after_approve_file_read")
-        else:
-            elapsed = time.time() - start
-            if elapsed > 15 and snap_n > 0:
-                s.feed(5)
-                if s.screen_text() == curr:
-                    break
-
+    s.submit("Read the file pyproject.toml and tell me the project name only.")
+    s.wait_for_approval_and_response(snap_prefix="tool_read")
     s.dump("file_read_final")
 
-    # ── Step 6: Bash command (spinner/execution) ──
+    # ── Step 2: Bash command (spinner/execution) ──
     print("\n┌──────────────────────────────────────────┐")
-    print("│  Step 6/8: Bash Command (spinner)         │")
+    print("│  Step 2/5: Bash Command (spinner)         │")
     print("└──────────────────────────────────────────┘")
-    s.send_line("Run this bash command: echo 'capture_test_ok'. Show only the output.")
-
-    start = time.time()
-    prev = s.screen_text()
-    approved = False
-    snap_n = 0
-    while time.time() - start < 90:
-        s.feed(0.5)
-        curr = s.screen_text()
-        if curr != prev:
-            snap_n += 1
-            if snap_n <= 10:
-                s.snapshot(f"bash_{snap_n}")
-            prev = curr
-            lower = curr.lower()
-
-            if not approved and any(k in lower for k in [
-                "[y/n]", "(y)", "allow", "approve", "permission",
-            ]):
-                s.dump("bash_approval")
-                s.send_line("y", label="approve bash")
-                approved = True
-                s.feed(2)
-                s.snapshot("after_approve_bash")
-        else:
-            elapsed = time.time() - start
-            if elapsed > 15 and snap_n > 0:
-                s.feed(5)
-                if s.screen_text() == curr:
-                    break
-
+    s.submit("Run this bash command: echo 'capture_test_ok'. Show only the output.")
+    s.wait_for_approval_and_response(snap_prefix="bash")
     s.dump("bash_final")
 
-    # ── Step 7: Follow-up (prompt reappearance + status bar) ──
+    # ── Step 3: Follow-up (prompt reappearance) ──
     print("\n┌──────────────────────────────────────────┐")
-    print("│  Step 7/8: Follow-up (prompt + status)    │")
+    print("│  Step 3/5: Follow-up (prompt reappear)    │")
     print("└──────────────────────────────────────────┘")
-    s.send_line("Say 'done'.")
-    s.wait_stable(max_wait=45, stable_for=6)
+    s.submit("Say 'done'.")
+    s.wait_for_response(snap_prefix="followup")
     s.dump("followup_final")
 
-    # ── Step 8: Status bar detail ──
+    # ── Step 4: Status bar ──
     print("\n┌──────────────────────────────────────────┐")
-    print("│  Step 8/8: Status Bar Detail              │")
+    print("│  Step 4/5: Status Bar Detail              │")
     print("└──────────────────────────────────────────┘")
-    # Just a detailed dump with focus on the status bar line
     lines = s.dump("status_bar_detail")
     for entry in lines:
         if "│" in entry["text"] and ("%" in entry["text"] or "usage" in entry["text"].lower()):
             s.log("status_bar", entry["text"])
+
+    # ── Step 5: Longer response (streaming) ──
+    print("\n┌──────────────────────────────────────────┐")
+    print("│  Step 5/5: Longer response (streaming)    │")
+    print("└──────────────────────────────────────────┘")
+    s.submit("List the files in src/ directory. Use the Read tool or Bash, your choice.")
+    s.wait_for_approval_and_response(max_wait=120, snap_prefix="long")
+    s.dump("long_response_final")
 
     print("\n  ✓ Automated scenario complete.")
 
@@ -430,20 +440,15 @@ def run_manual(s):
 
     manual_snap_n = 0
 
-    # Background reader: keep feeding PTY data between user inputs
     while True:
-        # Read any pending PTY data
         s.feed(0.5)
 
-        # Check for user input (non-blocking)
         print("\n  manual> ", end="", flush=True)
         try:
-            # Wait for user input with timeout so we keep reading PTY
             while True:
                 ready, _, _ = select.select([sys.stdin], [], [], 1.0)
                 if ready:
                     break
-                # Keep reading PTY data while waiting for user
                 s.feed(0.3)
 
             user_input = sys.stdin.readline().strip()
@@ -486,32 +491,11 @@ def run_manual(s):
             s.feed(2)
             s.dump("after_ctrl_c")
         else:
-            s.send_line(user_input)
-            # Capture response with streaming snapshots
-            start = time.time()
-            prev = s.screen_text()
-            snap_n = 0
-            while time.time() - start < 120:
-                s.feed(0.5)
-                curr = s.screen_text()
-                if curr != prev:
-                    snap_n += 1
-                    if snap_n <= 10:
-                        s.snapshot(f"manual_response_{manual_snap_n}_{snap_n}")
-                    prev = curr
-                    lower = curr.lower()
-                    # Auto-detect approval prompts
-                    if any(k in lower for k in ["[y/n]", "(y)", "allow", "approve"]):
-                        s.dump("manual_approval_detected")
-                        print("  ⚠ Tool approval detected! Type 'y' or 'n':")
-                        break
-                else:
-                    elapsed = time.time() - start
-                    if elapsed > 8 and snap_n > 0:
-                        s.feed(4)
-                        if s.screen_text() == curr:
-                            break
-
+            s.submit(user_input)
+            # Wait for response
+            s.wait_for_approval_and_response(
+                max_wait=120, snap_prefix=f"manual_{manual_snap_n}"
+            )
             manual_snap_n += 1
             s.dump(f"manual_result_{manual_snap_n}")
 
@@ -535,8 +519,33 @@ def main():
 
     try:
         s.spawn()
-        run_automated(s)
-        run_manual(s)
+
+        # ── Startup ──
+        print("\n┌──────────────────────────────────────────┐")
+        print("│  Startup                                 │")
+        print("└──────────────────────────────────────────┘")
+        s.feed(12)
+        s.dump("startup_raw")
+
+        # Handle trust prompt
+        if s.screen_has("trust", "Yes, I trust", "trust this folder"):
+            s.dump("trust_prompt")
+            s.send_raw(b"\r", label="confirm trust (\\r)")
+            s.feed(10)
+            s.dump("after_trust")
+
+        s.wait_stable(max_wait=20, stable_for=4)
+        s.dump("idle_state")
+
+        # ── Smoke test before running full scenario ──
+        if not run_smoke_test(s):
+            print("\n  ⚠ Smoke test failed. Skipping automated scenario.")
+            print("    Dropping into manual mode so you can debug.")
+            run_manual(s)
+        else:
+            run_automated(s)
+            run_manual(s)
+
     except KeyboardInterrupt:
         print("\n\n  Interrupted.")
     except Exception as e:
