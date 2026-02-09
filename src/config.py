@@ -56,6 +56,13 @@ class DatabaseConfig:
 
 
 @dataclass
+class DebugConfig:
+    """Debug mode settings."""
+
+    enabled: bool = False
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsections."""
 
@@ -64,6 +71,7 @@ class AppConfig:
     sessions: SessionsConfig
     claude: ClaudeConfig
     database: DatabaseConfig
+    debug: DebugConfig = field(default_factory=DebugConfig)
 
     def is_authorized(self, user_id: int) -> bool:
         """Check whether a Telegram user is allowed to use the bot.
@@ -139,5 +147,8 @@ def load_config(path: str) -> AppConfig:
         ),
         database=DatabaseConfig(
             path=database_raw.get("path", "data/sessions.db"),
+        ),
+        debug=DebugConfig(
+            enabled=bool((raw.get("debug", {}) or {}).get("enabled", False)),
         ),
     )

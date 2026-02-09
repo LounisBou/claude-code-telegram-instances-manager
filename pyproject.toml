@@ -2,6 +2,14 @@
 name = "claude-instance-manager"
 version = "0.1.0"
 requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot>=21.0",
+    "pyte>=0.8",
+    "pexpect>=4.9",
+    "aiosqlite>=0.19",
+    "pyyaml>=6.0",
+    "pydevmate>=0.0.3",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
