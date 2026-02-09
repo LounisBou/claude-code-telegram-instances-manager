@@ -1,66 +1,122 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
-# Cursor forward: ESC[NC — replace with N spaces (Claude uses ESC[1C between words)
-_CURSOR_FORWARD_RE = re.compile(r"\x1b\[(\d+)C")
+import pyte
 
-# All other ANSI sequences: CSI, OSC, SGR — remove entirely
-_ANSI_FULL_RE = re.compile(
-    r"\x1b"
-    r"(?:"
-    r"\[[0-9;]*[a-zA-Z]"       # CSI sequences: ESC [ ... letter
-    r"|\][^\x07]*\x07"         # OSC sequences: ESC ] ... BEL
-    r"|\[[0-9;]*m"             # SGR (color) sequences
-    r"|\[\?[0-9;]*[a-zA-Z]"   # Private mode sequences: ESC[?...
-    r"|>[0-9]*[a-zA-Z]"        # DEC sequences: ESC>...
-    r"|<[a-zA-Z]"              # ESC< sequences
-    r")"
+
+class TerminalEmulator:
+    """Virtual terminal using pyte to reconstruct screen from raw PTY bytes.
+
+    This is the core of output parsing: instead of regex-stripping ANSI codes,
+    we feed raw PTY bytes into a real terminal emulator and read the screen buffer.
+    """
+
+    def __init__(self, rows: int = 40, cols: int = 120):
+        self.rows = rows
+        self.cols = cols
+        self.screen = pyte.Screen(cols, rows)
+        self.stream = pyte.Stream(self.screen)
+        self._prev_display: list[str] = [""] * rows
+
+    def feed(self, data: bytes | str) -> None:
+        """Feed raw PTY bytes into the terminal emulator."""
+        if isinstance(data, bytes):
+            data = data.decode("utf-8", errors="replace")
+        self.stream.feed(data)
+
+    def get_display(self) -> list[str]:
+        """Return all screen lines (right-stripped)."""
+        return [line.rstrip() for line in self.screen.display]
+
+    def get_text(self) -> str:
+        """Return full screen content as text, blank lines collapsed."""
+        lines = self.get_display()
+        text = "\n".join(lines)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def get_changes(self) -> list[str]:
+        """Return lines that changed since last call to get_changes()."""
+        current = self.get_display()
+        changed = []
+        for i, (cur, prev) in enumerate(zip(current, self._prev_display)):
+            if cur != prev and cur.strip():
+                changed.append(cur)
+        self._prev_display = list(current)
+        return changed
+
+    def get_new_content(self) -> str:
+        """Return changed lines as a single string."""
+        lines = self.get_changes()
+        return "\n".join(lines).strip()
+
+    def reset(self) -> None:
+        """Reset the terminal to initial state."""
+        self.screen.reset()
+        self._prev_display = [""] * self.rows
+
+
+# --- UI element classification ---
+
+_SEPARATOR_RE = re.compile(r"^[─━═]{4,}$")
+_STATUS_BAR_RE = re.compile(
+    r"(?P<project>[\w\-]+)\s*│\s*"
+    r"(?:⎇\s*(?P<branch>[\w\-/]+))?\s*"
+    r"(?:⇡\d+\s*)?│?\s*"
+    r"(?:Usage:\s*(?P<usage>\d+)%)?"
 )
-
-# Terminal control sequences to strip before any other processing
-_TERMINAL_MODES_RE = re.compile(
-    r"\x1b\[\?(?:2026|2004|1004|25|1)[hlHL]"  # Synchronized output, bracketed paste, etc.
-)
-_SCREEN_CLEAR_RE = re.compile(r"\x1b\[2J|\x1b\[3J|\x1b\[H")
-_ERASE_LINE_RE = re.compile(r"\x1b\[2?K")
-_CURSOR_UP_RE = re.compile(r"\x1b\[\d*A")
+_PROMPT_MARKER_RE = re.compile(r"^❯\s")
+_BOX_CHAR_RE = re.compile(r"[╭╮╰╯│├┤┬┴┼]")
+_LOGO_RE = re.compile(r"[▐▛▜▌▝▘█▞▚]")
 
 
-def strip_ansi(text: str) -> str:
-    """Strip ANSI escape codes, converting cursor-forward to spaces."""
-    # First convert cursor-forward to spaces (ESC[1C -> " ")
-    text = _CURSOR_FORWARD_RE.sub(lambda m: " " * int(m.group(1)), text)
-    # Then remove everything else
-    return _ANSI_FULL_RE.sub("", text)
+def classify_line(line: str) -> str:
+    """Classify a screen line as ui element or content.
+
+    Returns: 'separator', 'status_bar', 'prompt', 'box', 'logo', 'empty', or 'content'.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return "empty"
+    if _SEPARATOR_RE.match(stripped):
+        return "separator"
+    if _STATUS_BAR_RE.search(stripped):
+        return "status_bar"
+    if _PROMPT_MARKER_RE.match(stripped):
+        return "prompt"
+    if _BOX_CHAR_RE.search(stripped) and len(stripped) > 10:
+        # Box drawing lines (welcome screen)
+        box_chars = sum(1 for c in stripped if _BOX_CHAR_RE.match(c))
+        if box_chars >= 2:
+            return "box"
+    if _LOGO_RE.search(stripped):
+        logo_chars = sum(1 for c in stripped if _LOGO_RE.match(c))
+        if logo_chars >= 3:
+            return "logo"
+    return "content"
 
 
-def clean_terminal_output(text: str) -> str:
-    """Full terminal output cleanup: strip all ANSI, normalize whitespace, remove UI chrome."""
-    # Remove terminal mode switches
-    text = _TERMINAL_MODES_RE.sub("", text)
-    # Remove screen clears
-    text = _SCREEN_CLEAR_RE.sub("", text)
-    # Remove erase-line sequences
-    text = _ERASE_LINE_RE.sub("", text)
-    # Remove cursor-up (used for status bar repositioning)
-    text = _CURSOR_UP_RE.sub("", text)
-    # Strip ANSI (converts cursor-forward to spaces)
-    text = strip_ansi(text)
-    # Normalize \r\r\n and \r\n to \n
-    text = text.replace("\r\r\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
-    # Collapse multiple blank lines
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+def extract_content(lines: list[str]) -> str:
+    """Extract meaningful content from screen lines, filtering UI chrome."""
+    content_lines = []
+    for line in lines:
+        if classify_line(line) == "content":
+            content_lines.append(line.strip())
+    return "\n".join(content_lines).strip()
 
+
+# --- Spinner filtering ---
 
 _BRAILLE_SPINNER = re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*")
 _DOTS_SPINNER = re.compile(r"^(.+?)\.{1,3}$", re.MULTILINE)
 
 
 def filter_spinners(text: str) -> str:
+    if not text:
+        return ""
     lines = text.split("\n")
     seen_spinners: dict[str, str] = {}
     result_lines = []
@@ -90,6 +146,8 @@ def filter_spinners(text: str) -> str:
     return final_text.strip() if final_text.strip() else ""
 
 
+# --- Prompt detection ---
+
 class PromptType(Enum):
     YES_NO = "yes_no"
     MULTIPLE_CHOICE = "multiple_choice"
@@ -105,6 +163,7 @@ class DetectedPrompt:
 
 _YES_NO_RE = re.compile(r"\[([Yy])/([Nn])\]|\[([Nn])/([Yy])\]")
 _MULTI_CHOICE_RE = re.compile(r"^\s*(\d+)\.\s+(.+)$", re.MULTILINE)
+_SELECTION_MENU_RE = re.compile(r"❯\s*(\d+)\.\s+(.+)")
 
 
 def detect_prompt(text: str) -> DetectedPrompt | None:
@@ -130,6 +189,24 @@ def detect_prompt(text: str) -> DetectedPrompt | None:
             raw_text=text,
         )
 
+    # Selection menu: ❯ 1. Option / 2. Option
+    sel_matches = _SELECTION_MENU_RE.findall(text)
+    other_choices = _MULTI_CHOICE_RE.findall(text)
+    all_choices = sel_matches + other_choices
+    if len(all_choices) >= 2:
+        seen = {}
+        options = []
+        for num, label in all_choices:
+            if num not in seen:
+                seen[num] = True
+                options.append(label.strip())
+        if len(options) >= 2:
+            return DetectedPrompt(
+                prompt_type=PromptType.MULTIPLE_CHOICE,
+                options=options,
+                raw_text=text,
+            )
+
     choices = _MULTI_CHOICE_RE.findall(text)
     if len(choices) >= 2:
         options = [label.strip() for _, label in choices]
@@ -142,6 +219,8 @@ def detect_prompt(text: str) -> DetectedPrompt | None:
     return None
 
 
+# --- Context usage detection ---
+
 @dataclass
 class ContextUsage:
     percentage: int | None = None
@@ -149,9 +228,7 @@ class ContextUsage:
     raw_text: str = ""
 
 
-# Real Claude status bar format: "Usage: 32% ███▎░░░░░░"
 _USAGE_PCT_RE = re.compile(r"Usage:\s*(\d+)%", re.IGNORECASE)
-# Also handle generic context patterns
 _CONTEXT_PCT_RE = re.compile(r"(?:context|ctx)[:\s]*(\d+)\s*%", re.IGNORECASE)
 _CONTEXT_TOKENS_RE = re.compile(r"(\d+)k\s*/\s*(\d+)k\s*tokens", re.IGNORECASE)
 _COMPACT_RE = re.compile(r"compact|context.*(?:full|almost|running out)", re.IGNORECASE)
@@ -186,20 +263,14 @@ def detect_context_usage(text: str) -> ContextUsage | None:
     )
 
 
+# --- Status bar parsing ---
+
 @dataclass
 class StatusBar:
     project: str | None = None
     branch: str | None = None
     usage_pct: int | None = None
     raw_text: str = ""
-
-
-_STATUS_BAR_RE = re.compile(
-    r"(?P<project>[\w\-]+)\s*│\s*"
-    r"(?:⎇\s*(?P<branch>[\w\-/]+))?\s*"
-    r"(?:⇡\d+\s*)?│?\s*"
-    r"(?:Usage:\s*(?P<usage>\d+)%)?"
-)
 
 
 def parse_status_bar(text: str) -> StatusBar | None:
@@ -225,6 +296,8 @@ def parse_status_bar(text: str) -> StatusBar | None:
     )
 
 
+# --- File path detection ---
+
 _FILE_PATH_RE = re.compile(
     r"(?:wrote to|saved|created|generated|output)\s+"
     r"(\/[\w./\-]+\.\w+)",
@@ -238,6 +311,8 @@ def detect_file_paths(text: str) -> list[str]:
     matches = _FILE_PATH_RE.findall(text)
     return [m for m in matches if len(m) > 5]
 
+
+# --- Telegram formatting ---
 
 _TG_ESCAPE_CHARS = r"_*[]()~`>#+-=|{}.!\\"
 _TG_ESCAPE_RE = re.compile(r"([" + re.escape(_TG_ESCAPE_CHARS) + r"])")
@@ -321,3 +396,39 @@ def split_message(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[str]
         remaining = remaining[split_at:].lstrip()
 
     return chunks if chunks else [""]
+
+
+# --- Legacy helpers (kept for backward compat, delegate to pyte internally) ---
+
+# Cursor forward: ESC[NC — replace with N spaces
+_CURSOR_FORWARD_RE = re.compile(r"\x1b\[(\d+)C")
+
+# All other ANSI sequences
+_ANSI_FULL_RE = re.compile(
+    r"\x1b"
+    r"(?:"
+    r"\[[0-9;]*[a-zA-Z]"
+    r"|\][^\x07]*\x07"
+    r"|\[[0-9;]*m"
+    r"|\[\?[0-9;]*[a-zA-Z]"
+    r"|>[0-9]*[a-zA-Z]"
+    r"|<[a-zA-Z]"
+    r")"
+)
+
+
+def strip_ansi(text: str) -> str:
+    """Strip ANSI escape codes, converting cursor-forward to spaces."""
+    text = _CURSOR_FORWARD_RE.sub(lambda m: " " * int(m.group(1)), text)
+    return _ANSI_FULL_RE.sub("", text)
+
+
+def clean_terminal_output(text: str) -> str:
+    """Clean raw terminal output using pyte terminal emulator.
+
+    Feeds the raw text through a virtual terminal and returns the
+    reconstructed screen content with UI chrome filtered out.
+    """
+    emu = TerminalEmulator()
+    emu.feed(text)
+    return emu.get_text()

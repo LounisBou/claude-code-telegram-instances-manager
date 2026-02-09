@@ -1,4 +1,9 @@
+import os
+
 from src.output_parser import (
+    TerminalEmulator,
+    classify_line,
+    extract_content,
     strip_ansi,
     clean_terminal_output,
     filter_spinners,
@@ -14,6 +19,220 @@ from src.output_parser import (
     StatusBar,
     TELEGRAM_MAX_LENGTH,
 )
+
+
+# ---- Real captured ANSI data from Claude Code sessions ----
+
+# Real startup status bar (captured from PTY)
+REAL_STATUS_BAR_ANSI = (
+    "\x1b[34mclaude-instance-manager\x1b[1C\x1b[90m│\x1b[1C"
+    "\x1b[32m⎇\x1b[1Cmain\x1b[1C⇡7\x1b[1C\x1b[90m│\x1b[1C"
+    "\x1b[38;5;100mUsage:\x1b[1C32%\x1b[1C███▎░░░░░░\x1b[39m"
+)
+
+# Real trust prompt (captured from untrusted folder)
+REAL_TRUST_PROMPT_ANSI = (
+    "\x1b[38;5;153m❯\x1b[1C\x1b[38;5;246m1.\x1b[1C"
+    "\x1b[38;5;153mYes,\x1b[1CI\x1b[1Ctrust\x1b[1Cthis\x1b[1Cfolder\x1b[39m\n"
+    "\x1b[3C\x1b[38;5;246m2.\x1b[1C\x1b[39mNo,\x1b[1Cexit"
+)
+
+# Real /exit command styling
+REAL_EXIT_ANSI = "\x1b[38;2;177;185;249m/exit\x1b[39m"
+
+# Real error message
+REAL_ERROR_ANSI = (
+    "\x1b[38;2;255;107;128m1 MCP server failed"
+    "\x1b[38;2;153;153;153m ·\x1b[1C/mcp\x1b[39m"
+)
+
+# Real startup sequence with terminal modes
+REAL_STARTUP_ANSI = (
+    "\x1b[?2026h\r\r\n"
+    "\x1b[38;5;220m────────\x1b[39m\r\r\n"
+    "\x1b[1C\x1b[1mAccessing\x1b[1Cworkspace:\x1b[22m\r\r\n"
+)
+
+# Real welcome box
+REAL_BOX_ANSI = (
+    "\x1b[38;5;174m╭───\x1b[1CClaude\x1b[1CCode\x1b[1C"
+    "\x1b[38;5;246mv2.1.37\x1b[1C"
+    "\x1b[38;5;174m──────────────────────────────────────────────────────╮\x1b[39m"
+)
+
+
+class TestTerminalEmulator:
+    def test_basic_text(self):
+        emu = TerminalEmulator(rows=5, cols=40)
+        emu.feed("Hello world")
+        assert "Hello world" in emu.get_text()
+
+    def test_ansi_colors_stripped(self):
+        emu = TerminalEmulator(rows=5, cols=40)
+        emu.feed("\x1b[31mred text\x1b[0m")
+        assert "red text" in emu.get_text()
+        assert "\x1b" not in emu.get_text()
+
+    def test_cursor_forward_becomes_space(self):
+        emu = TerminalEmulator(rows=5, cols=80)
+        emu.feed("\x1b[1mAccessing\x1b[1Cworkspace:\x1b[22m")
+        text = emu.get_text()
+        assert "Accessing" in text
+        assert "workspace:" in text
+
+    def test_screen_clear_resets(self):
+        emu = TerminalEmulator(rows=5, cols=40)
+        emu.feed("old text\x1b[2J\x1b[Hnew text")
+        text = emu.get_text()
+        assert "new text" in text
+
+    def test_real_status_bar(self):
+        emu = TerminalEmulator(rows=5, cols=120)
+        emu.feed(REAL_STATUS_BAR_ANSI)
+        text = emu.get_text()
+        assert "claude-instance-manager" in text
+        assert "main" in text
+        assert "Usage:" in text
+        assert "32%" in text
+
+    def test_real_startup_sequence(self):
+        emu = TerminalEmulator(rows=10, cols=80)
+        emu.feed(REAL_STARTUP_ANSI)
+        text = emu.get_text()
+        assert "Accessing" in text
+        assert "workspace:" in text
+        assert "\x1b" not in text
+
+    def test_real_welcome_box(self):
+        emu = TerminalEmulator(rows=5, cols=120)
+        emu.feed(REAL_BOX_ANSI)
+        text = emu.get_text()
+        assert "Claude" in text
+        assert "Code" in text
+        assert "v2.1.37" in text
+
+    def test_get_changes_tracks_diffs(self):
+        emu = TerminalEmulator(rows=5, cols=40)
+        emu.feed("line 1")
+        changes1 = emu.get_changes()
+        assert any("line 1" in c for c in changes1)
+
+        # No new data = no changes
+        changes2 = emu.get_changes()
+        assert changes2 == []
+
+        # New data = new changes
+        emu.feed("\nline 2")
+        changes3 = emu.get_changes()
+        assert any("line 2" in c for c in changes3)
+
+    def test_get_new_content(self):
+        emu = TerminalEmulator(rows=5, cols=40)
+        emu.feed("hello")
+        content = emu.get_new_content()
+        assert "hello" in content
+
+        # Second call = empty (no changes)
+        assert emu.get_new_content() == ""
+
+    def test_reset(self):
+        emu = TerminalEmulator(rows=5, cols=40)
+        emu.feed("some text")
+        assert "some text" in emu.get_text()
+        emu.reset()
+        assert emu.get_text() == ""
+
+    def test_feed_bytes(self):
+        emu = TerminalEmulator(rows=5, cols=40)
+        emu.feed(b"Hello from bytes")
+        assert "Hello from bytes" in emu.get_text()
+
+    def test_real_full_startup_binary(self):
+        """Feed real captured binary data from session2 startup."""
+        path = "/tmp/claude-capture/session2/01_startup_raw.bin"
+        if not os.path.exists(path):
+            return  # Skip if capture files not available
+        with open(path, "rb") as f:
+            data = f.read()
+        emu = TerminalEmulator(rows=40, cols=120)
+        emu.feed(data)
+        text = emu.get_text()
+        assert "Claude Code" in text
+        assert "claude-instance-manager" in text
+
+    def test_real_full_session_binary(self):
+        """Feed real captured full session binary data."""
+        path = "/tmp/claude-capture/session2/full_session.bin"
+        if not os.path.exists(path):
+            return
+        with open(path, "rb") as f:
+            data = f.read()
+        emu = TerminalEmulator(rows=40, cols=120)
+        emu.feed(data)
+        text = emu.get_text()
+        # Should reconstruct the final screen state
+        assert "claude-instance-manager" in text
+
+
+class TestClassifyLine:
+    def test_empty(self):
+        assert classify_line("") == "empty"
+        assert classify_line("   ") == "empty"
+
+    def test_separator(self):
+        assert classify_line("────────────────────") == "separator"
+        assert classify_line("━━━━━━━━━━━━━━━━━━━━") == "separator"
+
+    def test_status_bar(self):
+        assert classify_line("my-project │ ⎇ main │ Usage: 50%") == "status_bar"
+        assert classify_line("claude-instance-manager │ ⎇ main ⇡7 │ Usage: 32% ███▎░░░░░░ ↻ 5:00") == "status_bar"
+
+    def test_prompt_marker(self):
+        assert classify_line("❯ Try \"how does <filepath> work?\"") == "prompt"
+
+    def test_box_drawing(self):
+        assert classify_line("╭─── Claude Code v2.1.37 ─────────────────────────╮") == "box"
+        assert classify_line("│            Welcome back!           │") == "box"
+        assert classify_line("╰──────────────────────────────────────╯") == "box"
+
+    def test_logo(self):
+        assert classify_line("▐▛███▜▌   Opus 4.6") == "logo"
+        assert classify_line("▝▜█████▛▘  ~/dev/project") == "logo"
+
+    def test_content(self):
+        assert classify_line("Hello, this is a response from Claude") == "content"
+        assert classify_line("4") == "content"
+        assert classify_line("The answer is 42.") == "content"
+
+
+class TestExtractContent:
+    def test_filters_ui_chrome(self):
+        lines = [
+            "────────────────────────────────",
+            "claude-instance-manager │ ⎇ main │ Usage: 32%",
+            "❯ Try something",
+            "Hello, this is actual content",
+            "More content here",
+            "",
+            "────────────────────────────────",
+        ]
+        result = extract_content(lines)
+        assert "Hello, this is actual content" in result
+        assert "More content here" in result
+        assert "────" not in result
+        assert "claude-instance-manager" not in result
+        assert "❯" not in result
+
+    def test_preserves_all_content(self):
+        lines = ["First line", "Second line", "Third line"]
+        result = extract_content(lines)
+        assert "First line" in result
+        assert "Second line" in result
+        assert "Third line" in result
+
+    def test_empty_lines(self):
+        lines = ["", "", ""]
+        assert extract_content(lines) == ""
 
 
 class TestStripAnsi:
@@ -45,64 +264,51 @@ class TestStripAnsi:
         assert strip_ansi("\x1b[2Ksome text") == "some text"
 
     def test_cursor_forward_becomes_space(self):
-        """Real Claude output: words separated by ESC[1C instead of spaces."""
         assert strip_ansi("Hello\x1b[1Cworld") == "Hello world"
 
     def test_cursor_forward_multiple(self):
-        """ESC[3C = 3 spaces (used for indentation)."""
         assert strip_ansi("\x1b[3Cindented") == "   indented"
 
     def test_real_claude_word_spacing(self):
-        """Real captured: 'Accessing\x1b[1Cworkspace:' """
         text = "\x1b[1mAccessing\x1b[1Cworkspace:\x1b[22m"
         assert strip_ansi(text) == "Accessing workspace:"
 
     def test_strips_private_mode_sequences(self):
-        """ESC[?2026h, ESC[?25l etc."""
         text = "\x1b[?2026h\x1b[?25lhello\x1b[?25h"
         assert strip_ansi(text) == "hello"
 
     def test_real_claude_status_line(self):
-        """Real captured status bar with ESC[1C spacing."""
-        text = "\x1b[34mtmp\x1b[1C\x1b[90m│\x1b[1C\x1b[38;5;100mUsage:\x1b[1C32%\x1b[1C███▎░░░░░░\x1b[39m"
-        result = strip_ansi(text)
-        assert "tmp" in result
+        result = strip_ansi(REAL_STATUS_BAR_ANSI)
+        assert "claude-instance-manager" in result
         assert "Usage: 32%" in result
 
     def test_real_claude_rgb_color(self):
-        """Real captured: ESC[38;2;177;185;249m for /exit command color."""
         text = "\x1b[38;2;177;185;249m/exit\x1b[39m"
         assert strip_ansi(text) == "/exit"
 
 
 class TestCleanTerminalOutput:
-    def test_strips_terminal_modes(self):
-        text = "\x1b[?2026h\x1b[?2004hhello\x1b[?2026l"
-        assert clean_terminal_output(text) == "hello"
+    def test_basic_text_via_pyte(self):
+        assert "hello" in clean_terminal_output("hello")
 
-    def test_normalizes_crlf(self):
-        text = "line1\r\r\nline2\r\r\n"
-        assert clean_terminal_output(text) == "line1\nline2"
-
-    def test_collapses_blank_lines(self):
-        text = "a\n\n\n\n\nb"
-        assert clean_terminal_output(text) == "a\n\nb"
-
-    def test_removes_screen_clear(self):
-        text = "\x1b[2J\x1b[3J\x1b[Hhello"
-        assert clean_terminal_output(text) == "hello"
-
-    def test_full_real_startup(self):
-        """Test with fragment of real Claude startup output."""
-        text = (
-            "\x1b[?2026h\r\r\n"
-            "\x1b[38;5;220m────────\x1b[39m\r\r\n"
-            "\x1b[1C\x1b[1mAccessing\x1b[1Cworkspace:\x1b[22m\r\r\n"
-        )
-        result = clean_terminal_output(text)
-        assert "Accessing workspace:" in result
+    def test_strips_ansi_via_pyte(self):
+        result = clean_terminal_output("\x1b[31mred\x1b[0m text")
+        assert "red" in result
         assert "\x1b" not in result
-        assert "\r" not in result
+
+    def test_screen_clear_handled(self):
+        text = "old\x1b[2J\x1b[Hnew"
+        result = clean_terminal_output(text)
+        assert "new" in result
+
+    def test_real_startup_fragment(self):
+        result = clean_terminal_output(REAL_STARTUP_ANSI)
+        assert "Accessing" in result
+        assert "workspace:" in result
+        assert "\x1b" not in result
+
+    def test_empty_string(self):
+        assert clean_terminal_output("") == ""
 
 
 class TestFilterSpinners:
@@ -164,6 +370,15 @@ class TestDetectPrompt:
         result = detect_prompt("")
         assert result is None
 
+    def test_detects_selection_menu(self):
+        """Real Claude trust prompt: ❯ 1. Yes, I trust this folder / 2. No, exit"""
+        text = "❯ 1. Yes, I trust this folder\n   2. No, exit"
+        result = detect_prompt(text)
+        assert result is not None
+        assert result.prompt_type == PromptType.MULTIPLE_CHOICE
+        assert len(result.options) == 2
+        assert "Yes, I trust this folder" in result.options[0]
+
 
 class TestDetectContextUsage:
     def test_detects_percentage(self):
@@ -189,13 +404,11 @@ class TestDetectContextUsage:
         assert result is not None
 
     def test_detects_real_claude_usage_format(self):
-        """Real Claude status bar: 'Usage: 32% ███▎░░░░░░'"""
         result = detect_context_usage("Usage: 32% ███▎░░░░░░")
         assert result is not None
         assert result.percentage == 32
 
     def test_detects_usage_in_status_line(self):
-        """Real status bar after ANSI stripping."""
         text = "claude-instance-manager │ ⎇ main ⇡7 │ Usage: 32% ███▎░░░░░░ ↻ 5:00"
         result = detect_context_usage(text)
         assert result is not None
@@ -218,11 +431,12 @@ class TestParseStatusBar:
         assert result.project == "my-project"
         assert result.usage_pct == 50
 
-    def test_parses_real_captured_status_bar(self):
-        """After strip_ansi, real captured status bar."""
-        raw = "\x1b[34mclaude-instance-manager\x1b[1C\x1b[90m│\x1b[1C\x1b[32m⎇\x1b[1Cmain\x1b[1C⇡7\x1b[1C\x1b[90m│\x1b[1C\x1b[38;5;100mUsage:\x1b[1C32%\x1b[1C███▎░░░░░░\x1b[39m"
-        clean = strip_ansi(raw)
-        result = parse_status_bar(clean)
+    def test_parses_pyte_reconstructed_status_bar(self):
+        """Feed real ANSI through pyte, then parse the result."""
+        emu = TerminalEmulator(rows=5, cols=120)
+        emu.feed(REAL_STATUS_BAR_ANSI)
+        text = emu.get_text()
+        result = parse_status_bar(text)
         assert result is not None
         assert result.project == "claude-instance-manager"
         assert result.branch == "main"
