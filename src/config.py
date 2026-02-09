@@ -33,6 +33,7 @@ class SessionsConfig:
 @dataclass
 class ClaudeConfig:
     command: str = "claude"
+    env: dict[str, str] = field(default_factory=dict)
     default_args: list[str] = field(default_factory=list)
     update_command: str = "claude update"
 
@@ -93,6 +94,7 @@ def load_config(path: str) -> AppConfig:
         ),
         claude=ClaudeConfig(
             command=claude_raw.get("command", "claude"),
+            env=claude_raw.get("env", {}),
             default_args=claude_raw.get("default_args", []),
             update_command=claude_raw.get("update_command", "claude update"),
         ),

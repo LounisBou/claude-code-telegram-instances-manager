@@ -15,6 +15,8 @@ sessions:
 
 claude:
   command: "claude"
+  env:
+    CLAUDE_CONFIG_DIR: "~/.claude-work"
   default_args: []
   update_command: "claude update"
 

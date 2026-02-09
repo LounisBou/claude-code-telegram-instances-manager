@@ -75,9 +75,26 @@ class TestLoadConfig:
         assert config.sessions.output_max_buffer == 2000
         assert config.sessions.silence_warning_minutes == 10
         assert config.claude.command == "claude"
+        assert config.claude.env == {}
         assert config.claude.default_args == []
         assert config.claude.update_command == "claude update"
         assert config.database.path == "data/sessions.db"
+
+    def test_claude_env_loaded(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "telegram": {"bot_token": "tok", "authorized_users": [1]},
+            "projects": {"root": "/tmp"},
+            "claude": {
+                "command": "claude",
+                "env": {"CLAUDE_CONFIG_DIR": "~/.claude-work", "FOO": "bar"},
+            },
+        }))
+        config = load_config(str(config_file))
+        assert config.claude.env == {
+            "CLAUDE_CONFIG_DIR": "~/.claude-work",
+            "FOO": "bar",
+        }
 
 
 class TestAppConfig:
