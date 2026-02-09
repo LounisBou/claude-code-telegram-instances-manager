@@ -6,6 +6,7 @@ from src.output_parser import (
     DetectedPrompt,
     detect_context_usage,
     ContextUsage,
+    detect_file_paths,
 )
 
 
@@ -120,3 +121,33 @@ class TestDetectContextUsage:
     def test_detects_token_count(self):
         result = detect_context_usage("Context: 150k/200k tokens used")
         assert result is not None
+
+
+class TestDetectFilePaths:
+    def test_detects_wrote_to(self):
+        paths = detect_file_paths("Wrote to /home/user/output.png")
+        assert "/home/user/output.png" in paths
+
+    def test_detects_saved(self):
+        paths = detect_file_paths("File saved /tmp/result.pdf")
+        assert "/tmp/result.pdf" in paths
+
+    def test_detects_created(self):
+        paths = detect_file_paths("Created /home/user/project/new_file.py")
+        assert "/home/user/project/new_file.py" in paths
+
+    def test_no_paths_in_regular_text(self):
+        paths = detect_file_paths("Hello world, just some text")
+        assert paths == []
+
+    def test_multiple_paths(self):
+        text = "Wrote to /a/file1.txt and saved /b/file2.txt"
+        paths = detect_file_paths(text)
+        assert len(paths) == 2
+
+    def test_empty_string(self):
+        assert detect_file_paths("") == []
+
+    def test_ignores_short_paths(self):
+        paths = detect_file_paths("Wrote to /tmp")
+        assert paths == []

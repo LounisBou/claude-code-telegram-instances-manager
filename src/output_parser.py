@@ -140,3 +140,17 @@ def detect_context_usage(text: str) -> ContextUsage | None:
         needs_compact=compact_match is not None,
         raw_text=text,
     )
+
+
+_FILE_PATH_RE = re.compile(
+    r"(?:wrote to|saved|created|generated|output)\s+"
+    r"(\/[\w./\-]+\.\w+)",
+    re.IGNORECASE,
+)
+
+
+def detect_file_paths(text: str) -> list[str]:
+    if not text.strip():
+        return []
+    matches = _FILE_PATH_RE.findall(text)
+    return [m for m in matches if len(m) > 5]
