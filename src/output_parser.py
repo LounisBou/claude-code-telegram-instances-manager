@@ -206,3 +206,35 @@ def format_telegram(text: str) -> str:
         result = result.replace(placeholder, f"`{code}`")
 
     return result
+
+
+TELEGRAM_MAX_LENGTH = 4096
+
+
+def split_message(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[str]:
+    if not text or len(text) <= max_length:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+
+    while remaining:
+        if len(remaining) <= max_length:
+            chunks.append(remaining)
+            break
+
+        split_at = remaining.rfind("\n\n", 0, max_length)
+
+        if split_at == -1:
+            split_at = remaining.rfind("\n", 0, max_length)
+
+        if split_at == -1:
+            split_at = remaining.rfind(" ", 0, max_length)
+
+        if split_at == -1:
+            split_at = max_length
+
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+
+    return chunks if chunks else [""]
