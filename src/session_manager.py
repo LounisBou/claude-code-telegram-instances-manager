@@ -10,11 +10,15 @@ from src.file_handler import FileHandler
 
 
 class SessionError(Exception):
+    """Raised when a session operation fails."""
+
     pass
 
 
 @dataclass
 class ClaudeSession:
+    """Active Claude Code session bound to a user and project."""
+
     session_id: int
     user_id: int
     project_name: str
@@ -26,6 +30,8 @@ class ClaudeSession:
 
 
 class SessionManager:
+    """Manage the lifecycle of Claude Code sessions per user."""
+
     def __init__(
         self,
         claude_command: str,
@@ -34,6 +40,15 @@ class SessionManager:
         db: Database,
         file_handler: FileHandler,
     ) -> None:
+        """Initialize the session manager.
+
+        Args:
+            claude_command: Path or name of the Claude CLI executable.
+            claude_args: Additional CLI arguments passed to every session.
+            max_per_user: Maximum number of concurrent sessions per user.
+            db: Database instance for persisting session records.
+            file_handler: File handler for cleaning up session artifacts.
+        """
         self._command = claude_command
         self._args = claude_args
         self._max_per_user = max_per_user
@@ -48,6 +63,21 @@ class SessionManager:
     async def create_session(
         self, user_id: int, project_name: str, project_path: str
     ) -> ClaudeSession:
+        """Spawn a new Claude Code process and register the session.
+
+        Args:
+            user_id: Telegram user ID that owns the session.
+            project_name: Human-readable project name.
+            project_path: Absolute filesystem path to the project root.
+
+        Returns:
+            The newly created ClaudeSession, already set as the
+            user's active session.
+
+        Raises:
+            SessionError: If the user has reached the maximum number
+                of concurrent sessions.
+        """
         user_sessions = self._sessions.get(user_id, {})
         if len(user_sessions) >= self._max_per_user:
             raise SessionError(
@@ -84,20 +114,59 @@ class SessionManager:
         return session
 
     def get_active_session(self, user_id: int) -> ClaudeSession | None:
+        """Return the user's currently active session.
+
+        Args:
+            user_id: Telegram user ID to look up.
+
+        Returns:
+            The active ClaudeSession, or None if the user has no
+            active session.
+        """
         active_id = self._active.get(user_id)
         if active_id is None:
             return None
         return self._sessions.get(user_id, {}).get(active_id)
 
     def switch_session(self, user_id: int, session_id: int) -> None:
+        """Set a different session as the user's active session.
+
+        Args:
+            user_id: Telegram user ID that owns the session.
+            session_id: Numeric ID of the session to activate.
+
+        Raises:
+            SessionError: If the session does not exist for this user.
+        """
         if session_id not in self._sessions.get(user_id, {}):
             raise SessionError(f"Session {session_id} not found")
         self._active[user_id] = session_id
 
     def list_sessions(self, user_id: int) -> list[ClaudeSession]:
+        """Return all sessions belonging to a user.
+
+        Args:
+            user_id: Telegram user ID to look up.
+
+        Returns:
+            List of ClaudeSession instances, possibly empty.
+        """
         return list(self._sessions.get(user_id, {}).values())
 
     async def kill_session(self, user_id: int, session_id: int) -> None:
+        """Terminate a session, clean up resources, and persist the outcome.
+
+        The underlying Claude process is terminated, database records are
+        finalized, and session file artifacts are removed. If other sessions
+        remain for the user, one is promoted to active.
+
+        Args:
+            user_id: Telegram user ID that owns the session.
+            session_id: Numeric ID of the session to kill.
+
+        Raises:
+            SessionError: If the session does not exist for this user.
+        """
         session = self._sessions.get(user_id, {}).get(session_id)
         if session is None:
             raise SessionError(f"Session {session_id} not found")
@@ -119,30 +188,68 @@ class SessionManager:
             self._active.pop(user_id, None)
 
     def has_active_sessions(self) -> bool:
+        """Check whether any user has at least one live session.
+
+        Returns:
+            True if one or more sessions exist across all users.
+        """
         return any(len(s) > 0 for s in self._sessions.values())
 
     def active_session_count(self) -> int:
+        """Return the total number of live sessions across all users.
+
+        Returns:
+            Count of sessions currently tracked by the manager.
+        """
         return sum(len(s) for s in self._sessions.values())
 
 
 class OutputBuffer:
+    """Accumulate incremental output and flush when ready."""
+
     def __init__(self, debounce_ms: int, max_buffer: int) -> None:
+        """Initialize the output buffer.
+
+        Args:
+            debounce_ms: Minimum quiet period in milliseconds before
+                the buffer is considered ready to flush.
+            max_buffer: Character count threshold that forces an
+                immediate flush regardless of the debounce timer.
+        """
         self._debounce_s = debounce_ms / 1000.0
         self._max_buffer = max_buffer
         self._buffer: str = ""
         self._last_append: float = 0
 
     def append(self, text: str) -> None:
+        """Add text to the internal buffer and reset the debounce timer.
+
+        Args:
+            text: Output fragment to accumulate.
+        """
         self._buffer += text
         self._last_append = time.monotonic()
 
     def flush(self) -> str:
+        """Drain the buffer and return its contents.
+
+        Returns:
+            The accumulated text. The buffer is empty after this call.
+        """
         result = self._buffer
         self._buffer = ""
         self._last_append = 0
         return result
 
     def is_ready(self) -> bool:
+        """Check whether the buffer should be flushed.
+
+        The buffer is ready when it exceeds the max size limit or when
+        the debounce period has elapsed since the last append.
+
+        Returns:
+            True if the buffer has content that should be flushed.
+        """
         if not self._buffer:
             return False
         if len(self._buffer) >= self._max_buffer:

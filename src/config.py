@@ -7,23 +7,31 @@ import yaml
 
 
 class ConfigError(Exception):
+    """Raised when configuration loading or validation fails."""
+
     pass
 
 
 @dataclass
 class TelegramConfig:
+    """Telegram bot connection and authorization settings."""
+
     bot_token: str
     authorized_users: list[int]
 
 
 @dataclass
 class ProjectsConfig:
+    """Project discovery and scanning settings."""
+
     root: str
     scan_depth: int = 1
 
 
 @dataclass
 class SessionsConfig:
+    """Per-user session limits and output buffering settings."""
+
     max_per_user: int = 3
     output_debounce_ms: int = 500
     output_max_buffer: int = 2000
@@ -32,6 +40,8 @@ class SessionsConfig:
 
 @dataclass
 class ClaudeConfig:
+    """Claude Code CLI invocation and environment settings."""
+
     command: str = "claude"
     env: dict[str, str] = field(default_factory=dict)
     default_args: list[str] = field(default_factory=list)
@@ -40,11 +50,15 @@ class ClaudeConfig:
 
 @dataclass
 class DatabaseConfig:
+    """SQLite database location settings."""
+
     path: str = "data/sessions.db"
 
 
 @dataclass
 class AppConfig:
+    """Top-level application configuration aggregating all subsections."""
+
     telegram: TelegramConfig
     projects: ProjectsConfig
     sessions: SessionsConfig
@@ -52,10 +66,34 @@ class AppConfig:
     database: DatabaseConfig
 
     def is_authorized(self, user_id: int) -> bool:
+        """Check whether a Telegram user is allowed to use the bot.
+
+        Args:
+            user_id: Telegram numeric user ID to check.
+
+        Returns:
+            True if the user ID appears in the authorized_users list.
+        """
         return user_id in self.telegram.authorized_users
 
 
 def load_config(path: str) -> AppConfig:
+    """Load and validate application configuration from a YAML file.
+
+    Reads the YAML file at the given path, validates that all required
+    fields are present, and constructs a fully populated AppConfig with
+    defaults applied for optional fields.
+
+    Args:
+        path: Filesystem path to the YAML configuration file.
+
+    Returns:
+        A fully populated AppConfig instance.
+
+    Raises:
+        ConfigError: If the file does not exist or required fields
+            (bot_token, authorized_users, projects.root) are missing.
+    """
     config_path = Path(path)
     if not config_path.exists():
         raise ConfigError(f"Config file not found: {path}")

@@ -38,6 +38,19 @@ logger = logging.getLogger(__name__)
 
 
 def build_app(config_path: str) -> Application:
+    """Build and configure the Telegram bot application.
+
+    Loads configuration, initializes core services (database, session manager,
+    file handler), stores them in bot_data, and registers all command, callback,
+    and message handlers.
+
+    Args:
+        config_path: Filesystem path to the YAML configuration file.
+
+    Returns:
+        A fully configured telegram.ext.Application instance ready to be
+        initialized and started.
+    """
     config = load_config(config_path)
 
     app = Application.builder().token(config.telegram.bot_token).build()
@@ -84,6 +97,18 @@ def build_app(config_path: str) -> Application:
 
 
 async def _on_startup(app: Application) -> None:
+    """Run one-time initialization tasks after the application starts.
+
+    Initializes the database schema and marks any previously active sessions
+    as lost, since they could not have survived a bot restart.
+
+    Args:
+        app: The Telegram application instance whose bot_data contains
+            the Database dependency.
+
+    Returns:
+        None.
+    """
     db: Database = app.bot_data["db"]
     await db.initialize()
     lost = await db.mark_active_sessions_lost()
@@ -92,6 +117,18 @@ async def _on_startup(app: Application) -> None:
 
 
 async def main() -> None:
+    """Entry point for the ClaudeInstanceManager Telegram bot.
+
+    Parses an optional config file path from sys.argv, builds the application,
+    registers the startup hook, and runs the bot with long-polling until
+    interrupted. On shutdown, gracefully stops the updater and the application.
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
     config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
     app = build_app(config_path)
     app.post_init = _on_startup

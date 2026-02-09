@@ -7,12 +7,20 @@ from dataclasses import dataclass
 
 @dataclass
 class GitInfo:
+    """Git repository metadata including branch and pull request info."""
+
     branch: str | None = None
     pr_url: str | None = None
     pr_title: str | None = None
     pr_state: str | None = None
 
     def format(self) -> str:
+        """Format git info as a human-readable Markdown string.
+
+        Returns:
+            A pipe-separated string containing the branch name and
+            PR link (or "No open PR" / "No git info available").
+        """
         if not self.branch:
             return "No git info available"
         parts = [f"Branch: `{self.branch}`"]
@@ -24,6 +32,15 @@ class GitInfo:
 
 
 async def _run_command(cmd: list[str], cwd: str) -> str:
+    """Run a shell command asynchronously and return its stdout.
+
+    Args:
+        cmd: Command and arguments to execute (e.g. ["git", "status"]).
+        cwd: Working directory in which to run the command.
+
+    Returns:
+        Decoded and stripped stdout output from the command.
+    """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -35,6 +52,19 @@ async def _run_command(cmd: list[str], cwd: str) -> str:
 
 
 async def get_git_info(project_path: str) -> GitInfo:
+    """Gather git branch and GitHub PR info for a project directory.
+
+    Runs ``git branch --show-current`` to get the current branch, then
+    ``gh pr view`` to fetch any associated pull request metadata. Failures
+    at either step are silently caught so the caller always receives a
+    valid GitInfo (possibly with None fields).
+
+    Args:
+        project_path: Absolute path to the git repository root.
+
+    Returns:
+        A GitInfo instance populated with whatever data could be retrieved.
+    """
     try:
         branch = await _run_command(
             ["git", "branch", "--show-current"], cwd=project_path

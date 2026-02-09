@@ -15,6 +15,12 @@ class TerminalEmulator:
     """
 
     def __init__(self, rows: int = 40, cols: int = 120):
+        """Initialize the terminal emulator with a virtual screen.
+
+        Args:
+            rows: Number of rows in the virtual terminal. Defaults to 40.
+            cols: Number of columns in the virtual terminal. Defaults to 120.
+        """
         self.rows = rows
         self.cols = cols
         self.screen = pyte.Screen(cols, rows)
@@ -22,24 +28,47 @@ class TerminalEmulator:
         self._prev_display: list[str] = [""] * rows
 
     def feed(self, data: bytes | str) -> None:
-        """Feed raw PTY bytes into the terminal emulator."""
+        """Feed raw PTY bytes into the terminal emulator.
+
+        Args:
+            data: Raw bytes or a string from the PTY. Bytes are decoded
+                as UTF-8 with replacement characters for invalid sequences.
+        """
         if isinstance(data, bytes):
             data = data.decode("utf-8", errors="replace")
         self.stream.feed(data)
 
     def get_display(self) -> list[str]:
-        """Return all screen lines (right-stripped)."""
+        """Return all screen lines, right-stripped of trailing whitespace.
+
+        Returns:
+            List of strings, one per terminal row.
+        """
         return [line.rstrip() for line in self.screen.display]
 
     def get_text(self) -> str:
-        """Return full screen content as text, blank lines collapsed."""
+        """Return full screen content as text with blank lines collapsed.
+
+        Runs of three or more newlines are reduced to double newlines, and
+        leading/trailing whitespace is stripped.
+
+        Returns:
+            The reconstructed screen content as a single string.
+        """
         lines = self.get_display()
         text = "\n".join(lines)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
     def get_changes(self) -> list[str]:
-        """Return lines that changed since last call to get_changes()."""
+        """Return lines that changed since the last call to get_changes.
+
+        Compares the current display against a saved snapshot and returns
+        only lines whose content differs and is non-blank.
+
+        Returns:
+            List of changed, non-empty screen lines.
+        """
         current = self.get_display()
         changed = []
         for i, (cur, prev) in enumerate(zip(current, self._prev_display)):
@@ -49,12 +78,21 @@ class TerminalEmulator:
         return changed
 
     def get_new_content(self) -> str:
-        """Return changed lines as a single string."""
+        """Return changed lines joined as a single string.
+
+        Returns:
+            Newline-joined string of lines that changed since last check,
+            stripped of leading/trailing whitespace.
+        """
         lines = self.get_changes()
         return "\n".join(lines).strip()
 
     def reset(self) -> None:
-        """Reset the terminal to initial state."""
+        """Reset the terminal to its initial blank state.
+
+        Clears the pyte screen buffer and the internal previous-display
+        snapshot used by get_changes.
+        """
         self.screen.reset()
         self._prev_display = [""] * self.rows
 
@@ -63,6 +101,8 @@ class TerminalEmulator:
 
 
 class ScreenState(Enum):
+    """Possible states of the Claude Code terminal screen."""
+
     STARTUP = "startup"
     IDLE = "idle"
     THINKING = "thinking"
@@ -80,6 +120,8 @@ class ScreenState(Enum):
 
 @dataclass
 class ScreenEvent:
+    """Classified screen state with extracted payload and raw lines."""
+
     state: ScreenState
     payload: dict = field(default_factory=dict)
     raw_lines: list[str] = field(default_factory=list)
@@ -162,11 +204,19 @@ _EXTRA_FILES_RE = re.compile(r"(\d+) files? \+(\d+) -(\d+)")
 
 
 def classify_line(line: str) -> str:
-    """Classify a screen line as ui element or content.
+    """Classify a screen line as a UI element or content.
 
-    Returns one of: 'separator', 'diff_delimiter', 'status_bar', 'thinking',
-    'tool_header', 'response', 'tool_connector', 'todo_item', 'agent_tree',
-    'prompt', 'box', 'logo', 'empty', or 'content'.
+    Checks the line against known Claude Code UI patterns (separators,
+    status bars, thinking indicators, tool headers, etc.) and returns a
+    category string.
+
+    Args:
+        line: A single terminal screen line to classify.
+
+    Returns:
+        One of: 'separator', 'diff_delimiter', 'status_bar', 'thinking',
+        'tool_header', 'response', 'tool_connector', 'todo_item',
+        'agent_tree', 'prompt', 'box', 'logo', 'empty', or 'content'.
     """
     stripped = line.strip()
     if not stripped:
@@ -203,7 +253,17 @@ def classify_line(line: str) -> str:
 
 
 def extract_content(lines: list[str]) -> str:
-    """Extract meaningful content from screen lines, filtering UI chrome."""
+    """Extract meaningful content from screen lines, filtering UI chrome.
+
+    Keeps only lines classified as 'content' by classify_line, stripping
+    surrounding whitespace.
+
+    Args:
+        lines: List of terminal screen lines to filter.
+
+    Returns:
+        Newline-joined string of content lines, stripped.
+    """
     content_lines = []
     for line in lines:
         if classify_line(line) == "content":
@@ -218,6 +278,18 @@ _DOTS_SPINNER = re.compile(r"^(.+?)\.{1,3}$", re.MULTILINE)
 
 
 def filter_spinners(text: str) -> str:
+    """Remove braille spinner characters and deduplicate trailing-dot variants.
+
+    Strips braille spinner prefixes from lines, then collapses progressive
+    dot sequences (e.g. "Loading.", "Loading..", "Loading...") into the
+    longest variant only.
+
+    Args:
+        text: Raw text that may contain spinner artifacts.
+
+    Returns:
+        Cleaned text with spinners removed. Empty string if nothing remains.
+    """
     if not text:
         return ""
     lines = text.split("\n")
@@ -252,12 +324,16 @@ def filter_spinners(text: str) -> str:
 # --- Prompt detection ---
 
 class PromptType(Enum):
+    """Types of interactive prompts in the Claude Code UI."""
+
     YES_NO = "yes_no"
     MULTIPLE_CHOICE = "multiple_choice"
 
 
 @dataclass
 class DetectedPrompt:
+    """A detected interactive prompt with its type, options, and default."""
+
     prompt_type: PromptType
     options: list[str]
     default: str | None = None
@@ -270,6 +346,17 @@ _SELECTION_MENU_RE = re.compile(r"❯\s*(\d+)\.\s+(.+)")
 
 
 def detect_prompt(text: str) -> DetectedPrompt | None:
+    """Detect an interactive prompt (yes/no or multiple choice) in the text.
+
+    Looks for [Y/n] style patterns and numbered selection menus.
+
+    Args:
+        text: Screen text to scan for prompt patterns.
+
+    Returns:
+        A DetectedPrompt with type, options, and default, or None if no
+        prompt pattern is found.
+    """
     if not text.strip():
         return None
 
@@ -326,6 +413,8 @@ def detect_prompt(text: str) -> DetectedPrompt | None:
 
 @dataclass
 class ContextUsage:
+    """Parsed context window usage information from the Claude Code UI."""
+
     percentage: int | None = None
     needs_compact: bool = False
     raw_text: str = ""
@@ -338,6 +427,18 @@ _COMPACT_RE = re.compile(r"compact|context.*(?:full|almost|running out)", re.IGN
 
 
 def detect_context_usage(text: str) -> ContextUsage | None:
+    """Detect context window usage information from screen text.
+
+    Searches for usage percentage, token counts, and compact-mode
+    indicators in the Claude Code UI.
+
+    Args:
+        text: Screen text to scan for context usage patterns.
+
+    Returns:
+        A ContextUsage with percentage and compact flag, or None if no
+        usage information is found.
+    """
     if not text.strip():
         return None
 
@@ -370,6 +471,8 @@ def detect_context_usage(text: str) -> ContextUsage | None:
 
 @dataclass
 class StatusBar:
+    """Parsed status bar fields from the Claude Code bottom-of-screen bar."""
+
     project: str | None = None
     branch: str | None = None
     dirty: bool = False
@@ -383,6 +486,13 @@ def parse_status_bar(text: str) -> StatusBar | None:
     """Parse Claude Code's status bar line.
 
     Real format: "claude-instance-manager │ ⎇ main* ⇡12 │ Usage: 7% ▋░░░░░░░░░ ↻ 9:59"
+
+    Args:
+        text: A single status bar line from the terminal screen.
+
+    Returns:
+        A StatusBar with project, branch, dirty flag, usage percentage,
+        and timer, or None if the text does not match the status bar format.
     """
     if not text.strip():
         return None
@@ -415,6 +525,14 @@ def parse_extra_status(text: str) -> dict:
       "1 bash · 1 file +194 -192"
       "4 local agents · 1 file +194 -192"
       "1 file +194 -192"
+
+    Args:
+        text: The extra status line text to parse.
+
+    Returns:
+        Dict with optional keys 'bash_tasks', 'local_agents',
+        'files_changed', 'lines_added', and 'lines_removed'. Empty dict
+        if no patterns match.
     """
     result: dict = {}
     m = _EXTRA_BASH_RE.search(text)
@@ -441,6 +559,17 @@ _FILE_PATH_RE = re.compile(
 
 
 def detect_file_paths(text: str) -> list[str]:
+    """Detect absolute file paths mentioned in tool output text.
+
+    Looks for paths following keywords like "wrote to", "saved", "created",
+    etc. Only returns paths longer than 5 characters.
+
+    Args:
+        text: Screen text to scan for file path references.
+
+    Returns:
+        List of detected absolute file path strings.
+    """
     if not text.strip():
         return []
     matches = _FILE_PATH_RE.findall(text)
@@ -451,7 +580,19 @@ def detect_file_paths(text: str) -> list[str]:
 
 
 def detect_thinking(lines: list[str]) -> dict | None:
-    """Detect thinking indicator from screen lines."""
+    """Detect a thinking indicator (star + ellipsis) from screen lines.
+
+    Matches lines starting with a thinking star character (e.g. ✶, ✳)
+    followed by text ending with an ellipsis, optionally with an elapsed
+    time parenthetical.
+
+    Args:
+        lines: Terminal screen lines to scan.
+
+    Returns:
+        Dict with 'text' (the thinking message) and 'elapsed' (e.g. "5s"
+        or None), or None if no thinking indicator is found.
+    """
     for line in lines:
         m = _THINKING_STAR_RE.match(line.strip())
         if m:
@@ -465,7 +606,18 @@ def detect_thinking(lines: list[str]) -> dict | None:
 
 
 def detect_tool_request(lines: list[str]) -> dict | None:
-    """Detect tool approval selection menu from screen lines."""
+    """Detect a tool approval selection menu from screen lines.
+
+    Looks for the Claude Code pattern of a question followed by numbered
+    options with a cursor marker and an "Esc to cancel" hint.
+
+    Args:
+        lines: Terminal screen lines to scan.
+
+    Returns:
+        Dict with 'question', 'options' list, 'selected' index, and
+        'has_hint' flag, or None if no selection menu is found.
+    """
     has_selection = False
     has_hint = False
     options: list[tuple[int, str]] = []
@@ -510,7 +662,19 @@ def detect_tool_request(lines: list[str]) -> dict | None:
 
 
 def detect_todo_list(lines: list[str]) -> dict | None:
-    """Detect TODO list display from screen lines."""
+    """Detect a TODO list display from screen lines.
+
+    Parses the header summary (total/done/in-progress/open counts) and
+    individual items with their status markers.
+
+    Args:
+        lines: Terminal screen lines to scan.
+
+    Returns:
+        Dict with counts ('total', 'done', 'in_progress', 'open') and
+        'items' list (each with 'text' and 'status'), or None if no TODO
+        list is detected.
+    """
     header: dict | None = None
     items: list[dict] = []
 
@@ -548,7 +712,17 @@ def detect_todo_list(lines: list[str]) -> dict | None:
 
 
 def detect_background_task(lines: list[str]) -> dict | None:
-    """Detect background task indicator from screen lines."""
+    """Detect a background task indicator from screen lines.
+
+    Looks for lines containing "in the background".
+
+    Args:
+        lines: Terminal screen lines to scan.
+
+    Returns:
+        Dict with 'raw' (the matched line text), or None if no
+        background task indicator is found.
+    """
     for line in lines:
         if _BACKGROUND_RE.search(line):
             return {"raw": line.strip()}
@@ -556,7 +730,19 @@ def detect_background_task(lines: list[str]) -> dict | None:
 
 
 def detect_parallel_agents(lines: list[str]) -> dict | None:
-    """Detect parallel agents display from screen lines."""
+    """Detect a parallel agents display from screen lines.
+
+    Parses the agent count, tree-style agent list, and completion
+    messages from the Claude Code multi-agent UI.
+
+    Args:
+        lines: Terminal screen lines to scan.
+
+    Returns:
+        Dict with 'count' (number launched or None), 'agents' list of
+        names, and 'completed' list of finished agent names, or None if
+        no agent patterns are found.
+    """
     count: int | None = None
     agents: list[str] = []
     completed: list[str] = []
@@ -592,7 +778,18 @@ def detect_parallel_agents(lines: list[str]) -> dict | None:
 
 
 def _extract_tool_info(lines: list[str]) -> dict:
-    """Extract tool name and target from screen lines."""
+    """Extract tool name and target from screen lines.
+
+    Scans for Bash(...) or Write/Update/Read(...) patterns and returns
+    the tool name with its argument.
+
+    Args:
+        lines: Terminal screen lines to scan for tool headers.
+
+    Returns:
+        Dict with 'tool' and either 'command' (for Bash) or 'target'
+        (for file tools). Empty dict if no tool header is found.
+    """
     for line in lines:
         m = _TOOL_BASH_RE.search(line)
         if m:
@@ -612,7 +809,21 @@ def classify_screen_state(
 
     Examines all screen lines and returns the most prominent current state
     with extracted payload data. Uses priority-ordered detection to resolve
-    ambiguity when multiple patterns are present.
+    ambiguity when multiple patterns are present:
+      1. Tool approval menus (need user action, highest priority)
+      2. TODO lists and parallel agents (screen-wide patterns)
+      3. Thinking indicators, running tools, tool results (bottom-up scan)
+      4. Idle prompt, streaming, user message (last meaningful line)
+      5. Startup and error (fallback patterns)
+
+    Args:
+        lines: Full terminal display lines from the pyte screen.
+        prev_state: The previously classified state, reserved for future
+            hysteresis logic. Currently unused.
+
+    Returns:
+        A ScreenEvent with the classified state, extracted payload dict,
+        and the original raw lines.
     """
     non_empty = [l for l in lines if l.strip()]
 
@@ -768,10 +979,31 @@ _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 
 
 def _escape_telegram(text: str) -> str:
+    """Escape special characters for Telegram MarkdownV2 format.
+
+    Args:
+        text: Plain text to escape.
+
+    Returns:
+        Text with all Telegram MarkdownV2 special characters backslash-escaped.
+    """
     return _TG_ESCAPE_RE.sub(r"\\\1", text)
 
 
 def format_telegram(text: str) -> str:
+    """Convert markdown text to Telegram MarkdownV2 format.
+
+    Preserves code blocks and inline code verbatim while escaping special
+    characters in surrounding text. Converts **bold** and *italic*
+    markers to Telegram equivalents.
+
+    Args:
+        text: Markdown-formatted text to convert.
+
+    Returns:
+        Telegram MarkdownV2-formatted string ready for the Bot API.
+        Empty string if input is empty.
+    """
     if not text:
         return ""
 
@@ -814,6 +1046,20 @@ TELEGRAM_MAX_LENGTH = 4096
 
 
 def split_message(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[str]:
+    """Split a long message into chunks that fit within Telegram's limit.
+
+    Splits preferring double-newline paragraph breaks, then single
+    newlines, then spaces, falling back to hard cuts at max_length.
+
+    Args:
+        text: The message text to split.
+        max_length: Maximum character length per chunk. Defaults to
+            TELEGRAM_MAX_LENGTH (4096).
+
+    Returns:
+        List of message chunks. Returns [text] if it already fits,
+        or [""] if input is empty.
+    """
     if not text or len(text) <= max_length:
         return [text]
 
@@ -862,16 +1108,35 @@ _ANSI_FULL_RE = re.compile(
 
 
 def strip_ansi(text: str) -> str:
-    """Strip ANSI escape codes, converting cursor-forward to spaces."""
+    """Strip ANSI escape codes, converting cursor-forward to spaces.
+
+    Handles ESC[NC (cursor forward) by replacing with the equivalent
+    number of spaces, then removes all remaining ANSI sequences.
+
+    Args:
+        text: Raw terminal text containing ANSI escape codes.
+
+    Returns:
+        Text with all ANSI sequences removed and cursor-forward
+        sequences replaced by spaces.
+    """
     text = _CURSOR_FORWARD_RE.sub(lambda m: " " * int(m.group(1)), text)
     return _ANSI_FULL_RE.sub("", text)
 
 
 def clean_terminal_output(text: str) -> str:
-    """Clean raw terminal output using pyte terminal emulator.
+    """Clean raw terminal output using the pyte terminal emulator.
 
     Feeds the raw text through a virtual terminal and returns the
-    reconstructed screen content with UI chrome filtered out.
+    reconstructed screen content with blank lines collapsed.
+
+    Args:
+        text: Raw terminal output potentially containing ANSI codes,
+            cursor movements, and other control sequences.
+
+    Returns:
+        Cleaned screen content as a single string with collapsed blank
+        lines and stripped whitespace.
     """
     emu = TerminalEmulator()
     emu.feed(text)
