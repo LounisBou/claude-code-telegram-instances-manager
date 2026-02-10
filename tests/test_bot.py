@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -909,3 +910,15 @@ class TestBuildApp:
         assert app.bot_data["config"].debug.enabled is True
         assert app.bot_data["config"].debug.trace is True
         assert app.bot_data["config"].debug.verbose is True
+
+
+class TestHandlerLogging:
+    @pytest.mark.asyncio
+    async def test_handle_start_logs_handler_entry(self, mock_update, mock_context, caplog):
+        from src.log_setup import setup_logging
+        setup_logging(debug=True, trace=False, verbose=False)
+        mock_context.bot_data["config"].projects.root = "/nonexistent"
+        mock_context.bot_data["config"].projects.scan_depth = 1
+        with caplog.at_level(logging.DEBUG, logger="src.bot"):
+            await handle_start(mock_update, mock_context)
+        assert any("handle_start" in r.message for r in caplog.records)

@@ -174,6 +174,7 @@ async def handle_start(
         context: Bot context providing access to bot_data (config, etc.).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_start user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -215,6 +216,7 @@ async def handle_sessions(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_sessions user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -259,6 +261,7 @@ async def handle_exit(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_exit user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -296,6 +299,7 @@ async def handle_text_message(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_text_message user_id=%d len=%d", user_id, len(update.message.text))
     config = context.bot_data["config"]
 
     # Silently ignore unauthorized users for text messages to avoid reply spam
@@ -339,6 +343,7 @@ async def handle_callback_query(
         return
 
     data = query.data
+    logger.debug("handle_callback_query user_id=%d action=%s", user_id, data.split(":")[0])
     session_manager = context.bot_data["session_manager"]
 
     if data.startswith("project:"):
@@ -416,6 +421,7 @@ async def handle_history(
         context: Bot context providing access to bot_data (config, db).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_history user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -447,6 +453,7 @@ async def handle_git(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_git user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -479,6 +486,7 @@ async def handle_update_claude(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_update_claude user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -524,6 +532,7 @@ async def handle_context(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_context user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -555,6 +564,7 @@ async def handle_download(
             file_handler).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_download user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -609,6 +619,7 @@ async def handle_file_upload(
             file downloads.
     """
     user_id = update.effective_user.id
+    logger.debug("handle_file_upload user_id=%d", user_id)
     config = context.bot_data["config"]
 
     # Silently ignore unauthorized uploads to avoid reply spam
