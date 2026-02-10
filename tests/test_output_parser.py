@@ -1,3 +1,4 @@
+import logging
 import os
 
 from src.output_parser import (
@@ -1187,3 +1188,26 @@ class TestSplitMessage:
         text = "A" * TELEGRAM_MAX_LENGTH
         result = split_message(text)
         assert len(result) == 1
+
+
+class TestClassifyScreenStateLogging:
+    def test_classify_logs_result_at_trace(self, caplog):
+        from src.log_setup import TRACE, setup_logging
+        setup_logging(debug=False, trace=False, verbose=False)
+        lines = [""] * 40
+        lines[18] = "❯"
+        lines[17] = "─" * 20
+        lines[19] = "─" * 20
+        with caplog.at_level(TRACE, logger="src.output_parser"):
+            result = classify_screen_state(lines)
+        trace_records = [r for r in caplog.records if r.levelno == TRACE]
+        assert any("IDLE" in r.message for r in trace_records)
+
+    def test_classify_logs_line_count_at_trace(self, caplog):
+        from src.log_setup import TRACE, setup_logging
+        setup_logging(debug=False, trace=False, verbose=False)
+        lines = ["content line"] * 5 + [""] * 35
+        with caplog.at_level(TRACE, logger="src.output_parser"):
+            classify_screen_state(lines)
+        trace_records = [r for r in caplog.records if r.levelno == TRACE]
+        assert any("non_empty=5" in r.message for r in trace_records)

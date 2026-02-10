@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 
 import pyte
+
+from src.log_setup import TRACE
+
+logger = logging.getLogger(__name__)
 
 
 class TerminalEmulator:
@@ -834,26 +839,31 @@ def classify_screen_state(
         and the original raw lines.
     """
     non_empty = [l for l in lines if l.strip()]
+    logger.log(TRACE, "classify_screen_state lines=%d non_empty=%d", len(lines), len(non_empty))
+
+    def _return(event: ScreenEvent) -> ScreenEvent:
+        logger.log(TRACE, "classify_screen_state -> %s payload_keys=%s", event.state.name, list(event.payload.keys()))
+        return event
 
     if not non_empty:
-        return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
 
     # --- First pass: screen-wide patterns (need full context) ---
 
     # 1. Tool approval / selection menu (needs user action - highest priority)
     payload = detect_tool_request(lines)
     if payload:
-        return ScreenEvent(state=ScreenState.TOOL_REQUEST, payload=payload, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.TOOL_REQUEST, payload=payload, raw_lines=lines))
 
     # 2. TODO list
     payload = detect_todo_list(lines)
     if payload:
-        return ScreenEvent(state=ScreenState.TODO_LIST, payload=payload, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.TODO_LIST, payload=payload, raw_lines=lines))
 
     # 3. Parallel agents
     payload = detect_parallel_agents(lines)
     if payload:
-        return ScreenEvent(state=ScreenState.PARALLEL_AGENTS, payload=payload, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.PARALLEL_AGENTS, payload=payload, raw_lines=lines))
 
     # --- Second pass: bottom-up scan for current activity ---
 
@@ -873,7 +883,7 @@ def classify_screen_state(
         active_idx -= 1
 
     if active_idx < 0:
-        return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
 
     # Check the bottom content area (last ~8 meaningful lines)
     bottom_start = max(0, active_idx - 7)
@@ -882,32 +892,32 @@ def classify_screen_state(
     # 4. Thinking indicator
     payload = detect_thinking(bottom_lines)
     if payload:
-        return ScreenEvent(state=ScreenState.THINKING, payload=payload, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.THINKING, payload=payload, raw_lines=lines))
 
     # 5. Tool running/waiting
     for line in reversed(bottom_lines):
         if _TOOL_STATUS_RE.search(line) or _TOOL_HOOKS_RE.search(line):
             tool_info = _extract_tool_info(lines)
-            return ScreenEvent(
+            return _return(ScreenEvent(
                 state=ScreenState.TOOL_RUNNING, payload=tool_info, raw_lines=lines
-            )
+            ))
 
     # 6. Tool result (diff summary)
     for line in reversed(bottom_lines):
         m = _TOOL_DIFF_RE.search(line)
         if m:
-            return ScreenEvent(
+            return _return(ScreenEvent(
                 state=ScreenState.TOOL_RESULT,
                 payload={"added": int(m.group(1)), "removed": int(m.group(2))},
                 raw_lines=lines,
-            )
+            ))
 
     # 7. Background task
     payload = detect_background_task(bottom_lines)
     if payload:
-        return ScreenEvent(
+        return _return(ScreenEvent(
             state=ScreenState.BACKGROUND_TASK, payload=payload, raw_lines=lines
-        )
+        ))
 
     # --- Third pass: check last meaningful line ---
 
@@ -932,48 +942,48 @@ def classify_screen_state(
                 break
         if found_sep_above and found_sep_below:
             placeholder = re.sub(r"^❯\s*", "", last_line)
-            return ScreenEvent(
+            return _return(ScreenEvent(
                 state=ScreenState.IDLE,
                 payload={"placeholder": placeholder},
                 raw_lines=lines,
-            )
+            ))
 
     # 9. Streaming: last line starts with ⏺
     m = _RESPONSE_MARKER_RE.match(last_line)
     if m:
-        return ScreenEvent(
+        return _return(ScreenEvent(
             state=ScreenState.STREAMING,
             payload={"text": m.group(1)},
             raw_lines=lines,
-        )
+        ))
 
     # 10. User message: ❯ followed by text (not between separators)
     if _PROMPT_MARKER_RE.match(last_line):
         user_text = re.sub(r"^❯\s*", "", last_line)
-        return ScreenEvent(
+        return _return(ScreenEvent(
             state=ScreenState.USER_MESSAGE,
             payload={"text": user_text},
             raw_lines=lines,
-        )
+        ))
 
     # 11. Startup
     for line in non_empty[:10]:
         if _STARTUP_RE.search(line):
-            return ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines)
+            return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
         stripped = line.strip()
         if _LOGO_RE.search(stripped) and sum(1 for c in stripped if _LOGO_RE.match(c)) >= 3:
-            return ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines)
+            return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
 
     # 12. Error
     for line in non_empty:
         if _ERROR_RE.search(line):
-            return ScreenEvent(
+            return _return(ScreenEvent(
                 state=ScreenState.ERROR,
                 payload={"text": line.strip()},
                 raw_lines=lines,
-            )
+            ))
 
-    return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
+    return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
 
 
 # --- Telegram formatting ---
