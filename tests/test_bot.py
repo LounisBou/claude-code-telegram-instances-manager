@@ -887,13 +887,11 @@ class TestBuildApp:
         app = build_app(str(config_file))
         assert app is not None
 
-    def test_debug_mode_applies_debugit(self, tmp_path):
+    def test_debug_flags_propagate_to_config(self, tmp_path):
         import yaml
 
-        import src.output_parser as op
         from src.main import build_app
 
-        original_fn = op.classify_screen_state
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             yaml.dump(
@@ -903,14 +901,11 @@ class TestBuildApp:
                         "authorized_users": [111],
                     },
                     "projects": {"root": "/tmp"},
-                    "debug": {"enabled": True},
                 }
             )
         )
-        app = build_app(str(config_file))
+        app = build_app(str(config_file), debug=True, trace=True, verbose=True)
         assert app is not None
         assert app.bot_data["config"].debug.enabled is True
-        # DebugIt wraps the function — verify it's no longer the original
-        assert op.classify_screen_state is not original_fn
-        # Restore to avoid leaking into other tests
-        op.classify_screen_state = original_fn
+        assert app.bot_data["config"].debug.trace is True
+        assert app.bot_data["config"].debug.verbose is True

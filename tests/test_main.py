@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import logging
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.main import _on_startup, _parse_args, _setup_logging
+from src.main import _on_startup, _parse_args
 
 
 class TestOnStartup:
@@ -34,27 +33,29 @@ class TestOnStartup:
         db.initialize.assert_called_once()
 
 
-class TestSetupLogging:
-    def test_debug_mode(self):
-        logger = _setup_logging(debug=True)
-        assert logger is not None
-        assert logger.level == logging.DEBUG
-
-    def test_info_mode(self):
-        logger = _setup_logging(debug=False)
-        assert logger is not None
-        assert logger.level == logging.INFO
-
-
 class TestParseArgs:
     def test_default_config_path(self):
         with patch.object(sys, "argv", ["main"]):
             args = _parse_args()
             assert args.config == "config.yaml"
             assert args.debug is False
+            assert args.trace is False
+            assert args.verbose is False
 
     def test_custom_config_and_debug(self):
         with patch.object(sys, "argv", ["main", "my.yaml", "--debug"]):
             args = _parse_args()
             assert args.config == "my.yaml"
             assert args.debug is True
+
+    def test_trace_flag(self):
+        with patch.object(sys, "argv", ["main", "--trace"]):
+            args = _parse_args()
+            assert args.trace is True
+            assert args.verbose is False
+
+    def test_trace_verbose_flags(self):
+        with patch.object(sys, "argv", ["main", "--trace", "--verbose"]):
+            args = _parse_args()
+            assert args.trace is True
+            assert args.verbose is True

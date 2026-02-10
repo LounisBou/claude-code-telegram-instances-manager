@@ -107,3 +107,12 @@ class TestAppConfig:
         config = load_config(str(config_file))
         assert config.is_authorized(111) is True
         assert config.is_authorized(999) is False
+
+
+class TestDebugConfig:
+    def test_debug_config_defaults(self):
+        from src.config import DebugConfig
+        dc = DebugConfig()
+        assert dc.enabled is False
+        assert dc.trace is False
+        assert dc.verbose is False

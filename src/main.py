@@ -3,9 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import sys
 
-from pydevmate import DebugIt, LogIt
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -30,42 +28,20 @@ from src.bot import (
 from src.config import load_config
 from src.database import Database
 from src.file_handler import FileHandler
+from src.log_setup import setup_logging
 from src.session_manager import SessionManager
 
 
-def _setup_logging(debug: bool) -> LogIt:
-    """Configure application logging with PyDevMate LogIt.
-
-    Args:
-        debug: If True, sets log level to DEBUG; otherwise INFO.
-
-    Returns:
-        The configured LogIt logger instance.
-    """
-    level = logging.DEBUG if debug else logging.INFO
-    return LogIt(name="claude-bot", level=level, console=True, file=False)
-
-
-def build_app(config_path: str, debug: bool = False) -> Application:
-    """Build and configure the Telegram bot application.
-
-    Loads configuration, initializes core services (database, session manager,
-    file handler), stores them in bot_data, and registers all command, callback,
-    and message handlers.
-
-    Args:
-        config_path: Filesystem path to the YAML configuration file.
-        debug: If True, enables debug mode (overrides config).
-
-    Returns:
-        A fully configured telegram.ext.Application instance ready to be
-        initialized and started.
-    """
+def build_app(config_path: str, debug: bool = False, trace: bool = False, verbose: bool = False) -> Application:
+    """Build and configure the Telegram bot application."""
     config = load_config(config_path)
 
-    # --debug flag overrides config file setting
     if debug:
         config.debug.enabled = True
+    if trace:
+        config.debug.trace = True
+    if verbose:
+        config.debug.verbose = True
 
     app = Application.builder().token(config.telegram.bot_token).build()
 
@@ -83,16 +59,6 @@ def build_app(config_path: str, debug: bool = False) -> Application:
     app.bot_data["db"] = db
     app.bot_data["session_manager"] = session_manager
     app.bot_data["file_handler"] = file_handler
-
-    # Apply DebugIt decorator to key sync functions when debug mode is on.
-    # DebugIt wraps at the module attribute level — callers that import
-    # classify_screen_state by name won't see the wrapper; only callers
-    # accessing it via src.output_parser.classify_screen_state will.
-    if config.debug.enabled:
-        import src.output_parser as op
-
-        _original_classify = op.classify_screen_state
-        op.classify_screen_state = DebugIt()(_original_classify)
 
     # Command handlers
     app.add_handler(CommandHandler(["start", "new"], handle_start))
@@ -121,49 +87,37 @@ def build_app(config_path: str, debug: bool = False) -> Application:
 
 
 async def _on_startup(app: Application) -> None:
-    """Run one-time initialization tasks after the application starts.
-
-    Initializes the database schema and marks any previously active sessions
-    as lost, since they could not have survived a bot restart.
-
-    Args:
-        app: The Telegram application instance whose bot_data contains
-            the Database dependency.
-    """
+    """Run one-time initialization tasks after the application starts."""
     logger = logging.getLogger(__name__)
-    db: Database = app.bot_data["db"]
+    db = app.bot_data["db"]
     await db.initialize()
-    # Sessions from a previous run can't survive a bot restart; mark them lost
     lost = await db.mark_active_sessions_lost()
     if lost:
-        logger.info(f"Marked {len(lost)} stale sessions as lost on startup")
+        logger.info("Marked %d stale sessions as lost on startup", len(lost))
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse command-line arguments.
-
-    Returns:
-        Parsed namespace with 'config' (str) and 'debug' (bool) attributes.
-    """
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Claude Instance Manager Bot")
     parser.add_argument("config", nargs="?", default="config.yaml",
                         help="Path to YAML config file (default: config.yaml)")
     parser.add_argument("--debug", action="store_true",
                         help="Enable debug mode (verbose logging)")
+    parser.add_argument("--trace", action="store_true",
+                        help="Enable trace mode (writes trace file to debug/)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="With --trace, also send trace output to terminal")
     return parser.parse_args()
 
 
 async def main() -> None:
-    """Entry point for the ClaudeInstanceManager Telegram bot.
-
-    Parses command-line arguments, sets up logging, builds the application,
-    registers the startup hook, and runs the bot with long-polling until
-    interrupted. On shutdown, gracefully stops the updater and the application.
-    """
+    """Entry point for the ClaudeInstanceManager Telegram bot."""
     args = _parse_args()
-    logger = _setup_logging(args.debug)
+    logger = setup_logging(
+        debug=args.debug, trace=args.trace, verbose=args.verbose
+    )
 
-    app = build_app(args.config, debug=args.debug)
+    app = build_app(args.config, debug=args.debug, trace=args.trace, verbose=args.verbose)
     app.post_init = _on_startup
 
     logger.info("Starting ClaudeInstanceManager bot...")
@@ -171,7 +125,6 @@ async def main() -> None:
     await app.start()
     await app.updater.start_polling()
 
-    # Event().wait() keeps the bot running indefinitely until KeyboardInterrupt
     try:
         await asyncio.Event().wait()
     finally:

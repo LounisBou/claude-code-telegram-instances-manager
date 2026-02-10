@@ -60,6 +60,8 @@ class DebugConfig:
     """Debug mode settings."""
 
     enabled: bool = False
+    trace: bool = False
+    verbose: bool = False
 
 
 @dataclass
