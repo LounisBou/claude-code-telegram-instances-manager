@@ -350,9 +350,17 @@ async def handle_callback_query(
         project_path = data[len("project:") :]
         # Extract project name from path to avoid storing it separately in callback_data
         project_name = project_path.rstrip("/").split("/")[-1]
-        session = await session_manager.create_session(
-            user_id, project_name, project_path
-        )
+        try:
+            session = await session_manager.create_session(
+                user_id, project_name, project_path
+            )
+        except Exception as exc:
+            logger.error("Failed to create session for %s: %s", project_name, exc)
+            await query.answer()
+            await query.edit_message_text(
+                f"Failed to start Claude for *{project_name}*:\n`{exc}`"
+            )
+            return
         git_info = await get_git_info(project_path)
         msg = format_session_started(project_name, session.session_id)
         msg += f"\n{git_info.format()}"
