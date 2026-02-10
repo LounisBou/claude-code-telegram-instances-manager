@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import logging
-import os
 from unittest.mock import patch
-
-import pytest
 
 from src.log_setup import TRACE, setup_logging
 
