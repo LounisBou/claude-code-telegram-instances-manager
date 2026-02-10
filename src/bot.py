@@ -704,6 +704,22 @@ BOT_COMMANDS = [
 async def handle_unknown_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Reply to unrecognised slash commands with the list of valid ones."""
+    """Forward unrecognised slash commands to the active Claude session.
+
+    Claude Code has its own slash commands (/status, /approve, etc.).
+    If the user has an active session, forward the text as-is.
+    Otherwise reply with the list of valid bot commands.
+    """
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+    if not is_authorized(user_id, config.telegram.authorized_users):
+        return
+
+    session_manager = context.bot_data["session_manager"]
+    active = session_manager.get_active_session(user_id)
+    if active:
+        await active.process.write(update.message.text + "\n")
+        return
+
     known = "\n".join(f"/{cmd} — {desc}" for cmd, desc in BOT_COMMANDS)
     await update.message.reply_text(f"Unknown command.\n\n{known}")
