@@ -123,10 +123,10 @@ async def main() -> None:
     )
 
     app = build_app(args.config, debug=args.debug, trace=args.trace, verbose=args.verbose)
-    app.post_init = _on_startup
 
     logger.info("Starting ClaudeInstanceManager bot...")
     await app.initialize()
+    await _on_startup(app)
     await app.start()
     await app.updater.start_polling()
 
