@@ -43,6 +43,7 @@ class SessionManager:
         max_per_user: int,
         db: Database,
         file_handler: FileHandler,
+        claude_env: dict[str, str] | None = None,
     ) -> None:
         """Initialize the session manager.
 
@@ -52,9 +53,11 @@ class SessionManager:
             max_per_user: Maximum number of concurrent sessions per user.
             db: Database instance for persisting session records.
             file_handler: File handler for cleaning up session artifacts.
+            claude_env: Extra environment variables for Claude processes.
         """
         self._command = claude_command
         self._args = claude_args
+        self._env = claude_env or {}
         self._max_per_user = max_per_user
         self._db = db
         self._file_handler = file_handler
@@ -95,7 +98,7 @@ class SessionManager:
         self._next_id[user_id] = session_id + 1
 
         process = ClaudeProcess(
-            command=self._command, args=self._args, cwd=project_path
+            command=self._command, args=self._args, cwd=project_path, env=self._env
         )
         await process.spawn()
         logger.debug("Session #%d created for user %d", session_id, user_id)

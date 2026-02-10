@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 
 import pexpect
 
@@ -18,19 +20,34 @@ class ClaudeProcess:
     PTY management and asyncio executors for non-blocking I/O.
     """
 
-    def __init__(self, command: str, args: list[str], cwd: str) -> None:
+    def __init__(self, command: str, args: list[str], cwd: str, env: dict[str, str] | None = None) -> None:
         """Initialize a ClaudeProcess without spawning it.
 
         Args:
             command: The CLI command to execute (e.g. "claude").
             args: List of command-line arguments to pass.
             cwd: Working directory in which to spawn the process.
+            env: Extra environment variables to set for the process.
+                 Merged on top of the current environment. Tilde (~)
+                 in values is expanded to the user home directory.
         """
         self._command = command
         self._args = args
         self._cwd = cwd
+        self._env = self._build_env(env or {})
         self._process: pexpect.spawn | None = None
         self._buffer: str = ""
+
+    @staticmethod
+    def _build_env(extra: dict[str, str]) -> dict[str, str]:
+        """Merge extra env vars into a copy of the current environment.
+
+        Expands ~ to the user home directory in values.
+        """
+        merged = os.environ.copy()
+        for key, value in extra.items():
+            merged[key] = str(Path(value).expanduser()) if "~" in value else value
+        return merged
 
     async def spawn(self) -> None:
         """Spawn the Claude Code CLI process in a PTY.
@@ -49,6 +66,7 @@ class ClaudeProcess:
             lambda: pexpect.spawn(
                 cmd,
                 cwd=self._cwd,
+                env=self._env,
                 encoding="utf-8",
                 timeout=5,
                 maxread=4096,

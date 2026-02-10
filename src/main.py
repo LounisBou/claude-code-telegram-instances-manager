@@ -55,6 +55,7 @@ def build_app(config_path: str, debug: bool = False, trace: bool = False, verbos
         max_per_user=config.sessions.max_per_user,
         db=db,
         file_handler=file_handler,
+        claude_env=config.claude.env,
     )
 
     app.bot_data["config"] = config
