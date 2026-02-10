@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -81,3 +82,15 @@ class TestClaudeProcess:
         await asyncio.sleep(0.2)
         output = proc.read_available()
         assert "hello world" in output
+
+
+class TestClaudeProcessLogging:
+    @pytest.mark.asyncio
+    async def test_spawn_logs_command(self, caplog):
+        from src.log_setup import setup_logging
+        setup_logging(debug=True, trace=False, verbose=False)
+        proc = ClaudeProcess(command="echo", args=["hello"], cwd="/tmp")
+        with caplog.at_level(logging.DEBUG, logger="src.claude_process"):
+            await proc.spawn()
+        assert any("spawn" in r.message.lower() for r in caplog.records)
+        await proc.terminate()

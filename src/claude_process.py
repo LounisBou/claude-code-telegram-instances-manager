@@ -5,6 +5,8 @@ import logging
 
 import pexpect
 
+from src.log_setup import TRACE
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,7 @@ class ClaudeProcess:
         cmd = self._command
         if self._args:
             cmd = f"{self._command} {' '.join(self._args)}"
+        logger.debug("Spawning process: cmd=%s cwd=%s", cmd, self._cwd)
         loop = asyncio.get_event_loop()
         self._process = await loop.run_in_executor(
             None,
@@ -51,6 +54,7 @@ class ClaudeProcess:
                 maxread=4096,
             ),
         )
+        logger.debug("Process spawned pid=%d", self._process.pid)
 
     def is_alive(self) -> bool:
         """Check whether the underlying PTY process is still running.
@@ -74,6 +78,7 @@ class ClaudeProcess:
         """
         if not self.is_alive():
             return
+        logger.debug("PTY write: %r", text[:200])
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._process.send, text)
 
@@ -94,6 +99,7 @@ class ClaudeProcess:
             while True:
                 try:
                     chunk = self._process.read_nonblocking(size=4096, timeout=0)
+                    logger.log(TRACE, "PTY read chunk len=%d", len(chunk))
                     self._buffer += chunk
                 except pexpect.TIMEOUT:
                     break
@@ -103,6 +109,8 @@ class ClaudeProcess:
             logger.warning("Unexpected error draining PTY buffer: %s", exc)
         result = self._buffer
         self._buffer = ""
+        if result:
+            logger.log(TRACE, "PTY read_available total=%d", len(result))
         return result
 
     async def terminate(self) -> None:
@@ -113,6 +121,7 @@ class ClaudeProcess:
         """
         if self._process is None:
             return
+        logger.debug("Terminating process pid=%s", self._process.pid if self._process else None)
         loop = asyncio.get_event_loop()
         if self._process.isalive():
             await loop.run_in_executor(None, self._process.close, True)
