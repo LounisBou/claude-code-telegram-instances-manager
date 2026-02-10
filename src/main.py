@@ -31,6 +31,8 @@ from src.file_handler import FileHandler
 from src.log_setup import setup_logging
 from src.session_manager import SessionManager
 
+logger = logging.getLogger(__name__)
+
 
 def build_app(config_path: str, debug: bool = False, trace: bool = False, verbose: bool = False) -> Application:
     """Build and configure the Telegram bot application."""
@@ -82,6 +84,8 @@ def build_app(config_path: str, debug: bool = False, trace: bool = False, verbos
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)
     )
+
+    logger.debug("App built with %d handler groups", len(app.handlers))
 
     return app
 
