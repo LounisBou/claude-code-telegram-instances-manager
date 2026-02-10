@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -205,3 +206,21 @@ class TestOutputBuffer:
     def test_empty_buffer_not_ready(self):
         buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
         assert buf.is_ready() is False
+
+
+class TestSessionManagerLogging:
+    @pytest.mark.asyncio
+    async def test_create_session_logs(self, caplog):
+        from src.log_setup import setup_logging
+        setup_logging(debug=True, trace=False, verbose=False)
+        db = AsyncMock()
+        db.create_session = AsyncMock(return_value=1)
+        fh = MagicMock()
+        sm = SessionManager(
+            claude_command="echo", claude_args=[], max_per_user=3, db=db, file_handler=fh
+        )
+        with patch("src.session_manager.ClaudeProcess") as mock_cp:
+            mock_cp.return_value.spawn = AsyncMock()
+            with caplog.at_level(logging.DEBUG, logger="src.session_manager"):
+                await sm.create_session(111, "test-project", "/tmp/test")
+        assert any("create_session" in r.message for r in caplog.records)

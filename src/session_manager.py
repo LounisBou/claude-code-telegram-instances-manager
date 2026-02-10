@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -7,6 +8,9 @@ from datetime import datetime, timezone
 from src.claude_process import ClaudeProcess
 from src.database import Database
 from src.file_handler import FileHandler
+from src.log_setup import TRACE
+
+logger = logging.getLogger(__name__)
 
 
 class SessionError(Exception):
@@ -78,6 +82,7 @@ class SessionManager:
             SessionError: If the user has reached the maximum number
                 of concurrent sessions.
         """
+        logger.debug("create_session user_id=%d project=%s", user_id, project_name)
         # Check limit before spawning to avoid orphaned processes on rejection
         user_sessions = self._sessions.get(user_id, {})
         if len(user_sessions) >= self._max_per_user:
@@ -93,6 +98,7 @@ class SessionManager:
             command=self._command, args=self._args, cwd=project_path
         )
         await process.spawn()
+        logger.debug("Session #%d created for user %d", session_id, user_id)
 
         db_id = await self._db.create_session(
             user_id=user_id, project=project_name, project_path=project_path
@@ -139,6 +145,7 @@ class SessionManager:
         Raises:
             SessionError: If the session does not exist for this user.
         """
+        logger.debug("switch_session user_id=%d -> session_id=%d", user_id, session_id)
         if session_id not in self._sessions.get(user_id, {}):
             raise SessionError(f"Session {session_id} not found")
         self._active[user_id] = session_id
@@ -168,6 +175,7 @@ class SessionManager:
         Raises:
             SessionError: If the session does not exist for this user.
         """
+        logger.debug("kill_session user_id=%d session_id=%d", user_id, session_id)
         session = self._sessions.get(user_id, {}).get(session_id)
         if session is None:
             raise SessionError(f"Session {session_id} not found")
@@ -231,6 +239,7 @@ class OutputBuffer:
         """
         self._buffer += text
         self._last_append = time.monotonic()
+        logger.log(TRACE, "OutputBuffer append len=%d total=%d", len(text), len(self._buffer))
 
     def flush(self) -> str:
         """Drain the buffer and return its contents.
@@ -239,6 +248,7 @@ class OutputBuffer:
             The accumulated text. The buffer is empty after this call.
         """
         result = self._buffer
+        logger.debug("OutputBuffer flush len=%d", len(result))
         self._buffer = ""
         self._last_append = 0
         return result
