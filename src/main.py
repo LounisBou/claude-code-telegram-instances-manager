@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import signal
 
 from telegram import BotCommand
 from telegram.ext import (
@@ -140,12 +141,19 @@ async def main() -> None:
     await app.start()
     await app.updater.start_polling()
 
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)
+
+    logger.info("Bot is running. Press Ctrl+C to stop.")
+    await stop_event.wait()
+
+    logger.info("Shutting down...")
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
+    logger.info("Bye.")
 
 
 if __name__ == "__main__":
