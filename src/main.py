@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 
+from telegram import BotCommand
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -13,6 +14,7 @@ from telegram.ext import (
 )
 
 from src.bot import (
+    BOT_COMMANDS,
     handle_callback_query,
     handle_context,
     handle_download,
@@ -23,6 +25,7 @@ from src.bot import (
     handle_sessions,
     handle_start,
     handle_text_message,
+    handle_unknown_command,
     handle_update_claude,
 )
 from src.config import load_config
@@ -86,6 +89,9 @@ def build_app(config_path: str, debug: bool = False, trace: bool = False, verbos
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)
     )
 
+    # Catch-all for unknown /commands so the bot never silently ignores
+    app.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
+
     logger.debug("App built with %d handler groups", len(app.handlers))
 
     return app
@@ -99,6 +105,10 @@ async def _on_startup(app: Application) -> None:
     lost = await db.mark_active_sessions_lost()
     if lost:
         logger.info("Marked %d stale sessions as lost on startup", len(lost))
+
+    await app.bot.set_my_commands(
+        [BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
+    )
 
 
 def _parse_args() -> argparse.Namespace:

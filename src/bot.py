@@ -685,3 +685,25 @@ async def _run_update_command(command: str) -> str:
         return "Error: update command timed out after 60s"
     prefix = "OK" if proc.returncode == 0 else f"FAILED (exit {proc.returncode})"
     return f"{prefix}: {stdout.decode().strip()}"
+
+
+# --- Command menu ---
+
+BOT_COMMANDS = [
+    ("start", "Start a new session / pick a project"),
+    ("sessions", "List and switch active sessions"),
+    ("exit", "Kill the active session"),
+    ("history", "Show past sessions"),
+    ("git", "Show git info for current project"),
+    ("context", "Show context window usage"),
+    ("download", "Download a file from the session"),
+    ("update_claude", "Update the Claude Code CLI"),
+]
+
+
+async def handle_unknown_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Reply to unrecognised slash commands with the list of valid ones."""
+    known = "\n".join(f"/{cmd} — {desc}" for cmd, desc in BOT_COMMANDS)
+    await update.message.reply_text(f"Unknown command.\n\n{known}")

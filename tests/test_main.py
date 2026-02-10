@@ -9,6 +9,13 @@ from src.main import _on_startup, _parse_args
 
 
 class TestOnStartup:
+    @staticmethod
+    def _make_app(db):
+        app = MagicMock()
+        app.bot_data = {"db": db}
+        app.bot.set_my_commands = AsyncMock()
+        return app
+
     @pytest.mark.asyncio
     async def test_initializes_db_and_marks_lost(self):
         db = AsyncMock()
@@ -16,8 +23,7 @@ class TestOnStartup:
         db.mark_active_sessions_lost = AsyncMock(
             return_value=[{"id": 1, "project": "p1"}]
         )
-        app = MagicMock()
-        app.bot_data = {"db": db}
+        app = self._make_app(db)
         await _on_startup(app)
         db.initialize.assert_called_once()
         db.mark_active_sessions_lost.assert_called_once()
@@ -27,10 +33,18 @@ class TestOnStartup:
         db = AsyncMock()
         db.initialize = AsyncMock()
         db.mark_active_sessions_lost = AsyncMock(return_value=[])
-        app = MagicMock()
-        app.bot_data = {"db": db}
+        app = self._make_app(db)
         await _on_startup(app)
         db.initialize.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sets_bot_commands(self):
+        db = AsyncMock()
+        db.initialize = AsyncMock()
+        db.mark_active_sessions_lost = AsyncMock(return_value=[])
+        app = self._make_app(db)
+        await _on_startup(app)
+        app.bot.set_my_commands.assert_called_once()
 
 
 class TestParseArgs:
