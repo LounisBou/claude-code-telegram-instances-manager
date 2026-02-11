@@ -126,6 +126,47 @@ class TestTerminalEmulator:
         assert "claude-instance-manager" in text
 
 
+    def test_scrollback_history_preserved(self):
+        """Regression: long output that scrolls past screen height must be
+        preserved in the scrollback buffer via pyte.HistoryScreen."""
+        emu = TerminalEmulator(rows=10, cols=80)
+        # Feed 30 lines — only last 10 fit on screen
+        for i in range(30):
+            emu.feed(f"Line {i}\r\n")
+        display = emu.get_display()
+        full = emu.get_full_display()
+        # Display should only have last ~10 lines
+        display_text = "\n".join(display)
+        assert "Line 0" not in display_text
+        assert "Line 29" in display_text
+        # Full display should have ALL lines including scrollback
+        full_text = "\n".join(full)
+        assert "Line 0" in full_text
+        assert "Line 15" in full_text
+        assert "Line 29" in full_text
+
+    def test_clear_history(self):
+        """clear_history() discards scrollback without affecting current display."""
+        emu = TerminalEmulator(rows=10, cols=80)
+        for i in range(30):
+            emu.feed(f"Line {i}\r\n")
+        assert len(emu.get_full_display()) > 10
+        emu.clear_history()
+        full_after = emu.get_full_display()
+        # After clearing, full display should equal visible display
+        assert len(full_after) == 10
+        assert "Line 0" not in "\n".join(full_after)
+
+    def test_reset_clears_history(self):
+        """reset() must clear both screen and scrollback history."""
+        emu = TerminalEmulator(rows=10, cols=80)
+        for i in range(30):
+            emu.feed(f"Line {i}\r\n")
+        emu.reset()
+        assert emu.get_text() == ""
+        assert emu.get_full_display() == [""] * 10
+
+
 class TestStripAnsi:
     def test_strips_color_codes(self):
         assert strip_ansi("\x1b[31mred text\x1b[0m") == "red text"

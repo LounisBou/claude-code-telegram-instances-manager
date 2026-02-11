@@ -15,13 +15,18 @@ class TerminalEmulator:
     def __init__(self, rows: int = 40, cols: int = 120):
         """Initialize the terminal emulator with a virtual screen.
 
+        Uses ``pyte.HistoryScreen`` so that lines scrolled off the top of
+        the visible area are preserved in a scrollback buffer. This is
+        critical for fast responses that exceed the screen height — without
+        history, the beginning of the response would be irretrievably lost.
+
         Args:
             rows: Number of rows in the virtual terminal. Defaults to 40.
             cols: Number of columns in the virtual terminal. Defaults to 120.
         """
         self.rows = rows
         self.cols = cols
-        self.screen = pyte.Screen(cols, rows)
+        self.screen = pyte.HistoryScreen(cols, rows, history=1000)
         self.stream = pyte.Stream(self.screen)
         self._prev_display: list[str] = [""] * rows
 
@@ -43,6 +48,34 @@ class TerminalEmulator:
             List of strings, one per terminal row.
         """
         return [line.rstrip() for line in self.screen.display]
+
+    def get_full_display(self) -> list[str]:
+        """Return all screen lines **plus** scrollback history.
+
+        Lines that scrolled off the top of the visible area are prepended
+        (oldest first) to the current display. This gives a complete view
+        of everything written to the terminal since the last ``reset()``,
+        up to the configured history limit (1 000 lines).
+
+        Returns:
+            List of strings: scrollback history followed by current display,
+            each right-stripped of trailing whitespace.
+        """
+        history_lines: list[str] = []
+        for row in self.screen.history.top:
+            rendered = "".join(
+                row[col].data for col in range(self.cols)
+            ).rstrip()
+            history_lines.append(rendered)
+        return history_lines + self.get_display()
+
+    def clear_history(self) -> None:
+        """Discard the scrollback history buffer.
+
+        Useful after content has been extracted from the full display
+        to prevent the same history lines from being re-read.
+        """
+        self.screen.history.top.clear()
 
     def get_text(self) -> str:
         """Return full screen content as text with blank lines collapsed.
@@ -88,10 +121,11 @@ class TerminalEmulator:
     def reset(self) -> None:
         """Reset the terminal to its initial blank state.
 
-        Clears the pyte screen buffer and the internal previous-display
-        snapshot used by get_changes.
+        Clears the pyte screen buffer, the scrollback history, and the
+        internal previous-display snapshot used by get_changes.
         """
         self.screen.reset()
+        self.screen.history.top.clear()
         self._prev_display = [""] * self.rows
 
 

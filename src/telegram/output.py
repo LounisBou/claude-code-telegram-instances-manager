@@ -301,11 +301,19 @@ async def poll_output(
                         and streaming.state == StreamingState.THINKING
                     )
                     if _fast_idle:
-                        prompt_idx = _find_last_prompt(display)
+                        # Use full display including scrollback history so
+                        # that long responses aren't truncated to the last
+                        # screen-full.  The pyte HistoryScreen preserves
+                        # lines that scrolled off the visible area.
+                        full = emu.get_full_display()
+                        prompt_idx = _find_last_prompt(full)
                         if prompt_idx is not None:
-                            source = display[prompt_idx:]
+                            source = full[prompt_idx:]
                         else:
-                            source = display
+                            source = full
+                        # Clear history after extraction to avoid re-reading
+                        # the same scrollback on subsequent poll cycles.
+                        emu.clear_history()
                     else:
                         source = changed
                     content = extract_content(source)
