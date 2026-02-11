@@ -53,6 +53,16 @@ class TestClaudeProcess:
         await proc.terminate()
 
     @pytest.mark.asyncio
+    async def test_read_after_terminate_no_warning(self):
+        """Regression: read_available after terminate must not log a warning."""
+        proc = ClaudeProcess(command="cat", args=[], cwd="/tmp")
+        await proc.spawn()
+        await proc.terminate()
+        # Should return empty string without raising or warning
+        output = proc.read_available()
+        assert output == ""
+
+    @pytest.mark.asyncio
     async def test_cwd_is_set(self, tmp_path):
         proc = ClaudeProcess(command="pwd", args=[], cwd=str(tmp_path))
         await proc.spawn()

@@ -142,6 +142,9 @@ class ClaudeProcess:
                     break
                 except pexpect.EOF:
                     break
+                except OSError:
+                    # Bad file descriptor after process termination
+                    break
         except Exception as exc:
             logger.warning("Unexpected error draining PTY buffer: %s", exc)
         result = self._buffer
