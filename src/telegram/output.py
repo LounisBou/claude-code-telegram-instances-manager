@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from enum import Enum
 
 from telegram import Bot
 
@@ -163,3 +165,165 @@ async def _flush_buffer(bot: Bot, user_id: int, buf: OutputBuffer) -> None:
             await bot.send_message(chat_id=user_id, text=chunk)
         except Exception as exc:
             logger.error("Failed to send output to user %d: %s", user_id, exc)
+
+
+class StreamingState(Enum):
+    """State of a StreamingMessage lifecycle.
+
+    Values:
+        IDLE: No active response. Ready to begin a new cycle.
+        THINKING: Placeholder message sent, typing indicator active.
+        STREAMING: Content is being appended and edited in-place.
+    """
+
+    IDLE = "idle"
+    THINKING = "thinking"
+    STREAMING = "streaming"
+
+
+class StreamingMessage:
+    """Manages edit-in-place streaming for a single Claude response.
+
+    State machine: IDLE -> start_thinking() -> THINKING -> first content -> STREAMING -> finalize() -> IDLE
+
+    In THINKING state, sends typing action every 4s.
+    In STREAMING state, edits message in-place at throttled rate.
+    On overflow (>4096 chars), finalizes current message and starts a new one.
+    """
+
+    def __init__(self, bot: Bot, chat_id: int, edit_rate_limit: int = 3) -> None:
+        """Initialize streaming message manager.
+
+        Args:
+            bot: Telegram Bot instance for API calls.
+            chat_id: Telegram chat ID to send messages to.
+            edit_rate_limit: Maximum edit_message calls per second.
+        """
+        self.bot = bot
+        self.chat_id = chat_id
+        self.edit_rate_limit = edit_rate_limit
+        self.message_id: int | None = None
+        self.accumulated: str = ""
+        self.last_edit_time: float = 0
+        self.state: StreamingState = StreamingState.IDLE
+        self._typing_task: asyncio.Task | None = None
+
+    async def start_thinking(self) -> None:
+        """Send typing action and placeholder message.
+
+        Transitions: IDLE -> THINKING.
+        Starts a background task that resends typing action every 4 seconds.
+        """
+        await self.bot.send_chat_action(chat_id=self.chat_id, action="typing")
+        msg = await self.bot.send_message(
+            chat_id=self.chat_id,
+            text="<i>Thinking...</i>",
+            parse_mode="HTML",
+        )
+        self.message_id = msg.message_id
+        self.state = StreamingState.THINKING
+        self._typing_task = asyncio.create_task(self._typing_loop())
+
+    async def append_content(self, html: str) -> None:
+        """Add content and edit message if throttle allows.
+
+        On first call, cancels typing indicator and transitions to STREAMING.
+        Handles overflow when accumulated content exceeds 4096 chars.
+
+        Args:
+            html: HTML-formatted content to append.
+        """
+        if self._typing_task:
+            self._typing_task.cancel()
+            self._typing_task = None
+
+        self.state = StreamingState.STREAMING
+        self.accumulated += html
+
+        if len(self.accumulated) > 4096:
+            await self._overflow()
+            return
+
+        now = time.monotonic()
+        min_interval = 1.0 / self.edit_rate_limit
+        if now - self.last_edit_time < min_interval:
+            return
+
+        await self._edit()
+
+    async def finalize(self) -> None:
+        """Final edit to ensure all content is sent, then reset.
+
+        Transitions: any -> IDLE.
+        """
+        if self._typing_task:
+            self._typing_task.cancel()
+            self._typing_task = None
+        if self.accumulated and self.message_id:
+            await self._edit()
+        self.reset()
+
+    async def _edit(self) -> None:
+        """Edit the current message with accumulated content."""
+        if not self.message_id or not self.accumulated:
+            return
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self.chat_id,
+                message_id=self.message_id,
+                text=self.accumulated,
+                parse_mode="HTML",
+            )
+            self.last_edit_time = time.monotonic()
+        except Exception as exc:
+            exc_str = str(exc)
+            if "parse entities" in exc_str.lower():
+                try:
+                    await self.bot.edit_message_text(
+                        chat_id=self.chat_id,
+                        message_id=self.message_id,
+                        text=self.accumulated,
+                        parse_mode=None,
+                    )
+                    self.last_edit_time = time.monotonic()
+                except Exception as inner_exc:
+                    logger.warning(
+                        "edit_message plain-text fallback failed: %s", inner_exc
+                    )
+            else:
+                logger.warning("edit_message failed: %s", exc)
+
+    async def _overflow(self) -> None:
+        """Content exceeds 4096: finalize current message, start new one."""
+        split_at = self.accumulated.rfind("\n", 0, 4096)
+        if split_at == -1:
+            split_at = 4000
+        current = self.accumulated[:split_at]
+        remainder = self.accumulated[split_at:].lstrip()
+        self.accumulated = current
+        await self._edit()
+        if remainder:
+            msg = await self.bot.send_message(
+                chat_id=self.chat_id, text=remainder, parse_mode="HTML"
+            )
+            self.message_id = msg.message_id
+            self.accumulated = remainder
+            self.last_edit_time = time.monotonic()
+
+    async def _typing_loop(self) -> None:
+        """Resend typing action every 4 seconds."""
+        try:
+            while True:
+                await asyncio.sleep(4)
+                await self.bot.send_chat_action(
+                    chat_id=self.chat_id, action="typing"
+                )
+        except asyncio.CancelledError:
+            pass
+
+    def reset(self) -> None:
+        """Reset to IDLE for next response."""
+        self.message_id = None
+        self.accumulated = ""
+        self.last_edit_time = 0
+        self.state = StreamingState.IDLE

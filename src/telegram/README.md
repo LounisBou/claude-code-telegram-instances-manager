@@ -10,7 +10,7 @@ User interaction, output streaming, and message formatting for the Telegram inte
 | `handlers.py` | Core Telegram handlers: `/start`, `/sessions`, `/exit`, text messages, callback queries, unknown commands |
 | `commands.py` | Extended command handlers: `/history`, `/git`, `/context`, `/download`, `/update_claude`, file uploads |
 | `formatter.py` | Telegram MarkdownV2 escaping, message splitting for the 4096-char limit, `format_output()` for screen state rendering |
-| `output.py` | `poll_output()` async loop -- polls sessions every 300ms, classifies screen state, extracts content, sends to Telegram |
+| `output.py` | `poll_output()` async loop -- polls sessions every 300ms, classifies screen state, extracts content, sends to Telegram. Also provides `StreamingMessage` for edit-in-place streaming with throttled edits and overflow handling |
 
 ## Dependency Diagram
 
@@ -31,3 +31,4 @@ graph LR
 - **`is_authorized()` gate:** Every handler checks the user against `config.telegram.authorized_users` before processing. Unauthorized users receive a rejection message.
 - **`poll_output()` async loop:** Runs as a background `asyncio.Task`. Each cycle reads from all active sessions, classifies the screen state, extracts content via `_CONTENT_STATES` filtering, and sends formatted messages to the appropriate Telegram chat.
 - **`_CONTENT_STATES` filtering:** Only screen states that produce user-visible output (STREAMING, TOOL_REQUEST, TOOL_RUNNING, TOOL_RESULT, ERROR, TODO_LIST, PARALLEL_AGENTS, BACKGROUND_TASK) are forwarded to Telegram. UI chrome states (STARTUP, IDLE, USER_MESSAGE, UNKNOWN) are suppressed.
+- **`StreamingMessage` edit-in-place:** Manages a single Telegram message that is edited in-place as Claude streams output. State machine: IDLE -> THINKING (typing indicator) -> STREAMING (throttled edits) -> IDLE. Handles overflow by splitting at 4096 chars and starting a new message. Falls back to plain text on HTML parse errors.
