@@ -109,6 +109,36 @@ class TestAppConfig:
         assert config.is_authorized(999) is False
 
 
+class TestEditRateLimit:
+    """Config must support telegram.edit_rate_limit."""
+
+    def test_default_edit_rate_limit(self, tmp_path):
+        """TelegramConfig defaults edit_rate_limit to 3."""
+        import yaml
+        from src.core.config import load_config
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "telegram": {"bot_token": "tok", "authorized_users": [1]},
+            "projects": {"root": "/tmp"},
+        }))
+        cfg = load_config(str(config_file))
+        assert cfg.telegram.edit_rate_limit == 3
+
+    def test_custom_edit_rate_limit(self, tmp_path):
+        """edit_rate_limit can be overridden in config."""
+        import yaml
+        from src.core.config import load_config
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "telegram": {"bot_token": "tok", "authorized_users": [1], "edit_rate_limit": 5},
+            "projects": {"root": "/tmp"},
+        }))
+        cfg = load_config(str(config_file))
+        assert cfg.telegram.edit_rate_limit == 5
+
+
 class TestDebugConfig:
     def test_debug_config_defaults(self):
         from src.core.config import DebugConfig

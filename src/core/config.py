@@ -21,6 +21,7 @@ class TelegramConfig:
 
     bot_token: str
     authorized_users: list[int]
+    edit_rate_limit: int = 3
 
 
 @dataclass
@@ -129,6 +130,7 @@ def load_config(path: str) -> AppConfig:
         telegram=TelegramConfig(
             bot_token=telegram_raw["bot_token"],
             authorized_users=telegram_raw["authorized_users"],
+            edit_rate_limit=telegram_raw.get("edit_rate_limit", 3),
         ),
         projects=ProjectsConfig(
             root=projects_raw["root"],
