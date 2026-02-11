@@ -214,6 +214,10 @@ def extract_content(lines: list[str]) -> str:
     Keeps lines classified as 'content', 'response' (⏺ prefix stripped),
     and 'tool_connector' (⎿ prefix stripped) by classify_line.
 
+    Tracks prompt continuation state: lines between a ❯ prompt line and
+    the next ⏺ response / ⎿ tool connector / tool header are the user's
+    wrapped input and must be skipped.
+
     Args:
         lines: List of terminal screen lines to filter.
 
@@ -221,8 +225,26 @@ def extract_content(lines: list[str]) -> str:
         Newline-joined string of content lines, stripped.
     """
     content_lines = []
+    in_prompt = False
     for line in lines:
         cls = classify_line(line)
+        # Start skipping after a ❯ prompt line — continuation lines
+        # (wrapped user input) are classified as 'content' but belong
+        # to the prompt, not to Claude's response.
+        if cls == "prompt":
+            in_prompt = True
+            continue
+        # End prompt continuation when we hit a response marker or
+        # another structured element that signals Claude's output.
+        if in_prompt:
+            if cls in (
+                "response", "tool_connector", "tool_header",
+                "thinking", "separator",
+            ):
+                in_prompt = False
+            else:
+                # Still in prompt continuation — skip this line.
+                continue
         if cls == "content":
             content_lines.append(line.strip())
         elif cls == "response":

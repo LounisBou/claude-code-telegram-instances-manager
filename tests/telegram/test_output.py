@@ -68,6 +68,50 @@ class TestOutputStateFiltering:
         assert "real content" in content
         assert "\u2500" * 10 not in content
 
+    def test_extract_content_skips_prompt_continuation_lines(self):
+        """Regression: wrapped user prompt lines must not leak into response.
+
+        When the user sends a long prompt, it wraps in the terminal:
+          ❯ Write a Python function called fibonacci that returns the nth Fibonacci
+          number using recursion. Include a docstring. Show ONLY the code, no
+          explanation.
+          ⏺ def fibonacci(n: int) -> int:
+          ...
+
+        Lines between ❯ and ⏺ are prompt continuation (user input) and must
+        be excluded from extracted content.
+        """
+        lines = [
+            "❯ Write a Python function called fibonacci that returns the nth Fibonacci",
+            "number using recursion. Include a docstring. Show ONLY the code, no",
+            "explanation.",
+            "",
+            "⏺ def fibonacci(n: int) -> int:",
+            '    """Return the nth Fibonacci number using recursion."""',
+            "    if n <= 0:",
+            "        return 0",
+            "    return fibonacci(n - 1) + fibonacci(n - 2)",
+        ]
+        content = extract_content(lines)
+        # Response content must be present
+        assert "def fibonacci" in content
+        assert "return fibonacci" in content
+        # Prompt continuation lines must NOT be present — check exact text
+        # that only appears in the prompt wrapping, not the docstring
+        assert "Include a docstring" not in content
+        assert "Show ONLY the code" not in content
+        assert content.startswith("def fibonacci")
+
+    def test_extract_content_short_prompt_no_continuation(self):
+        """Short prompts (single line) must not suppress following content."""
+        lines = [
+            "❯ What is 2+2?",
+            "",
+            "⏺ Four.",
+        ]
+        content = extract_content(lines)
+        assert content == "Four."
+
     def test_startup_to_unknown_guard_prevents_reentry(self):
         """Regression: once past STARTUP, classifier returning STARTUP must become UNKNOWN."""
         key = (999, 999)
