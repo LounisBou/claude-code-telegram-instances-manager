@@ -187,6 +187,29 @@ class TestClassifyScreenState:
         event = classify_screen_state(lines)
         assert event.state == ScreenState.IDLE
 
+    def test_user_echo_with_old_response_not_streaming(self):
+        """Regression: user message echo must NOT trigger STREAMING from old ⏺.
+
+        After a previous response, ⏺ persists on the pyte screen. When the
+        user sends a new message, the echo appears below the old ⏺. The
+        classifier must not match the old ⏺ as STREAMING — only ⏺ markers
+        BELOW the last ❯ prompt should count.
+        """
+        lines = [""] * 15
+        # Old response from previous interaction (persists on screen)
+        lines[2] = "⏺ Previous response text"
+        lines[3] = "  some old content"
+        lines[4] = "─" * 40
+        # User's new message echo
+        lines[5] = "❯ Explain the architecture of this project in detail. List the main"
+        lines[6] = "components."
+        lines[7] = "─" * 40
+        lines[8] = "  my-project │ ⎇ main │ Usage: 50%"
+        lines[9] = "PR #13"
+        event = classify_screen_state(lines)
+        # Should NOT be STREAMING (old ⏺ is above the ❯ prompt)
+        assert event.state != ScreenState.STREAMING
+
     def test_streaming_with_content_below_response_marker(self):
         """Regression: ⏺ not on last line — content lines below must still detect STREAMING."""
         lines = [""] * 15
@@ -198,6 +221,18 @@ class TestClassifyScreenState:
         lines[7] = "  2. File B"
         lines[10] = "─" * 40
         lines[11] = "  my-project │ ⎇ main │ Usage: 7%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.STREAMING
+
+    def test_streaming_with_response_below_user_prompt(self):
+        """STREAMING correctly detected when ⏺ is below the user's ❯ prompt."""
+        lines = [""] * 15
+        lines[2] = "❯ What is 2+2?"
+        lines[3] = "─" * 40
+        lines[4] = "⏺ Four."
+        lines[5] = ""
+        lines[8] = "─" * 40
+        lines[9] = "  my-project │ ⎇ main │ Usage: 50%"
         event = classify_screen_state(lines)
         assert event.state == ScreenState.STREAMING
 

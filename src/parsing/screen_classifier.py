@@ -211,13 +211,22 @@ def classify_screen_state(
                 raw_lines=lines,
             ))
 
-    # 9. Streaming: ⏺ response marker visible anywhere on screen.
-    # We scan all lines, not just the last, because during streaming the ⏺
-    # marker sits above content text — the last meaningful line is content
-    # (e.g. "  2. File B"), not the ⏺ itself. Previous versions only
-    # checked last_line, causing streaming to fall through to STARTUP.
-    for line in non_empty:
-        m = _RESPONSE_MARKER_RE.match(line.strip())
+    # 9. Streaming: ⏺ response marker visible below the last ❯ prompt.
+    # Only count ⏺ markers that appear AFTER the most recent ❯ prompt line
+    # to avoid matching markers from previous responses that persist on the
+    # pyte screen (pyte never clears old content). Without this, the user's
+    # message echo phase is misclassified as STREAMING because the old ⏺
+    # from the previous response is still visible above the new ❯ line.
+    last_prompt_idx = -1
+    for i, line in enumerate(lines):
+        if _PROMPT_MARKER_RE.match(line.strip()):
+            last_prompt_idx = i
+
+    for line in lines[last_prompt_idx + 1 :]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        m = _RESPONSE_MARKER_RE.match(stripped)
         if m:
             return _return(ScreenEvent(
                 state=ScreenState.STREAMING,
