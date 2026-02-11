@@ -143,9 +143,10 @@ async def handle_exit(
 
     new_active = session_manager.get_active_session(user_id)
     if new_active:
-        msg += f"\nSwitched to *{new_active.project_name}* (session #{new_active.session_id})"
+        safe_name = html.escape(new_active.project_name)
+        msg += f"\nSwitched to <b>{safe_name}</b> (session #{new_active.session_id})"
 
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def handle_text_message(

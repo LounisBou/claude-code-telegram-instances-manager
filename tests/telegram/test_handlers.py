@@ -143,6 +143,23 @@ class TestHandleExit:
         assert "proj2" in msg
         assert "session #2" in msg.lower()
 
+    @pytest.mark.asyncio
+    async def test_exit_message_uses_html_parse_mode(self):
+        """Regression: /exit reply must use parse_mode=HTML, not raw tags."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock(session_id=1, project_name="my-proj")
+        sm = AsyncMock()
+        sm.get_active_session = MagicMock(side_effect=[session, None])
+        sm.kill_session = AsyncMock()
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_exit(update, context)
+        call_kwargs = update.message.reply_text.call_args[1]
+        assert call_kwargs.get("parse_mode") == "HTML"
+
 
 class TestHandleTextMessage:
     @pytest.mark.asyncio
