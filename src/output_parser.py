@@ -137,6 +137,8 @@ class ScreenEvent:
 
 # Trailing \uFFFD allowed because pyte renders partial ANSI sequences as replacement chars
 _SEPARATOR_RE = re.compile(r"^[─━═]{4,}\uFFFD*$")
+# Separator with trailing text overlay from pyte (status text bleeds into separator row)
+_SEPARATOR_PREFIX_RE = re.compile(r"^[─━═]{20,}")
 _DIFF_DELIMITER_RE = re.compile(r"^[╌]{4,}\uFFFD*$")
 _STATUS_BAR_RE = re.compile(
     r"(?P<project>[\w\-]+)\s*│\s*"
@@ -147,7 +149,7 @@ _STATUS_BAR_RE = re.compile(
 _TIMER_RE = re.compile(r"↻\s*([\d:]+)")
 # (?:\s|$) instead of \s to handle bare ❯ at end of line without trailing space
 _PROMPT_MARKER_RE = re.compile(r"^❯(?:\s|$)")
-_BOX_CHAR_RE = re.compile(r"[╭╮╰╯│├┤┬┴┼]")
+_BOX_CHAR_RE = re.compile(r"[╭╮╰╯│├┤┬┴┼┌┐└┘]")
 _LOGO_RE = re.compile(r"[▐▛▜▌▝▘█▞▚]")
 
 # Thinking stars: ✶✳✻✽✢· followed by text ending with …
@@ -205,11 +207,15 @@ _ERROR_RE = re.compile(
 # Startup
 _STARTUP_RE = re.compile(r"Claude Code v[\d.]+")
 
+# Status bar tip / hint lines
+_TIP_RE = re.compile(r"^(?:Naming )?[Tt]ip:\s")
+_BARE_TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
+_CLAUDE_HINT_RE = re.compile(r"claude\s+--(?:continue|resume)")
+
 # Extra status line
 _EXTRA_BASH_RE = re.compile(r"(\d+) bash")
 _EXTRA_AGENTS_RE = re.compile(r"(\d+) local agents?")
 _EXTRA_FILES_RE = re.compile(r"(\d+) files? \+(\d+) -(\d+)")
-
 
 def classify_line(line: str) -> str:
     """Classify a screen line as a UI element or content.
@@ -231,9 +237,21 @@ def classify_line(line: str) -> str:
         return "empty"
     if _SEPARATOR_RE.match(stripped):
         return "separator"
+    # Separator with trailing text overlay (pyte bleed from adjacent columns)
+    if _SEPARATOR_PREFIX_RE.match(stripped):
+        return "separator"
     if _DIFF_DELIMITER_RE.match(stripped):
         return "diff_delimiter"
-    if _STATUS_BAR_RE.search(stripped):
+    # Pre-check: require distinctive status bar markers (⎇ branch or Usage:)
+    # to avoid false positives on table data rows containing │
+    if ("⎇" in stripped or "Usage:" in stripped) and _STATUS_BAR_RE.search(stripped):
+        return "status_bar"
+    # Tip/hint lines from Claude Code UI
+    if _TIP_RE.match(stripped):
+        return "status_bar"
+    if _BARE_TIME_RE.match(stripped):
+        return "status_bar"
+    if _CLAUDE_HINT_RE.search(stripped):
         return "status_bar"
     if _THINKING_STAR_RE.match(stripped):
         return "thinking"
@@ -245,15 +263,21 @@ def classify_line(line: str) -> str:
         return "tool_connector"
     if _TODO_ITEM_RE.match(stripped):
         return "todo_item"
-    if re.match(r"^[├└]\s*─", stripped):
+    # Agent tree: ├─ name or └─ name (must have text after dash, not pure border)
+    if re.match(r"^[├└]\s*─+\s+\w", stripped):
         return "agent_tree"
     if _PROMPT_MARKER_RE.match(stripped):
         return "prompt"
-    # Require 2+ box-drawing chars AND length > 10 to avoid false positives
+    # Box detection: require 2+ box-drawing chars AND length > 10.
+    # But only classify as "box" if the line is mostly structural (borders).
+    # Lines with substantial alphabetic content between box chars are table
+    # data rows from Claude's response — keep those as "content".
     if _BOX_CHAR_RE.search(stripped) and len(stripped) > 10:
         box_chars = sum(1 for c in stripped if _BOX_CHAR_RE.match(c))
         if box_chars >= 2:
-            return "box"
+            alpha_chars = sum(1 for c in stripped if c.isalpha())
+            if alpha_chars <= 3:
+                return "box"
     # Require 3+ block-element chars to distinguish logo from occasional Unicode in content
     if _LOGO_RE.search(stripped):
         logo_chars = sum(1 for c in stripped if _LOGO_RE.match(c))

@@ -434,13 +434,21 @@ class TestClassifyLine:
     def test_prompt_marker(self):
         assert classify_line('❯ Try "how does <filepath> work?"') == "prompt"
 
-    def test_box_drawing(self):
+    def test_box_drawing_pure_borders(self):
+        """Pure box borders (no alpha text) are classified as box."""
+        assert classify_line("╰──────────────────────────────────────╯") == "box"
+        assert classify_line("├────────────────────┼──────────────────────────────────────────┤") == "box"
+        assert classify_line("┌────────────────────┬──────────────────────────────────────────┐") == "box"
+        assert classify_line("└────────────────────┴──────────────────────────────────────────┘") == "box"
+
+    def test_box_drawing_with_text_is_content(self):
+        """Box lines with substantial text content are content (table data rows)."""
         assert (
             classify_line("╭─── Claude Code v2.1.37 ─────────────────────────╮")
-            == "box"
+            == "content"
         )
-        assert classify_line("│            Welcome back!           │") == "box"
-        assert classify_line("╰──────────────────────────────────────╯") == "box"
+        assert classify_line("│            Welcome back!           │") == "content"
+        assert classify_line("│ bot.py             │ Telegram bot handlers                    │") == "content"
 
     def test_logo(self):
         assert classify_line("▐▛███▜▌   Opus 4.6") == "logo"
