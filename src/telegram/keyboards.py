@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+
 
 # --- Auth ---
 
@@ -94,29 +96,31 @@ def build_sessions_keyboard(
 
 
 def format_session_started(project_name: str, session_id: int) -> str:
-    """Format a Markdown message announcing that a new session has started.
+    """Format an HTML message announcing that a new session has started.
 
     Args:
         project_name: Display name of the project the session belongs to.
         session_id: Numeric identifier of the newly created session.
 
     Returns:
-        A Markdown-formatted string suitable for sending via Telegram.
+        An HTML-formatted string suitable for sending via Telegram.
     """
-    return f"Session started on *{project_name}*. Session #{session_id}"
+    safe_name = html.escape(project_name)
+    return f"Session started on <b>{safe_name}</b>. Session #{session_id}"
 
 
 def format_session_ended(project_name: str, session_id: int) -> str:
-    """Format a Markdown message announcing that a session has ended.
+    """Format an HTML message announcing that a session has ended.
 
     Args:
         project_name: Display name of the project the session belonged to.
         session_id: Numeric identifier of the ended session.
 
     Returns:
-        A Markdown-formatted string suitable for sending via Telegram.
+        An HTML-formatted string suitable for sending via Telegram.
     """
-    return f"Session #{session_id} on *{project_name}* ended."
+    safe_name = html.escape(project_name)
+    return f"Session #{session_id} on <b>{safe_name}</b> ended."
 
 
 def format_history_entry(entry: dict) -> str:

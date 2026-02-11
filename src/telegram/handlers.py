@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -220,23 +221,28 @@ async def handle_callback_query(
         except Exception as exc:
             logger.error("Failed to create session for %s: %s", project_name, exc)
             await query.answer()
+            safe_name = html.escape(project_name)
+            safe_exc = html.escape(str(exc))
             await query.edit_message_text(
-                f"Failed to start Claude for *{project_name}*:\n`{exc}`"
+                f"Failed to start Claude for <b>{safe_name}</b>:\n<code>{safe_exc}</code>",
+                parse_mode="HTML",
             )
             return
         git_info = await get_git_info(project_path)
         msg = format_session_started(project_name, session.session_id)
         msg += f"\n{git_info.format()}"
         await query.answer()
-        await query.edit_message_text(msg)
+        await query.edit_message_text(msg, parse_mode="HTML")
 
     elif data.startswith("switch:"):
         session_id = int(data[len("switch:") :])
         session_manager.switch_session(user_id, session_id)
         active = session_manager.get_active_session(user_id)
         await query.answer()
+        safe_name = html.escape(active.project_name)
         await query.edit_message_text(
-            f"Switched to *{active.project_name}* (session #{active.session_id})"
+            f"Switched to <b>{safe_name}</b> (session #{active.session_id})",
+            parse_mode="HTML",
         )
 
     elif data.startswith("kill:"):

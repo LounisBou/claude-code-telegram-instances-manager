@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ class GitInfo:
     pr_state: str | None = None
 
     def format(self) -> str:
-        """Format git info as a human-readable Markdown string.
+        """Format git info as an HTML string for Telegram.
 
         Returns:
             A pipe-separated string containing the branch name and
@@ -26,9 +27,11 @@ class GitInfo:
         """
         if not self.branch:
             return "No git info available"
-        parts = [f"Branch: `{self.branch}`"]
+        parts = [f"Branch: <code>{html.escape(self.branch)}</code>"]
         if self.pr_url and self.pr_title:
-            parts.append(f"PR: [{self.pr_title}]({self.pr_url})")
+            safe_title = html.escape(self.pr_title)
+            safe_url = html.escape(self.pr_url)
+            parts.append(f'PR: <a href="{safe_url}">{safe_title}</a>')
         else:
             parts.append("No open PR")
         return " | ".join(parts)

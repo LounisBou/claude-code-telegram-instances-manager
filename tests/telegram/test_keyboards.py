@@ -91,10 +91,28 @@ class TestFormatMessages:
         assert "my-project" in msg
         assert "1" in msg
 
+    def test_session_started_uses_html_not_markdown(self):
+        """Regression: session start must use HTML bold, not Markdown asterisks."""
+        msg = format_session_started("my-project", 1)
+        assert "<b>my-project</b>" in msg
+        assert "*my-project*" not in msg
+
+    def test_session_started_escapes_html(self):
+        """Ensure HTML special chars in project names are escaped."""
+        msg = format_session_started("<script>", 1)
+        assert "&lt;script&gt;" in msg
+        assert "<script>" not in msg.split("<b>")[1].split("</b>")[0] if "<b>" in msg else True
+
     def test_session_ended(self):
         msg = format_session_ended("my-project", 1)
         assert "my-project" in msg
         assert "ended" in msg.lower()
+
+    def test_session_ended_uses_html_not_markdown(self):
+        """Regression: session end must use HTML bold, not Markdown asterisks."""
+        msg = format_session_ended("my-project", 1)
+        assert "<b>my-project</b>" in msg
+        assert "*my-project*" not in msg
 
     def test_history_entry(self):
         entry = {
