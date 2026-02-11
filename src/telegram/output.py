@@ -166,14 +166,23 @@ async def poll_output(
                 if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
                     # Snapshot current display so fast THINKING→IDLE can
                     # subtract pre-existing content (banner, user echo, etc.)
+                    # Trim to last user prompt — exclude old responses above
+                    # so common patterns like "Args:", "Returns:" in a prior
+                    # response don't incorrectly dedup from the new response.
                     # Include both raw lines AND extracted content lines so
                     # dedup works after extract_content strips ⏺/⎿ markers.
+                    last_prompt_idx = 0
+                    for i, line in enumerate(display):
+                        s = line.strip()
+                        if s.startswith("❯") and len(s) > 5:
+                            last_prompt_idx = i
+                    trimmed = display[last_prompt_idx:]
                     snap = set()
-                    for line in display:
+                    for line in trimmed:
                         stripped = line.strip()
                         if stripped:
                             snap.add(stripped)
-                    for line in extract_content(display).split("\n"):
+                    for line in extract_content(trimmed).split("\n"):
                         stripped = line.strip()
                         if stripped:
                             snap.add(stripped)

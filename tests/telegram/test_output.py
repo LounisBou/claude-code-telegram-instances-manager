@@ -1223,3 +1223,74 @@ class TestDisplayTrimToLastPrompt:
         trimmed = display[last_prompt_idx:]
         content = extract_content(trimmed)
         assert "Hello!" in content
+
+
+class TestThinkingSnapshotTrim:
+    """Regression: thinking snapshot captured the FULL display including old
+    responses above the current prompt.  Common docstring patterns like
+    'Args:' and 'Returns:' from a previous fibonacci response appeared in
+    the snapshot, causing them to be incorrectly deduped from the new
+    is_palindrome response.
+
+    Fix: trim the thinking snapshot to the last user prompt (❯ with text),
+    matching the display trim already applied during extraction.
+    """
+
+    def test_snapshot_excludes_old_response_patterns(self):
+        """Snapshot must not contain Args:/Returns: from old response."""
+        # Display at THINKING entry: old fibonacci + new prompt + thinking
+        display_at_thinking = [
+            "⏺ def fibonacci(n: int) -> int:",
+            '      """Return the nth Fibonacci number."""',
+            "      Args:",
+            "          n: The index.",
+            "      Returns:",
+            "          The nth Fibonacci number.",
+            "",
+            "❯ Write a palindrome function",
+            "",
+            "⏺ Thinking...",
+        ]
+        # Trim to last prompt (same logic as output.py)
+        last_prompt_idx = 0
+        for i, line in enumerate(display_at_thinking):
+            s = line.strip()
+            if s.startswith("❯") and len(s) > 5:
+                last_prompt_idx = i
+        trimmed = display_at_thinking[last_prompt_idx:]
+        snap = set()
+        for line in trimmed:
+            stripped = line.strip()
+            if stripped:
+                snap.add(stripped)
+        for line in extract_content(trimmed).split("\n"):
+            stripped = line.strip()
+            if stripped:
+                snap.add(stripped)
+        # Old fibonacci patterns must NOT be in the snapshot
+        assert "Args:" not in snap
+        assert "Returns:" not in snap
+        assert "fibonacci" not in snap
+        # Prompt echo and thinking marker SHOULD be in snapshot
+        assert any("palindrome" in s for s in snap)
+
+    def test_snapshot_trim_preserves_dedup_of_prompt_echo(self):
+        """Snapshot must still contain the prompt text for dedup."""
+        display_at_thinking = [
+            "❯ Write a palindrome function that checks strings",
+            "",
+            "⏺ Thinking...",
+        ]
+        last_prompt_idx = 0
+        for i, line in enumerate(display_at_thinking):
+            s = line.strip()
+            if s.startswith("❯") and len(s) > 5:
+                last_prompt_idx = i
+        trimmed = display_at_thinking[last_prompt_idx:]
+        snap = set()
+        for line in trimmed:
+            stripped = line.strip()
+            if stripped:
+                snap.add(stripped)
+        # Prompt text should be captured for dedup
+        assert any("palindrome" in s for s in snap)
