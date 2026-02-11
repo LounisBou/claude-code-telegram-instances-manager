@@ -1151,3 +1151,75 @@ class TestDedentAfterDedup:
         deduped = textwrap.dedent("\n".join(lines)).strip()
         assert deduped.startswith("def fibonacci")
         assert "    if n <= 1:" in deduped
+
+
+class TestDisplayTrimToLastPrompt:
+    """Regression: fast THINKING→IDLE uses full display for extraction.
+    Old responses above the user's latest prompt share common patterns
+    (e.g. "Args:", "Returns:") with the new response.  The thinking
+    snapshot dedup incorrectly eats these shared lines.
+
+    Fix: trim the display to start at the last user prompt (❯ with text)
+    so old responses above the prompt are excluded from extraction.
+    """
+
+    def test_trim_excludes_old_response_above_prompt(self):
+        """Old fibonacci response above the prompt must not interfere."""
+        # Simulated display: old fibonacci response, then new prompt + response
+        display = [
+            "⏺ def fibonacci(n: int) -> int:",   # old response
+            '      """Return the nth Fibonacci number."""',
+            "      Args:",                          # old "Args:"
+            "          n: The index.",
+            "      Returns:",                       # old "Returns:"
+            "          The nth Fibonacci number.",
+            "",
+            "❯ Write a palindrome function",        # last user prompt
+            "",
+            "⏺ def is_palindrome(s: str) -> bool:",  # new response
+            '      """Check if a string is a palindrome.',
+            "      Args:",                          # new "Args:" - must NOT be deduped
+            "          s: The string to check.",
+            "      Returns:",                       # new "Returns:" - must NOT be deduped
+            "          True if palindrome.",
+            '      """',
+            "      return s == s[::-1]",
+            "",
+            "────────────────────────────────────",
+            "❯",
+            "────────────────────────────────────",
+        ]
+        # Find last prompt with text (len > 5)
+        last_prompt_idx = 0
+        for i, line in enumerate(display):
+            stripped = line.strip()
+            if stripped.startswith("❯") and len(stripped) > 5:
+                last_prompt_idx = i
+        trimmed = display[last_prompt_idx:]
+        content = extract_content(trimmed)
+        # New response must have ALL docstring sections
+        assert "Args:" in content
+        assert "Returns:" in content
+        assert "is_palindrome" in content
+        # Old fibonacci must NOT be in trimmed content
+        assert "fibonacci" not in content
+
+    def test_trim_still_works_when_no_old_response(self):
+        """When there's no old response, trimming is a no-op."""
+        display = [
+            "❯ Say hello",
+            "",
+            "⏺ Hello!",
+            "",
+            "────────────────────────────────────",
+            "❯",
+            "────────────────────────────────────",
+        ]
+        last_prompt_idx = 0
+        for i, line in enumerate(display):
+            stripped = line.strip()
+            if stripped.startswith("❯") and len(stripped) > 5:
+                last_prompt_idx = i
+        trimmed = display[last_prompt_idx:]
+        content = extract_content(trimmed)
+        assert "Hello!" in content

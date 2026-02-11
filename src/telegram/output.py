@@ -208,15 +208,29 @@ async def poll_output(
                 if _should_extract:
                     # When streaming is still in THINKING, response content
                     # hasn't been extracted via get_changes() yet (THINKING
-                    # and UNKNOWN don't extract). Use the full display —
-                    # the thinking snapshot filters pre-existing content.
+                    # and UNKNOWN don't extract). Use the display trimmed
+                    # to the last user prompt — this excludes old responses
+                    # that would otherwise need aggressive snapshot dedup
+                    # (which incorrectly eats common patterns like "Args:").
                     # For ultra-fast responses (no THINKING detected), use
                     # changed lines — they contain the fresh response delta.
                     _fast_idle = (
                         event.state == ScreenState.IDLE
                         and streaming.state == StreamingState.THINKING
                     )
-                    source = display if _fast_idle else changed
+                    if _fast_idle:
+                        # Find the last user prompt (❯ with text) and trim
+                        # the display from that point forward.  Old responses
+                        # above the prompt are excluded, so snapshot dedup
+                        # won't accidentally eat common docstring patterns.
+                        last_prompt_idx = 0
+                        for i, line in enumerate(display):
+                            stripped = line.strip()
+                            if stripped.startswith("❯") and len(stripped) > 5:
+                                last_prompt_idx = i
+                        source = display[last_prompt_idx:]
+                    else:
+                        source = changed
                     if source:
                         for ci, cl in enumerate(source):
                             if cl.strip():
