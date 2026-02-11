@@ -146,8 +146,15 @@ async def poll_output(
                 if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
                     await streaming.start_thinking()
 
-                # Extract content for states that produce output
-                if event.state in _CONTENT_STATES:
+                # Extract content for states that produce output.
+                # Also extract on IDLE transition from THINKING/STREAMING:
+                # fast responses may complete within a single poll cycle,
+                # going THINKING→IDLE without ever entering STREAMING.
+                _should_extract = event.state in _CONTENT_STATES or (
+                    event.state == ScreenState.IDLE
+                    and prev in (ScreenState.THINKING, ScreenState.STREAMING)
+                )
+                if _should_extract:
                     if changed:
                         for ci, cl in enumerate(changed):
                             if cl.strip():

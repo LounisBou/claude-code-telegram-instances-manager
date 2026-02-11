@@ -478,6 +478,59 @@ class TestPollOutputStateTransitions:
         self._cleanup_session(key)
 
     @pytest.mark.asyncio
+    async def test_thinking_to_idle_extracts_fast_response(self):
+        """Regression: fast response completing within one poll cycle (THINKING→IDLE).
+
+        When Claude responds very quickly, the state goes THINKING→IDLE without
+        ever entering STREAMING. Content must still be extracted from changed
+        lines during the IDLE transition.
+        """
+        key = (764, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"data", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {764: {1: session}}
+        bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=99)
+
+        # Pre-init state as THINKING (start_thinking already called)
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        streaming = StreamingMessage(bot=bot, chat_id=764, edit_rate_limit=3)
+        streaming.message_id = 99
+        streaming.state = StreamingState.THINKING
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.THINKING
+        _session_sent_lines[key] = set()
+
+        # Classifier returns IDLE (response already complete)
+        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        with (
+            patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
+            patch("src.telegram.output.classify_screen_state", return_value=idle_event),
+            patch("src.telegram.output.extract_content", return_value="Four"),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # Content should have been extracted and sent via append_content
+        # which edits the existing message
+        bot.edit_message_text.assert_called()
+        edit_text = bot.edit_message_text.call_args[1]["text"]
+        assert "Four" in edit_text
+
+        # Streaming message should be finalized (IDLE)
+        assert streaming.state == StreamingState.IDLE
+
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
     async def test_unchanged_state_logged_at_trace(self):
         """Same state on consecutive cycles should log at TRACE, not DEBUG."""
         key = (766, 1)
