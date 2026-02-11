@@ -99,7 +99,7 @@ class TestBuildApp:
 
     def test_command_menu_set_on_startup(self):
         """Regression: _on_startup must call set_my_commands to register Telegram menu."""
-        from src.bot import BOT_COMMANDS
+        from src.telegram.keyboards import BOT_COMMANDS
 
         db = AsyncMock()
         db.initialize = AsyncMock()

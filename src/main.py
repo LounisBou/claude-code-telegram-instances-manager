@@ -14,26 +14,28 @@ from telegram.ext import (
     filters,
 )
 
-from src.bot import (
-    BOT_COMMANDS,
-    handle_callback_query,
+from src.telegram.commands import (
     handle_context,
     handle_download,
-    handle_exit,
     handle_file_upload,
     handle_git,
     handle_history,
+    handle_update_claude,
+)
+from src.telegram.handlers import (
+    handle_callback_query,
+    handle_exit,
     handle_sessions,
     handle_start,
     handle_text_message,
     handle_unknown_command,
-    handle_update_claude,
-    poll_output,
 )
-from src.config import load_config
-from src.database import Database
+from src.telegram.keyboards import BOT_COMMANDS
+from src.telegram.output import poll_output
+from src.core.config import load_config
+from src.core.database import Database
 from src.file_handler import FileHandler
-from src.log_setup import setup_logging
+from src.core.log_setup import setup_logging
 from src.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)

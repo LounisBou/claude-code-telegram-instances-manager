@@ -12,7 +12,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.output_parser import classify_screen_state, ScreenState
+from src.parsing.screen_classifier import classify_screen_state
+from src.parsing.ui_patterns import ScreenState
 
 
 def load_snapshots(capture_dir: str) -> list[dict]:

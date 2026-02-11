@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from src.claude_process import ClaudeProcess
-from src.database import Database
+from src.core.database import Database
 from src.file_handler import FileHandler
-from src.log_setup import TRACE
+from src.core.log_setup import TRACE
 
 logger = logging.getLogger(__name__)
 

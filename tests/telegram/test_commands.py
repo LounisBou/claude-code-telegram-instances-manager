@@ -1,0 +1,410 @@
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.telegram.commands import (
+    _run_update_command,
+    handle_context,
+    handle_download,
+    handle_file_upload,
+    handle_git,
+    handle_history,
+    handle_update_claude,
+)
+from src.telegram.handlers import (
+    handle_callback_query,
+    handle_exit,
+    handle_sessions,
+    handle_start,
+    handle_text_message,
+)
+
+
+class TestHandleHistoryAuth:
+    @pytest.mark.asyncio
+    async def test_unauthorized(self):
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111]))
+        }
+        await handle_history(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "not authorized" in call_text.lower()
+
+
+class TestHandleGitAuth:
+    @pytest.mark.asyncio
+    async def test_unauthorized(self):
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111]))
+        }
+        await handle_git(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "not authorized" in call_text.lower()
+
+
+class TestHandleUpdateAuth:
+    @pytest.mark.asyncio
+    async def test_unauthorized(self):
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111]))
+        }
+        await handle_update_claude(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "not authorized" in call_text.lower()
+
+
+class TestHandleHistory:
+    @pytest.mark.asyncio
+    async def test_shows_history(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        db = AsyncMock()
+        db.list_sessions = AsyncMock(
+            return_value=[
+                {
+                    "project": "p1",
+                    "started_at": "2026-01-01",
+                    "ended_at": "2026-01-02",
+                    "status": "ended",
+                    "exit_code": 0,
+                }
+            ]
+        )
+        context.bot_data = {"config": config, "db": db}
+        await handle_history(update, context)
+        update.message.reply_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_history(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        db = AsyncMock()
+        db.list_sessions = AsyncMock(return_value=[])
+        context.bot_data = {"config": config, "db": db}
+        await handle_history(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "no" in call_text.lower()
+
+
+class TestHandleGit:
+    @pytest.mark.asyncio
+    async def test_shows_git_info(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock(project_path="/a/proj")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.commands.get_git_info", new_callable=AsyncMock) as mock_git:
+            mock_git.return_value = MagicMock(
+                format=MagicMock(return_value="Branch: main | No open PR")
+            )
+            await handle_git(update, context)
+            update.message.reply_text.assert_called_once()
+            assert "main" in update.message.reply_text.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_no_active_session(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_git(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "no active" in call_text.lower()
+
+
+class TestHandleUpdateClaude:
+    @pytest.mark.asyncio
+    async def test_no_active_sessions_updates_directly(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(
+            telegram=MagicMock(authorized_users=[111]),
+            claude=MagicMock(update_command="echo updated"),
+        )
+        sm = MagicMock(has_active_sessions=MagicMock(return_value=False))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch(
+            "src.telegram.commands._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = "Updated to v2.0"
+            await handle_update_claude(update, context)
+            mock_run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_with_active_sessions_warns(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(
+            has_active_sessions=MagicMock(return_value=True),
+            active_session_count=MagicMock(return_value=2),
+        )
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_update_claude(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "2" in call_text
+
+
+class TestHandleContext:
+    @pytest.mark.asyncio
+    async def test_sends_context_command(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock()
+        session.process.submit = AsyncMock()
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_context(update, context)
+        session.process.submit.assert_called_once_with("/context")
+        update.message.reply_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_active_session(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_context(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "no active" in call_text.lower()
+
+
+class TestHandleDownload:
+    @pytest.mark.asyncio
+    async def test_file_found(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download /tmp/test.txt"
+        update.message.reply_text = AsyncMock()
+        update.message.reply_document = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        fh = MagicMock(
+            file_exists=MagicMock(return_value=True),
+            _base_dir="/tmp",
+        )
+        session = MagicMock(project_path="/some/project")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {
+            "config": config, "file_handler": fh, "session_manager": sm
+        }
+        with patch("builtins.open", MagicMock()):
+            await handle_download(update, context)
+            update.message.reply_document.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_file_not_found(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download /tmp/nonexistent.txt"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        fh = MagicMock(
+            file_exists=MagicMock(return_value=False),
+            _base_dir="/tmp",
+        )
+        session = MagicMock(project_path="/some/project")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {
+            "config": config, "file_handler": fh, "session_manager": sm
+        }
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "not found" in call_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_missing_path_arg(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        fh = MagicMock()
+        context.bot_data = {"config": config, "file_handler": fh}
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "usage" in call_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_denied(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download /etc/passwd"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        fh = MagicMock(
+            file_exists=MagicMock(return_value=True),
+            _base_dir="/tmp/claude",
+        )
+        session = MagicMock(project_path="/home/user/project")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {
+            "config": config, "file_handler": fh, "session_manager": sm
+        }
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "access denied" in call_text.lower()
+
+
+class TestHandleFileUpload:
+    @pytest.mark.asyncio
+    async def test_document_upload(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        update.message.document = MagicMock(file_id="abc", file_name="test.py")
+        update.message.photo = None
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock(project_name="proj", session_id=1)
+        session.process.write = AsyncMock()
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        fh = MagicMock(get_upload_path=MagicMock(return_value="/tmp/test.py"))
+        context.bot_data = {
+            "config": config, "session_manager": sm, "file_handler": fh
+        }
+        file_obj = AsyncMock()
+        context.bot.get_file = AsyncMock(return_value=file_obj)
+        await handle_file_upload(update, context)
+        file_obj.download_to_drive.assert_called_once_with("/tmp/test.py")
+        session.process.write.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_photo_upload(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        update.message.document = None
+        photo = MagicMock(file_id="photo123", file_name=None)
+        update.message.photo = [MagicMock(), photo]  # [-1] is largest
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock(project_name="proj", session_id=1)
+        session.process.write = AsyncMock()
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        fh = MagicMock(get_upload_path=MagicMock(return_value="/tmp/photo.bin"))
+        context.bot_data = {
+            "config": config, "session_manager": sm, "file_handler": fh
+        }
+        file_obj = AsyncMock()
+        context.bot.get_file = AsyncMock(return_value=file_obj)
+        await handle_file_upload(update, context)
+        file_obj.download_to_drive.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_active_session(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        update.message.document = MagicMock(file_id="abc")
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_file_upload(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "no active" in call_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_ignored(self):
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        update.message.document = MagicMock(file_id="abc")
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        context.bot_data = {"config": config}
+        await handle_file_upload(update, context)
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_document(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        update.message.document = None
+        update.message.photo = None
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock()
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {
+            "config": config, "session_manager": sm, "file_handler": MagicMock()
+        }
+        await handle_file_upload(update, context)
+        update.message.reply_text.assert_not_called()
+
+
+class TestRunUpdateCommand:
+    @pytest.mark.asyncio
+    async def test_runs_command(self):
+        result = await _run_update_command("echo hello")
+        assert "OK" in result
+        assert "hello" in result
+
+
+# --- Parametrized auth tests ---
+
+
+@pytest.mark.parametrize("handler", [
+    handle_start, handle_sessions, handle_exit,
+    handle_history, handle_git, handle_update_claude,
+    handle_context, handle_download,
+])
+@pytest.mark.asyncio
+async def test_unauthorized_rejected(handler):
+    update = MagicMock()
+    update.effective_user.id = 999
+    update.message.text = "/download /tmp/foo"
+    update.message.reply_text = AsyncMock()
+    context = MagicMock()
+    context.bot_data = {
+        "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+        "file_handler": MagicMock(_base_dir="/tmp/claude"),
+        "session_manager": MagicMock(
+            get_active_session=MagicMock(return_value=None)
+        ),
+    }
+    await handler(update, context)
+    call_text = update.message.reply_text.call_args[0][0]
+    assert "not authorized" in call_text.lower()

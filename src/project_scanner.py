@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.log_setup import TRACE
+from src.core.log_setup import TRACE
 
 logger = logging.getLogger(__name__)
 

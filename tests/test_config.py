@@ -2,7 +2,7 @@
 import pytest
 import yaml
 
-from src.config import AppConfig, load_config, ConfigError
+from src.core.config import AppConfig, load_config, ConfigError
 
 
 class TestLoadConfig:
@@ -111,7 +111,7 @@ class TestAppConfig:
 
 class TestDebugConfig:
     def test_debug_config_defaults(self):
-        from src.config import DebugConfig
+        from src.core.config import DebugConfig
         dc = DebugConfig()
         assert dc.enabled is False
         assert dc.trace is False
