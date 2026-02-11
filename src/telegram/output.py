@@ -297,9 +297,19 @@ async def poll_output(
 
                 # Finalize on transition to idle (response complete)
                 if event.state == ScreenState.IDLE and prev != ScreenState.IDLE:
-                    # Clear dedup set at response boundary so future
-                    # responses can reuse the same phrases
-                    _session_sent_lines[key] = set()
+                    # Re-seed dedup with all visible content instead of
+                    # clearing.  When pyte scrolls, get_changes() re-reports
+                    # shifted lines from a *previous* response.  Keeping
+                    # those lines in the dedup set prevents them from leaking
+                    # into the next extraction (e.g. TOOL_REQUEST right after
+                    # a text response).  The dedup set is properly cleared on
+                    # USER_MESSAGE (line ~184) for a fresh start when the
+                    # user sends a new message.
+                    sent = _session_sent_lines.setdefault(key, set())
+                    for line in display:
+                        stripped = line.strip()
+                        if stripped:
+                            sent.add(stripped)
                     await streaming.finalize()
 
 

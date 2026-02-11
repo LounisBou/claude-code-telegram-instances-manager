@@ -486,8 +486,14 @@ class TestPollOutputStateTransitions:
         self._cleanup_session(key)
 
     @pytest.mark.asyncio
-    async def test_idle_transition_clears_dedup_and_finalizes(self):
-        """STREAMING->IDLE must clear dedup set and finalize streaming message."""
+    async def test_idle_transition_reseeds_dedup_and_finalizes(self):
+        """STREAMING->IDLE must re-seed dedup with display and finalize.
+
+        Instead of clearing the dedup set, IDLE re-seeds it with all
+        visible display content.  This prevents old response text from
+        leaking into the next extraction cycle when pyte re-reports
+        shifted lines after a screen scroll.
+        """
         key = (767, 1)
         self._cleanup_session(key)
 
@@ -520,11 +526,74 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # Dedup set should be cleared
-        assert _session_sent_lines.get(key) == set()
+        # Dedup set should be re-seeded with display content, not cleared
+        sent = _session_sent_lines.get(key)
+        assert "old line" in sent  # pre-existing content preserved
+        assert "data" in sent  # display content added
         # finalize should have sent final edit and reset streaming state
         bot.edit_message_text.assert_called()
         assert streaming.state == StreamingState.IDLE
+
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
+    async def test_tool_request_after_idle_no_content_leak(self):
+        """Regression: old response content must not leak into TOOL_REQUEST.
+
+        Scenario: after a text response completes (IDLE), the user sends a
+        new message that triggers a tool request.  When pyte scrolls, old
+        response lines are re-reported by get_changes().  The re-seeded
+        dedup set from the IDLE transition must filter them out so only
+        the tool request text appears in the Telegram message.
+        """
+        key = (768, 1)
+        self._cleanup_session(key)
+
+        # Simulate two poll cycles:
+        #   1. IDLE (after previous response) — re-seeds dedup
+        #   2. TOOL_REQUEST — extracts content, old lines filtered
+        process = MagicMock()
+        # Cycle 1: previous response visible
+        # Cycle 2: tool request appears (old content scrolls)
+        process.read_available.side_effect = [b"prev", b"tool", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {768: {1: session}}
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        emu = TerminalEmulator()
+        _session_emulators[key] = emu
+        streaming = StreamingMessage(bot=bot, chat_id=768, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.accumulated = "Old response"
+        streaming.state = StreamingState.STREAMING
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.STREAMING
+        _session_sent_lines[key] = set()
+
+        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        tool_event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
+
+        with (
+            patch(
+                "src.telegram.output.asyncio.sleep",
+                side_effect=[None, None, asyncio.CancelledError],
+            ),
+            patch(
+                "src.telegram.output.classify_screen_state",
+                side_effect=[idle_event, tool_event],
+            ),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # After IDLE, "prev" should be in the dedup set (re-seeded)
+        sent = _session_sent_lines.get(key)
+        assert "prev" in sent
 
         self._cleanup_session(key)
 
