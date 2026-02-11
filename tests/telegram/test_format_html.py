@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.telegram.formatter import format_html
+from src.telegram.formatter import format_html, wrap_code_blocks
 
 
 class TestFormatHtmlEscaping:
@@ -144,3 +144,93 @@ class TestFormatHtmlCombined:
         assert "<b>Step 1</b>" in result
         assert "<pre><code" in result
         assert "x = 1" in result
+
+
+class TestWrapCodeBlocks:
+    """Heuristic code block detection for terminal-stripped content."""
+
+    def test_python_def_wrapped(self):
+        """Python function definition should be wrapped in code fences."""
+        text = 'def fibonacci(n: int) -> int:\n    if n <= 1:\n        return n'
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+        assert result.endswith("\n```")
+        assert "def fibonacci" in result
+
+    def test_python_class_wrapped(self):
+        """Python class definition should be wrapped."""
+        text = "class Foo:\n    pass"
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+
+    def test_python_import_wrapped(self):
+        """Python import should be wrapped."""
+        text = "import os\nimport sys"
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+
+    def test_python_from_import_wrapped(self):
+        """Python from-import should be wrapped."""
+        text = "from pathlib import Path\n\npath = Path('.')"
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+
+    def test_async_def_wrapped(self):
+        """Async function should be wrapped."""
+        text = "async def fetch():\n    await something()"
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+
+    def test_js_function_wrapped(self):
+        """JavaScript function should be wrapped."""
+        text = "function hello() {\n  return 'world';\n}"
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+
+    def test_js_const_wrapped(self):
+        """JavaScript const should be wrapped."""
+        text = "const x = 42;"
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+
+    def test_plain_text_not_wrapped(self):
+        """Regular prose should NOT be wrapped."""
+        text = "Four."
+        result = wrap_code_blocks(text)
+        assert result == "Four."
+
+    def test_sentence_not_wrapped(self):
+        """A normal sentence should NOT be wrapped."""
+        text = "The capital of France is Paris."
+        result = wrap_code_blocks(text)
+        assert result == text
+
+    def test_list_not_wrapped(self):
+        """A numbered list should NOT be wrapped."""
+        text = "1. First item\n2. Second item\n3. Third item"
+        result = wrap_code_blocks(text)
+        assert result == text
+
+    def test_empty_returns_empty(self):
+        """Empty input should return empty."""
+        assert wrap_code_blocks("") == ""
+
+    def test_decorator_wrapped(self):
+        """Python decorator should be wrapped."""
+        text = "@app.route('/api')\ndef handler():\n    pass"
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+
+    def test_shebang_wrapped(self):
+        """Shebang line should be wrapped."""
+        text = "#!/usr/bin/env python3\nimport sys"
+        result = wrap_code_blocks(text)
+        assert result.startswith("```\n")
+
+    def test_end_to_end_with_format_html(self):
+        """Code detection + format_html should produce <pre><code>."""
+        text = "def hello():\n    print('world')"
+        wrapped = wrap_code_blocks(text)
+        html = format_html(wrapped)
+        assert "<pre><code>" in html
+        assert "def hello()" in html

@@ -9,7 +9,7 @@ from telegram import Bot
 
 from src.core.log_setup import TRACE
 from src.parsing.screen_classifier import classify_screen_state
-from src.telegram.formatter import format_html, reflow_text
+from src.telegram.formatter import format_html, reflow_text, wrap_code_blocks
 from src.parsing.terminal_emulator import TerminalEmulator
 from src.parsing.ui_patterns import ScreenEvent, ScreenState, extract_content
 
@@ -247,7 +247,7 @@ async def poll_output(
                                 "poll_output CONTENT lines=%r changed_count=%d",
                                 new_lines, len(changed),
                             )
-                            html = format_html(reflow_text(deduped))
+                            html = format_html(reflow_text(wrap_code_blocks(deduped)))
                             await streaming.append_content(html)
 
                 # Finalize on transition to idle (response complete)
