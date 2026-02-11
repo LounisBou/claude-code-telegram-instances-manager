@@ -276,3 +276,39 @@ class TestExtractContent:
         assert "my-project" not in result
         assert "⏺" not in result
         assert "⎿" not in result
+
+    def test_preserves_code_indentation(self):
+        """Regression: Python code indentation must be preserved, not stripped."""
+        # Simulate pyte screen output for a code response.
+        # Claude Code renders ⏺ at column 0, code text at column 2.
+        # Continuation lines are indented to the same base column (2)
+        # plus the Python indentation (4 per level).
+        lines = [
+            "⏺ def fibonacci(n):",       # response: indent 0 after ⏺
+            "      if n <= 1:",            # content: 6 = margin 2 + python indent 4
+            "          return n",           # content: 10 = margin 2 + python indent 8
+            "      return fibonacci(n-1)",  # content: 6 = margin 2 + python indent 4
+        ]
+        result = extract_content(lines)
+        assert "def fibonacci(n):" in result
+        # Indentation must be preserved (4 spaces for level 1, 8 for level 2)
+        assert "    if n <= 1:" in result
+        assert "        return n" in result
+        assert "    return fibonacci(n-1)" in result
+        # No flat lines (old bug: strip() removed all indentation)
+        assert "\nif n <= 1:" not in result
+        assert "\nreturn n" not in result
+
+    def test_prose_not_indented(self):
+        """Normal prose content must not gain spurious indentation."""
+        lines = [
+            "⏺ Hello! Here is my answer.",
+            "The capital of France is Paris.",
+        ]
+        result = extract_content(lines)
+        assert result.startswith("Hello! Here is my answer.")
+        assert "The capital of France is Paris." in result
+        # No leading spaces on prose lines
+        for line in result.split("\n"):
+            if line.strip():
+                assert not line.startswith(" "), f"Unexpected indent: {line!r}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -211,8 +212,13 @@ def classify_line(line: str) -> str:
 def extract_content(lines: list[str]) -> str:
     """Extract meaningful content from screen lines, filtering UI chrome.
 
-    Keeps lines classified as 'content', 'response' (⏺ prefix stripped),
-    and 'tool_connector' (⎿ prefix stripped) by classify_line.
+    Keeps lines classified as 'content', 'response' (⏺ prefix replaced),
+    and 'tool_connector' (⎿ prefix replaced) by classify_line.
+
+    Preserves relative indentation by replacing Unicode markers (⏺, ⎿)
+    with spaces of equal width instead of stripping them. After collection,
+    ``textwrap.dedent`` removes the common terminal margin while keeping
+    code structure (e.g. Python indentation) intact.
 
     Tracks prompt continuation state: lines between a ❯ prompt line and
     the next ⏺ response / ⎿ tool connector / tool header are the user's
@@ -222,7 +228,8 @@ def extract_content(lines: list[str]) -> str:
         lines: List of terminal screen lines to filter.
 
     Returns:
-        Newline-joined string of content lines, stripped.
+        Newline-joined string of content lines with common margin removed
+        but relative indentation preserved.
     """
     content_lines = []
     in_prompt = False
@@ -246,17 +253,26 @@ def extract_content(lines: list[str]) -> str:
                 # Still in prompt continuation — skip this line.
                 continue
         if cls == "content":
-            content_lines.append(line.strip())
+            # Preserve leading whitespace (indentation); strip only trailing.
+            content_lines.append(line.rstrip())
         elif cls == "response":
-            # ⏺ lines carry Claude's response text — strip the marker.
-            # Without this, the first line of every response was silently dropped.
-            m = _RESPONSE_MARKER_RE.match(line.strip())
-            if m and m.group(1).strip():
-                content_lines.append(m.group(1).strip())
+            # ⏺ lines carry Claude's response text — replace the marker
+            # with spaces to preserve column alignment for dedent.
+            replaced = re.sub(
+                r"⏺\s?", lambda m: " " * len(m.group(0)), line, count=1,
+            )
+            if replaced.strip():
+                content_lines.append(replaced.rstrip())
         elif cls == "tool_connector":
             # ⎿ lines carry tool output (file contents, command results).
-            # Strip the connector prefix to get the actual content.
-            text = re.sub(r"^\s*⎿\s*", "", line).strip()
-            if text:
-                content_lines.append(text)
-    return "\n".join(content_lines).strip()
+            # Replace the connector prefix with spaces to preserve alignment.
+            replaced = re.sub(
+                r"⎿\s*", lambda m: " " * len(m.group(0)), line, count=1,
+            )
+            if replaced.strip():
+                content_lines.append(replaced.rstrip())
+    # Remove common leading whitespace (terminal margin) while
+    # preserving relative indentation (e.g. Python code structure).
+    joined = "\n".join(content_lines)
+    dedented = textwrap.dedent(joined)
+    return dedented.strip()
