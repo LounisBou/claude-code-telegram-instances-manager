@@ -265,8 +265,8 @@ def classify_line(line: str) -> str:
 def extract_content(lines: list[str]) -> str:
     """Extract meaningful content from screen lines, filtering UI chrome.
 
-    Keeps only lines classified as 'content' by classify_line, stripping
-    surrounding whitespace.
+    Keeps lines classified as 'content', 'response' (⏺ prefix stripped),
+    and 'tool_connector' (⎿ prefix stripped) by classify_line.
 
     Args:
         lines: List of terminal screen lines to filter.
@@ -276,8 +276,21 @@ def extract_content(lines: list[str]) -> str:
     """
     content_lines = []
     for line in lines:
-        if classify_line(line) == "content":
+        cls = classify_line(line)
+        if cls == "content":
             content_lines.append(line.strip())
+        elif cls == "response":
+            # ⏺ lines carry Claude's response text — strip the marker.
+            # Without this, the first line of every response was silently dropped.
+            m = _RESPONSE_MARKER_RE.match(line.strip())
+            if m and m.group(1).strip():
+                content_lines.append(m.group(1).strip())
+        elif cls == "tool_connector":
+            # ⎿ lines carry tool output (file contents, command results).
+            # Strip the connector prefix to get the actual content.
+            text = re.sub(r"^\s*⎿\s*", "", line).strip()
+            if text:
+                content_lines.append(text)
     return "\n".join(content_lines).strip()
 
 
@@ -948,14 +961,19 @@ def classify_screen_state(
                 raw_lines=lines,
             ))
 
-    # 9. Streaming: last line starts with ⏺
-    m = _RESPONSE_MARKER_RE.match(last_line)
-    if m:
-        return _return(ScreenEvent(
-            state=ScreenState.STREAMING,
-            payload={"text": m.group(1)},
-            raw_lines=lines,
-        ))
+    # 9. Streaming: ⏺ response marker visible anywhere on screen.
+    # We scan all lines, not just the last, because during streaming the ⏺
+    # marker sits above content text — the last meaningful line is content
+    # (e.g. "  2. File B"), not the ⏺ itself. Previous versions only
+    # checked last_line, causing streaming to fall through to STARTUP.
+    for line in non_empty:
+        m = _RESPONSE_MARKER_RE.match(line.strip())
+        if m:
+            return _return(ScreenEvent(
+                state=ScreenState.STREAMING,
+                payload={"text": m.group(1)},
+                raw_lines=lines,
+            ))
 
     # 10. User message: ❯ followed by text (not between separators)
     if _PROMPT_MARKER_RE.match(last_line):
@@ -966,13 +984,18 @@ def classify_screen_state(
             raw_lines=lines,
         ))
 
-    # 11. Startup
-    for line in non_empty[:10]:
-        if _STARTUP_RE.search(line):
-            return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
-        stripped = line.strip()
-        if _LOGO_RE.search(stripped) and sum(1 for c in stripped if _LOGO_RE.match(c)) >= 3:
-            return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
+    # 11. Startup — only if no ⏺ response marker visible.
+    # pyte never clears the banner (logo + version) because Claude Code
+    # redraws in-place rather than scrolling. Without this guard, every
+    # screen after startup would match STARTUP as a fallback.
+    has_response = any(_RESPONSE_MARKER_RE.match(l.strip()) for l in non_empty)
+    if not has_response:
+        for line in non_empty[:10]:
+            if _STARTUP_RE.search(line):
+                return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
+            stripped = line.strip()
+            if _LOGO_RE.search(stripped) and sum(1 for c in stripped if _LOGO_RE.match(c)) >= 3:
+                return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
 
     # 12. Error
     for line in non_empty:

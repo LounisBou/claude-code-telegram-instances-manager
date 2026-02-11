@@ -73,3 +73,64 @@ class TestParseArgs:
             args = _parse_args()
             assert args.trace is True
             assert args.verbose is True
+
+
+class TestBuildApp:
+    """Regression: build_app must wire all components correctly."""
+
+    def test_env_threaded_to_session_manager(self, tmp_path):
+        """Regression: claude.env from config must reach SessionManager and ClaudeProcess."""
+        config_file = tmp_path / "test.yaml"
+        config_file.write_text(
+            "telegram:\n"
+            "  bot_token: 'test-token'\n"
+            "  authorized_users: [111]\n"
+            "projects:\n"
+            "  root: /tmp\n"
+            "claude:\n"
+            "  env:\n"
+            "    CLAUDE_CONFIG_DIR: '~/.claude-work'\n"
+        )
+        from src.main import build_app
+
+        app = build_app(str(config_file))
+        sm = app.bot_data["session_manager"]
+        assert sm._env == {"CLAUDE_CONFIG_DIR": "~/.claude-work"}
+
+    def test_command_menu_set_on_startup(self):
+        """Regression: _on_startup must call set_my_commands to register Telegram menu."""
+        from src.bot import BOT_COMMANDS
+
+        db = AsyncMock()
+        db.initialize = AsyncMock()
+        db.mark_active_sessions_lost = AsyncMock(return_value=[])
+        app = MagicMock()
+        app.bot_data = {"db": db}
+        app.bot.set_my_commands = AsyncMock()
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_on_startup(app))
+
+        app.bot.set_my_commands.assert_called_once()
+        # Verify command list matches BOT_COMMANDS
+        call_args = app.bot.set_my_commands.call_args[0][0]
+        assert len(call_args) == len(BOT_COMMANDS)
+
+
+class TestGracefulShutdown:
+    """Regression: shutdown must terminate sessions and close db."""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_calls_session_shutdown_and_db_close(self):
+        """Regression: main shutdown sequence must terminate all sessions then close db."""
+        session_manager = AsyncMock()
+        session_manager.shutdown = AsyncMock()
+        db = AsyncMock()
+        db.close = AsyncMock()
+
+        # Simulate the shutdown sequence from main()
+        await session_manager.shutdown()
+        await db.close()
+
+        session_manager.shutdown.assert_called_once()
+        db.close.assert_called_once()

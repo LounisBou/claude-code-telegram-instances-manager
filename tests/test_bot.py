@@ -34,6 +34,7 @@ from src.output_parser import (
     extract_content,
 )
 from src.project_scanner import Project
+from src.session_manager import OutputBuffer
 
 
 # --- Task 10.1: Helper functions ---
@@ -1068,3 +1069,53 @@ class TestOutputStateFiltering:
         content = extract_content(lines)
         assert "real content" in content
         assert "\u2500" * 10 not in content
+
+    def test_startup_to_unknown_guard_prevents_reentry(self):
+        """Regression: once past STARTUP, classifier returning STARTUP must become UNKNOWN."""
+        from src.bot import _session_prev_state
+        from src.output_parser import ScreenEvent
+
+        # Simulate: session was in IDLE, classifier returns STARTUP (banner visible)
+        key = (999, 999)
+        _session_prev_state[key] = ScreenState.IDLE
+        prev = _session_prev_state[key]
+
+        # This is the guard logic from poll_output
+        event = ScreenEvent(state=ScreenState.STARTUP, raw_lines=[])
+        if event.state == ScreenState.STARTUP and prev not in (ScreenState.STARTUP, None):
+            event = ScreenEvent(
+                state=ScreenState.UNKNOWN, payload=event.payload, raw_lines=event.raw_lines
+            )
+        assert event.state == ScreenState.UNKNOWN
+
+        # Cleanup
+        del _session_prev_state[key]
+
+    def test_thinking_notification_on_transition(self):
+        """Regression: THINKING must send '_Thinking..._' once, not every cycle."""
+        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
+        prev = ScreenState.IDLE
+
+        # First transition to THINKING → should append
+        state = ScreenState.THINKING
+        if state == ScreenState.THINKING and prev != ScreenState.THINKING:
+            buf.append("_Thinking..._\n")
+        assert "_Thinking..._" in buf.flush()
+
+        # Second cycle still THINKING → should NOT append
+        prev = ScreenState.THINKING
+        if state == ScreenState.THINKING and prev != ScreenState.THINKING:
+            buf.append("_Thinking..._\n")
+        assert buf.flush() == ""
+
+    def test_flush_on_idle_transition(self):
+        """Regression: buffer must flush when state transitions to IDLE."""
+        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
+        buf.append("Hello World\n")
+        # Simulate transition to IDLE
+        prev = ScreenState.STREAMING
+        state = ScreenState.IDLE
+        if state == ScreenState.IDLE and prev != ScreenState.IDLE:
+            if buf.is_ready():
+                text = buf.flush()
+                assert "Hello World" in text

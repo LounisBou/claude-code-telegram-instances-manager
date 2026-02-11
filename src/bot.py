@@ -8,6 +8,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src.git_info import get_git_info
+from src.log_setup import TRACE
 from src.output_parser import (
     ScreenState,
     TerminalEmulator,
@@ -736,7 +737,10 @@ async def handle_unknown_command(
 # --- Output polling loop ---
 
 
-# States that produce user-visible output
+# States that produce user-visible output sent to Telegram.
+# STARTUP, IDLE, USER_MESSAGE, UNKNOWN, and THINKING are suppressed:
+# they are UI chrome or transient states with no extractable content.
+# THINKING gets a one-time "_Thinking..._" notification instead.
 _CONTENT_STATES = {
     ScreenState.STREAMING,
     ScreenState.TOOL_REQUEST,
@@ -757,10 +761,17 @@ _session_prev_state: dict[tuple[int, int], ScreenState] = {}
 async def poll_output(bot: Bot, session_manager) -> None:
     """Background loop that reads Claude output and sends it to Telegram.
 
-    Polls every 300ms. For each active session, reads available PTY output,
-    feeds it through the terminal emulator, classifies the screen state,
-    and sends meaningful content back to the user's Telegram chat.
-    Suppresses UI chrome (startup banners, status bars, idle prompts).
+    Pipeline per cycle (300ms):
+      1. read_available() drains raw PTY bytes
+      2. TerminalEmulator.feed() updates the pyte virtual screen
+      3. get_display() returns full screen → classify_screen_state()
+      4. get_changes() returns only changed lines → extract_content()
+      5. OutputBuffer accumulates text, flushes after debounce
+
+    Two separate reads from the emulator: get_display() gives the classifier
+    full context (screen-wide patterns like tool menus), while get_changes()
+    gives content extraction only the delta (avoids re-sending all visible
+    text every cycle).
     """
     while True:
         await asyncio.sleep(0.3)
@@ -788,9 +799,24 @@ async def poll_output(bot: Bot, session_manager) -> None:
                 buf = _session_buffers[key]
 
                 emu.feed(raw)
+                # Full display for classification (needs screen-wide context)
                 display = emu.get_display()
+                # Changed lines only for content extraction (incremental delta)
+                changed = emu.get_changes()
                 event = classify_screen_state(display, _session_prev_state.get(key))
                 prev = _session_prev_state.get(key)
+
+                # Once we've left STARTUP, never go back — the banner
+                # persists in pyte's screen buffer and tricks the classifier
+                if event.state == ScreenState.STARTUP and prev not in (
+                    ScreenState.STARTUP, None,
+                ):
+                    event = event.__class__(
+                        state=ScreenState.UNKNOWN,
+                        payload=event.payload,
+                        raw_lines=event.raw_lines,
+                    )
+
                 _session_prev_state[key] = event.state
 
                 logger.debug(
@@ -798,13 +824,19 @@ async def poll_output(bot: Bot, session_manager) -> None:
                     user_id, sid, event.state.name, prev.name if prev else "None",
                 )
 
+                # Dump screen on state transitions for debugging
+                if event.state != prev:
+                    non_empty = [l for l in display if l.strip()]
+                    for i, line in enumerate(non_empty[-10:]):
+                        logger.log(TRACE, "  screen[%d]: %s", i, line)
+
                 # Notify on state transitions to THINKING
                 if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
                     buf.append("_Thinking..._\n")
 
                 # Extract content for states that produce output
                 if event.state in _CONTENT_STATES:
-                    content = extract_content(display)
+                    content = extract_content(changed)
                     if content:
                         buf.append(content + "\n")
 

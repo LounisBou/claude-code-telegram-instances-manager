@@ -43,6 +43,11 @@ class ClaudeProcess:
         """Merge extra env vars into a copy of the current environment.
 
         Expands ~ to the user home directory in values.
+
+        Env vars must be passed here (not baked into the command string)
+        because pexpect treats the entire command argument as an executable
+        name — "CLAUDE_CONFIG_DIR=~/.claude claude" would fail with
+        "command not found".
         """
         merged = os.environ.copy()
         for key, value in extra.items():

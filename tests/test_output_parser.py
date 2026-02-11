@@ -481,6 +481,67 @@ class TestExtractContent:
         lines = ["", "", ""]
         assert extract_content(lines) == ""
 
+    def test_includes_response_marker_text(self):
+        """Regression: ⏺ response lines must be included with prefix stripped."""
+        lines = [
+            "⏺ Hello! How can I help?",
+            "  Some follow-up content",
+        ]
+        result = extract_content(lines)
+        assert "Hello! How can I help?" in result
+        assert "⏺" not in result
+        assert "Some follow-up content" in result
+
+    def test_includes_tool_connector_text(self):
+        """Regression: ⎿ tool connector lines must be included with prefix stripped."""
+        lines = [
+            "  Bash(ls)",
+            "  ⎿  src/",
+            "  ⎿  tests/",
+            "  ⎿  README.md",
+        ]
+        result = extract_content(lines)
+        assert "src/" in result
+        assert "tests/" in result
+        assert "README.md" in result
+        assert "⎿" not in result
+
+    def test_excludes_empty_response_marker(self):
+        """⏺ with no text after it should not produce an empty line."""
+        lines = ["⏺ ", "actual content"]
+        result = extract_content(lines)
+        assert result == "actual content"
+
+    def test_mixed_line_types_realistic_screen(self):
+        """Regression: realistic screen with all line types must extract only content."""
+        lines = [
+            " ▐▛███▜▌   Opus 4.6",           # logo → stripped
+            "▝▜█████▛▘  ~/dev/project",       # logo → stripped
+            "  ▘▘ ▝▝",                         # logo → stripped
+            "",                                 # empty → stripped
+            "⏺ Here is the project tree:",     # response → kept (prefix stripped)
+            "  Bash(ls -la)",                   # tool_header → stripped
+            "  ⎿  src/",                       # tool_connector → kept (prefix stripped)
+            "  ⎿  tests/",                     # tool_connector → kept
+            "  ⎿  README.md",                  # tool_connector → kept
+            "The project has 3 directories.",   # content → kept
+            "─" * 40,                           # separator → stripped
+            "  my-project │ ⎇ main │ Usage: 7%",  # status_bar → stripped
+        ]
+        result = extract_content(lines)
+        assert "Here is the project tree:" in result
+        assert "src/" in result
+        assert "tests/" in result
+        assert "README.md" in result
+        assert "The project has 3 directories." in result
+        # Verify chrome is stripped
+        assert "▐▛" not in result
+        assert "Bash(ls" not in result
+        assert "─" * 10 not in result
+        assert "my-project" not in result
+        assert "⏺" not in result
+        assert "⎿" not in result
+
 
 class TestStripAnsi:
     def test_strips_color_codes(self):
@@ -1115,6 +1176,45 @@ class TestClassifyScreenState:
         lines[11] = "  my-project │ ⎇ main │ Usage: 6% ▋░░░░░░░░░"
         event = classify_screen_state(lines)
         assert event.state == ScreenState.IDLE
+
+    def test_streaming_with_content_below_response_marker(self):
+        """Regression: ⏺ not on last line — content lines below must still detect STREAMING."""
+        lines = [""] * 15
+        lines[0] = " ▐▛███▜▌   Opus 4.6"
+        lines[1] = "▝▜█████▛▘  ~/dev/project"
+        lines[2] = "  ▘▘ ▝▝"
+        lines[5] = "⏺ Here's what I found:"
+        lines[6] = "  1. File A"
+        lines[7] = "  2. File B"
+        lines[10] = "─" * 40
+        lines[11] = "  my-project │ ⎇ main │ Usage: 7%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.STREAMING
+
+    def test_startup_suppressed_when_response_marker_visible(self):
+        """Regression: banner persists in pyte — STARTUP must not fire if ⏺ is visible."""
+        lines = [""] * 15
+        lines[0] = " ▐▛███▜▌   Opus 4.6"
+        lines[1] = "▝▜█████▛▘  ~/dev/project"
+        lines[2] = "  ▘▘ ▝▝"
+        lines[5] = "⏺ Hello!"
+        event = classify_screen_state(lines)
+        # Must NOT be STARTUP — the ⏺ marker means Claude already responded
+        assert event.state != ScreenState.STARTUP
+
+    def test_streaming_long_response_marker_far_above(self):
+        """Regression: ⏺ scrolled far above last content line must still detect STREAMING."""
+        lines = [""] * 20
+        lines[2] = "⏺ Here is a detailed analysis:"
+        # Content fills bottom area — ⏺ is far above
+        lines[10] = "  - Point one about the architecture"
+        lines[11] = "  - Point two about the data flow"
+        lines[12] = "  - Point three about error handling"
+        lines[13] = "  - Point four about testing strategy"
+        lines[15] = "─" * 40
+        lines[16] = "  my-project │ ⎇ main │ Usage: 7%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.STREAMING
 
     def test_separator_classify_line_with_fffd(self):
         """Regression: classify_line should return 'separator' for artifact separators."""

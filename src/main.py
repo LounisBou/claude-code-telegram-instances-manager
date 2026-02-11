@@ -138,6 +138,8 @@ async def main() -> None:
 
     logger.info("Starting ClaudeInstanceManager bot...")
     await app.initialize()
+    # Called directly because post_init only fires with run_polling()/run_webhook(),
+    # not the manual startup flow we use for signal handling control.
     await _on_startup(app)
     await app.start()
     await app.updater.start_polling()
@@ -156,7 +158,8 @@ async def main() -> None:
 
     poll_task.cancel()
 
-    # Second Ctrl+C during shutdown → force exit immediately
+    # Remove signal handlers so a second Ctrl+C during shutdown triggers
+    # the default behavior (immediate exit) instead of setting stop_event again.
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.remove_signal_handler(sig)
 
