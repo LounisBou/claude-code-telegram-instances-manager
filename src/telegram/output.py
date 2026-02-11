@@ -34,6 +34,11 @@ _CONTENT_STATES = {
 _session_emulators: dict[tuple[int, int], TerminalEmulator] = {}
 _session_buffers: dict[tuple[int, int], OutputBuffer] = {}
 _session_prev_state: dict[tuple[int, int], ScreenState] = {}
+# Content dedup: tracks lines already sent to avoid re-sending when
+# pyte redraws the screen (e.g. terminal scroll shifts all line positions,
+# making get_changes() report previously-sent content as "changed").
+# Cleared on IDLE transitions (response boundary).
+_session_sent_lines: dict[tuple[int, int], set[str]] = {}
 
 
 async def poll_output(bot: Bot, session_manager) -> None:
@@ -64,6 +69,7 @@ async def poll_output(bot: Bot, session_manager) -> None:
                         debounce_ms=500, max_buffer=2000
                     )
                     _session_prev_state[key] = ScreenState.STARTUP
+                    _session_sent_lines[key] = set()
 
                 raw = session.process.read_available()
                 if not raw:
@@ -123,10 +129,24 @@ async def poll_output(bot: Bot, session_manager) -> None:
                 if event.state in _CONTENT_STATES:
                     content = extract_content(changed)
                     if content:
-                        buf.append(reflow_text(content) + "\n")
+                        # Dedup: filter out lines already sent (screen scroll
+                        # causes get_changes() to re-report shifted lines)
+                        sent = _session_sent_lines.get(key, set())
+                        new_lines = []
+                        for line in content.split("\n"):
+                            stripped = line.strip()
+                            if stripped and stripped not in sent:
+                                new_lines.append(line)
+                                sent.add(stripped)
+                        if new_lines:
+                            deduped = "\n".join(new_lines)
+                            buf.append(reflow_text(deduped) + "\n")
 
                 # Flush on transition to idle (response complete)
                 if event.state == ScreenState.IDLE and prev != ScreenState.IDLE:
+                    # Clear dedup set at response boundary so future
+                    # responses can reuse the same phrases
+                    _session_sent_lines[key] = set()
                     if buf.is_ready():
                         await _flush_buffer(bot, user_id, buf)
                 elif buf.is_ready():
