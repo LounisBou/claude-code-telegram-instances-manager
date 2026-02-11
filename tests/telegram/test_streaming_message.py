@@ -244,6 +244,23 @@ class TestStreamingMessageEdgeErrors:
         assert second_call.kwargs.get("parse_mode") is None
 
 
+    @pytest.mark.asyncio
+    async def test_message_not_modified_suppressed(self):
+        """'Message is not modified' error must be silently suppressed."""
+        bot = AsyncMock()
+        bot.edit_message_text.side_effect = Exception(
+            "Message is not modified: specified new message content and reply "
+            "markup are exactly the same as a current content and reply markup "
+            "of the message"
+        )
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        sm.message_id = 42
+        sm.accumulated = "Same content"
+        sm.state = StreamingState.STREAMING
+        # Should not raise and should not log a warning
+        await sm._edit()
+
+
 class TestStreamingMessageSafetyNets:
     """Safety nets: auto-finalize on re-entry and auto-create on missing thinking."""
 

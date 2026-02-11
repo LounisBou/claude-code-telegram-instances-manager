@@ -656,10 +656,15 @@ class TestPollOutputStateTransitions:
             return event_sequence[idx]
 
         extract_calls = []
+        extract_idx = [0]
 
         def _capture_extract(lines):
             extract_calls.append(lines)
-            return "Four."
+            idx = extract_idx[0]
+            extract_idx[0] += 1
+            # First call: snapshot during THINKING entry (pre-existing content)
+            # Second call: actual extraction during fast-IDLE
+            return "" if idx == 0 else "Four."
 
         with (
             patch(
@@ -677,12 +682,84 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # extract_content must have been called despite the UNKNOWN gap
-        assert len(extract_calls) >= 1
+        # extract_content must have been called for snapshot + extraction
+        assert len(extract_calls) >= 2
         # The "Thinking..." message should have been edited with content
         bot.edit_message_text.assert_called()
         edit_text = bot.edit_message_text.call_args[1]["text"]
         assert "Four." in edit_text
+        # Streaming should be finalized
+        assert _session_streaming[key].state == StreamingState.IDLE
+
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
+    async def test_ultra_fast_response_no_thinking_detected(self):
+        """Regression: response completing within a single poll cycle (UNKNOWN→IDLE).
+
+        When the entire response cycle (THINKING→response→IDLE) happens within
+        one 300ms poll interval, the classifier never sees THINKING — it jumps
+        from UNKNOWN/USER_MESSAGE to IDLE. streaming.state stays IDLE because
+        start_thinking was never called. The fix: detect non-empty changed lines
+        on a non-trivial IDLE transition and extract from changed. The
+        StreamingMessage safety net creates a new message via append_content.
+        """
+        key = (761, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        # Two reads: first triggers UNKNOWN (typing echo), second triggers IDLE (response done)
+        process.read_available.side_effect = [b"echo", b"done", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {761: {1: session}}
+        bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=77)
+
+        unknown_event = ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=[])
+        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+
+        event_sequence = [unknown_event, idle_event]
+        event_idx = [0]
+
+        def _classify_side_effect(display, prev=None):
+            idx = min(event_idx[0], len(event_sequence) - 1)
+            event_idx[0] += 1
+            return event_sequence[idx]
+
+        extract_calls = []
+
+        def _capture_extract(lines):
+            extract_calls.append(lines)
+            return "Four."
+
+        with (
+            patch(
+                "src.telegram.output.asyncio.sleep",
+                side_effect=[None, None, asyncio.CancelledError],
+            ),
+            patch(
+                "src.telegram.output.classify_screen_state",
+                side_effect=_classify_side_effect,
+            ),
+            patch("src.telegram.output.extract_content", side_effect=_capture_extract),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # extract_content must have been called during IDLE transition
+        assert len(extract_calls) >= 1
+        # Content should have been sent via append_content safety net
+        # (creates new message since start_thinking was never called)
+        bot.send_message.assert_called()
+        # The safety net in append_content sends a new message with the content
+        sent_texts = [
+            call[1].get("text", "") for call in bot.send_message.call_args_list
+        ]
+        assert any("Four." in t for t in sent_texts)
         # Streaming should be finalized
         assert _session_streaming[key].state == StreamingState.IDLE
 

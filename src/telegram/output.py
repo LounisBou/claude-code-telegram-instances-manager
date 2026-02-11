@@ -75,6 +75,14 @@ async def poll_output(
     display for content extraction on THINKING→IDLE, with the dedup set
     preventing old content from leaking.
 
+    Ultra-fast case: UNKNOWN→IDLE (no THINKING detected). When the entire
+    response cycle completes within a single poll interval (<300ms), the
+    classifier never sees THINKING — it jumps from UNKNOWN/USER_MESSAGE
+    straight to IDLE. We detect this via non-empty changed lines on a
+    non-trivial IDLE transition, and extract from ``changed``. The
+    StreamingMessage safety net creates a new message since start_thinking
+    was never called.
+
     Args:
         bot: Telegram Bot instance for sending messages.
         session_manager: SessionManager with active sessions.
@@ -157,8 +165,14 @@ async def poll_output(
                 if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
                     # Snapshot current display so fast THINKING→IDLE can
                     # subtract pre-existing content (banner, user echo, etc.)
+                    # Include both raw lines AND extracted content lines so
+                    # dedup works after extract_content strips ⏺/⎿ markers.
                     snap = set()
                     for line in display:
+                        stripped = line.strip()
+                        if stripped:
+                            snap.add(stripped)
+                    for line in extract_content(display).split("\n"):
                         stripped = line.strip()
                         if stripped:
                             snap.add(stripped)
@@ -171,17 +185,32 @@ async def poll_output(
                 # This handles both direct (THINKING→IDLE) and indirect
                 # (THINKING→UNKNOWN→IDLE) fast-response transitions where
                 # intermediate states don't trigger extraction.
+                #
+                # Ultra-fast path: when Claude responds within a single poll
+                # cycle (<300ms), THINKING is never detected — the classifier
+                # jumps from UNKNOWN/USER_MESSAGE straight to IDLE. In this
+                # case streaming.state is still IDLE (start_thinking never
+                # called). We detect this by checking for non-empty changed
+                # lines on a non-trivial IDLE transition (prev != IDLE/STARTUP).
+                _incomplete_cycle = streaming.state in (
+                    StreamingState.THINKING, StreamingState.STREAMING,
+                )
+                _ultra_fast = (
+                    not _incomplete_cycle
+                    and changed
+                    and prev not in (ScreenState.IDLE, ScreenState.STARTUP, None)
+                )
                 _should_extract = event.state in _CONTENT_STATES or (
                     event.state == ScreenState.IDLE
-                    and streaming.state in (
-                        StreamingState.THINKING, StreamingState.STREAMING,
-                    )
+                    and (_incomplete_cycle or _ultra_fast)
                 )
                 if _should_extract:
                     # When streaming is still in THINKING, response content
                     # hasn't been extracted via get_changes() yet (THINKING
                     # and UNKNOWN don't extract). Use the full display —
                     # the thinking snapshot filters pre-existing content.
+                    # For ultra-fast responses (no THINKING detected), use
+                    # changed lines — they contain the fresh response delta.
                     _fast_idle = (
                         event.state == ScreenState.IDLE
                         and streaming.state == StreamingState.THINKING
@@ -383,6 +412,9 @@ class StreamingMessage:
                     logger.warning(
                         "edit_message plain-text fallback failed: %s", inner_exc
                     )
+            elif "message is not modified" in exc_str.lower():
+                # Harmless: finalize() re-editing with same content
+                pass
             else:
                 logger.warning("edit_message failed: %s", exc)
 
