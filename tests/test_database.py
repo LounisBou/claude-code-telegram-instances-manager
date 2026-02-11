@@ -2,7 +2,7 @@
 import pytest
 from datetime import datetime, timezone
 
-from src.database import Database
+from src.core.database import Database
 
 
 @pytest.fixture

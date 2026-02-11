@@ -67,7 +67,7 @@ class TestProject:
 
 class TestScanProjectsLogging:
     def test_logs_root_and_count(self, tmp_projects, caplog):
-        from src.log_setup import setup_logging
+        from src.core.log_setup import setup_logging
         setup_logging(debug=True, trace=False, verbose=False)
         with caplog.at_level(logging.DEBUG, logger="src.project_scanner"):
             projects = scan_projects(str(tmp_projects))
@@ -75,7 +75,7 @@ class TestScanProjectsLogging:
         assert any("Found 2 projects" in r.message for r in caplog.records)
 
     def test_trace_logs_each_entry(self, tmp_projects, caplog):
-        from src.log_setup import TRACE, setup_logging
+        from src.core.log_setup import TRACE, setup_logging
         setup_logging(debug=False, trace=False, verbose=False)
         with caplog.at_level(TRACE, logger="src.project_scanner"):
             projects = scan_projects(str(tmp_projects))

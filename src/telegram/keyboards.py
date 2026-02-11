@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+
+# --- Auth ---
+
+
+def is_authorized(user_id: int, authorized_users: list[int]) -> bool:
+    """Check whether a Telegram user is allowed to interact with the bot."""
+    return user_id in authorized_users
+
+
+# --- Keyboard builders ---
+
+
+def build_project_keyboard(
+    projects: list, page: int = 0, page_size: int = 8
+) -> list[list[dict]]:
+    """Build a paginated inline keyboard layout for project selection.
+
+    Each project is rendered as a single-button row. Navigation buttons
+    ("< Prev" / "Next >") are appended when additional pages exist.
+
+    Args:
+        projects: Full list of discovered projects to paginate over.
+        page: Zero-based page index to display.
+        page_size: Maximum number of project buttons per page.
+
+    Returns:
+        A list of rows, where each row is a list of button dicts with
+        "text" and "callback_data" keys. Returns an empty list when
+        projects is empty.
+    """
+    if not projects:
+        return []
+
+    start = page * page_size
+    end = start + page_size
+    page_projects = projects[start:end]
+
+    rows = []
+    for proj in page_projects:
+        rows.append([{"text": proj.name, "callback_data": f"project:{proj.path}"}])
+
+    nav = []
+    if page > 0:
+        nav.append({"text": "< Prev", "callback_data": f"page:{page - 1}"})
+    if end < len(projects):
+        nav.append({"text": "Next >", "callback_data": f"page:{page + 1}"})
+    if nav:
+        rows.append(nav)
+
+    return rows
+
+
+def build_sessions_keyboard(
+    sessions: list, active_id: int | None
+) -> list[list[dict]]:
+    """Build an inline keyboard layout listing active sessions.
+
+    Each session is rendered as a two-button row: one to switch to the
+    session and one to kill it. The currently active session is marked
+    with an asterisk (*) suffix.
+
+    Args:
+        sessions: List of session objects, each having ``session_id`` and
+            ``project_name`` attributes.
+        active_id: The session ID of the currently active session, or
+            None if no session is active.
+
+    Returns:
+        A list of rows, where each row is a list of button dicts with
+        "text" and "callback_data" keys. Returns an empty list when
+        sessions is empty.
+    """
+    if not sessions:
+        return []
+
+    rows = []
+    for s in sessions:
+        marker = " *" if s.session_id == active_id else ""
+        rows.append(
+            [
+                {
+                    "text": f"#{s.session_id} {s.project_name}{marker}",
+                    "callback_data": f"switch:{s.session_id}",
+                },
+                {"text": "Kill", "callback_data": f"kill:{s.session_id}"},
+            ]
+        )
+    return rows
+
+
+# --- Message formatting ---
+
+
+def format_session_started(project_name: str, session_id: int) -> str:
+    """Format a Markdown message announcing that a new session has started.
+
+    Args:
+        project_name: Display name of the project the session belongs to.
+        session_id: Numeric identifier of the newly created session.
+
+    Returns:
+        A Markdown-formatted string suitable for sending via Telegram.
+    """
+    return f"Session started on *{project_name}*. Session #{session_id}"
+
+
+def format_session_ended(project_name: str, session_id: int) -> str:
+    """Format a Markdown message announcing that a session has ended.
+
+    Args:
+        project_name: Display name of the project the session belonged to.
+        session_id: Numeric identifier of the ended session.
+
+    Returns:
+        A Markdown-formatted string suitable for sending via Telegram.
+    """
+    return f"Session #{session_id} on *{project_name}* ended."
+
+
+def format_history_entry(entry: dict) -> str:
+    """Format a single session history record as a Markdown text block.
+
+    Includes the project name, start time, optional end time, status, and
+    optional exit code.
+
+    Args:
+        entry: A dict with keys ``project``, ``started_at``, ``status``,
+            and optionally ``ended_at`` and ``exit_code``.
+
+    Returns:
+        A multi-line Markdown-formatted string representing the history
+        entry.
+    """
+    parts = [
+        f"*{entry['project']}*",
+        f"Started: {entry['started_at']}",
+    ]
+    if entry.get("ended_at"):
+        parts.append(f"Ended: {entry['ended_at']}")
+    parts.append(f"Status: {entry['status']}")
+    if entry.get("exit_code") is not None:
+        parts.append(f"Exit code: {entry['exit_code']}")
+    return "\n".join(parts)
+
+
+# --- Command menu ---
+
+BOT_COMMANDS = [
+    ("start", "Start a new session / pick a project"),
+    ("sessions", "List and switch active sessions"),
+    ("exit", "Kill the active session"),
+    ("history", "Show past sessions"),
+    ("git", "Show git info for current project"),
+    ("context", "Show context window usage"),
+    ("download", "Download a file from the session"),
+    ("update_claude", "Update the Claude Code CLI"),
+]

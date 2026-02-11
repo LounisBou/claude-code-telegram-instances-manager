@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pexpect
 
-from src.log_setup import TRACE
+from src.core.log_setup import TRACE
 
 logger = logging.getLogger(__name__)
 

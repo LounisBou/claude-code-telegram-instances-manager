@@ -145,7 +145,7 @@ class TestSubmit:
 class TestClaudeProcessLogging:
     @pytest.mark.asyncio
     async def test_spawn_logs_command(self, caplog):
-        from src.log_setup import setup_logging
+        from src.core.log_setup import setup_logging
         setup_logging(debug=True, trace=False, verbose=False)
         proc = ClaudeProcess(command="echo", args=["hello"], cwd="/tmp")
         with caplog.at_level(logging.DEBUG, logger="src.claude_process"):

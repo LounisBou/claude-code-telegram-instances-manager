@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from unittest.mock import patch
 
-from src.log_setup import TRACE, setup_logging
+from src.core.log_setup import TRACE, setup_logging
 
 
 class TestTraceLevel:
@@ -33,7 +33,7 @@ class TestSetupLogging:
         assert console[0].level == logging.DEBUG
 
     def test_trace_creates_file_handler(self, tmp_path):
-        with patch("src.log_setup.TRACE_DIR", str(tmp_path)):
+        with patch("src.core.log_setup.TRACE_DIR", str(tmp_path)):
             setup_logging(debug=False, trace=True, verbose=False)
         src_logger = logging.getLogger("src")
         file_handlers = [h for h in src_logger.handlers if isinstance(h, logging.FileHandler)]
@@ -41,19 +41,19 @@ class TestSetupLogging:
         assert file_handlers[0].level == TRACE
 
     def test_trace_console_stays_debug(self, tmp_path):
-        with patch("src.log_setup.TRACE_DIR", str(tmp_path)):
+        with patch("src.core.log_setup.TRACE_DIR", str(tmp_path)):
             root = setup_logging(debug=False, trace=True, verbose=False)
         console = [h for h in root.handlers if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)]
         assert console[0].level == logging.DEBUG
 
     def test_trace_verbose_console_at_trace(self, tmp_path):
-        with patch("src.log_setup.TRACE_DIR", str(tmp_path)):
+        with patch("src.core.log_setup.TRACE_DIR", str(tmp_path)):
             root = setup_logging(debug=False, trace=True, verbose=True)
         console = [h for h in root.handlers if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)]
         assert console[0].level == TRACE
 
     def test_trace_file_naming(self, tmp_path):
-        with patch("src.log_setup.TRACE_DIR", str(tmp_path)):
+        with patch("src.core.log_setup.TRACE_DIR", str(tmp_path)):
             setup_logging(debug=False, trace=True, verbose=False)
         log_files = list(tmp_path.iterdir())
         assert len(log_files) == 1

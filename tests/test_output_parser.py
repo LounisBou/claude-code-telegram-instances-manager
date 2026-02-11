@@ -1,34 +1,31 @@
 import logging
 import os
 
-from src.output_parser import (
+from src.parsing.detectors import (
+    ContextUsage,
+    DetectedPrompt,
+    PromptType,
+    StatusBar,
+    detect_background_task,
+    detect_context_usage,
+    detect_file_paths,
+    detect_parallel_agents,
+    detect_prompt,
+    detect_thinking,
+    detect_todo_list,
+    detect_tool_request,
+    parse_extra_status,
+    parse_status_bar,
+)
+from src.parsing.screen_classifier import classify_screen_state
+from src.telegram.formatter import TELEGRAM_MAX_LENGTH, format_telegram, split_message
+from src.parsing.terminal_emulator import (
     TerminalEmulator,
-    ScreenState,
-    ScreenEvent,
-    classify_line,
-    extract_content,
-    strip_ansi,
     clean_terminal_output,
     filter_spinners,
-    detect_prompt,
-    PromptType,
-    DetectedPrompt,
-    detect_context_usage,
-    ContextUsage,
-    detect_file_paths,
-    format_telegram,
-    split_message,
-    parse_status_bar,
-    parse_extra_status,
-    StatusBar,
-    TELEGRAM_MAX_LENGTH,
-    detect_thinking,
-    detect_tool_request,
-    detect_todo_list,
-    detect_background_task,
-    detect_parallel_agents,
-    classify_screen_state,
+    strip_ansi,
 )
+from src.parsing.ui_patterns import ScreenEvent, ScreenState, classify_line, extract_content
 
 
 # ---- Real captured ANSI data from Claude Code sessions ----
@@ -1226,8 +1223,8 @@ class TestClassifyScreenState:
 
     def test_separator_classify_line_with_fffd(self):
         """Regression: classify_line should return 'separator' for artifact separators."""
-        from src.output_parser import classify_line
-        assert classify_line("─" * 38 + "\uFFFD\uFFFD") == "separator"
+        from src.parsing.ui_patterns import classify_line as _classify_line
+        assert _classify_line("─" * 38 + "\uFFFD\uFFFD") == "separator"
 
 
 class TestFormatTelegram:
@@ -1300,22 +1297,22 @@ class TestSplitMessage:
 
 class TestClassifyScreenStateLogging:
     def test_classify_logs_result_at_trace(self, caplog):
-        from src.log_setup import TRACE, setup_logging
+        from src.core.log_setup import TRACE, setup_logging
         setup_logging(debug=False, trace=False, verbose=False)
         lines = [""] * 40
         lines[18] = "❯"
         lines[17] = "─" * 20
         lines[19] = "─" * 20
-        with caplog.at_level(TRACE, logger="src.output_parser"):
+        with caplog.at_level(TRACE, logger="src.parsing.screen_classifier"):
             result = classify_screen_state(lines)
         trace_records = [r for r in caplog.records if r.levelno == TRACE]
         assert any("IDLE" in r.message for r in trace_records)
 
     def test_classify_logs_line_count_at_trace(self, caplog):
-        from src.log_setup import TRACE, setup_logging
+        from src.core.log_setup import TRACE, setup_logging
         setup_logging(debug=False, trace=False, verbose=False)
         lines = ["content line"] * 5 + [""] * 35
-        with caplog.at_level(TRACE, logger="src.output_parser"):
+        with caplog.at_level(TRACE, logger="src.parsing.screen_classifier"):
             classify_screen_state(lines)
         trace_records = [r for r in caplog.records if r.levelno == TRACE]
         assert any("non_empty=5" in r.message for r in trace_records)

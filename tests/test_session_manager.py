@@ -247,7 +247,7 @@ class TestOutputBuffer:
 class TestSessionManagerLogging:
     @pytest.mark.asyncio
     async def test_create_session_logs(self, caplog):
-        from src.log_setup import setup_logging
+        from src.core.log_setup import setup_logging
         setup_logging(debug=True, trace=False, verbose=False)
         db = AsyncMock()
         db.create_session = AsyncMock(return_value=1)

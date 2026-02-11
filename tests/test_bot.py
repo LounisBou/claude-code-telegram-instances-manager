@@ -5,34 +5,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.bot import (
-    _CONTENT_STATES,
+from src.telegram.commands import (
     _run_update_command,
+    handle_context,
+    handle_download,
+    handle_file_upload,
+    handle_git,
+    handle_history,
+    handle_update_claude,
+)
+from src.telegram.handlers import (
+    handle_callback_query,
+    handle_exit,
+    handle_sessions,
+    handle_start,
+    handle_text_message,
+    handle_unknown_command,
+)
+from src.telegram.keyboards import (
     build_project_keyboard,
     build_sessions_keyboard,
     format_history_entry,
     format_session_ended,
     format_session_started,
-    handle_callback_query,
-    handle_context,
-    handle_download,
-    handle_exit,
-    handle_file_upload,
-    handle_git,
-    handle_history,
-    handle_sessions,
-    handle_start,
-    handle_text_message,
-    handle_unknown_command,
-    handle_update_claude,
     is_authorized,
 )
-from src.output_parser import (
-    ScreenState,
-    TerminalEmulator,
-    classify_screen_state,
-    extract_content,
-)
+from src.telegram.output import _CONTENT_STATES
+from src.parsing.screen_classifier import classify_screen_state
+from src.parsing.terminal_emulator import TerminalEmulator
+from src.parsing.ui_patterns import ScreenState, extract_content
 from src.project_scanner import Project
 from src.session_manager import OutputBuffer
 
@@ -179,7 +180,7 @@ class TestHandleStart:
         config.projects.root = "/tmp"
         config.projects.scan_depth = 1
         context.bot_data = {"config": config}
-        with patch("src.bot.scan_projects") as mock_scan:
+        with patch("src.telegram.handlers.scan_projects") as mock_scan:
             mock_scan.return_value = [Project(name="proj", path="/a/proj")]
             await handle_start(update, context)
             update.message.reply_text.assert_called_once()
@@ -195,7 +196,7 @@ class TestHandleStart:
         config.projects.root = "/tmp"
         config.projects.scan_depth = 1
         context.bot_data = {"config": config}
-        with patch("src.bot.scan_projects") as mock_scan:
+        with patch("src.telegram.handlers.scan_projects") as mock_scan:
             mock_scan.return_value = []
             await handle_start(update, context)
             call_text = update.message.reply_text.call_args[0][0]
@@ -379,7 +380,7 @@ class TestHandleCallbackQuery:
         session = MagicMock(session_id=1, project_name="my-project")
         sm.create_session = AsyncMock(return_value=session)
         context.bot_data = {"config": config, "session_manager": sm}
-        with patch("src.bot.get_git_info", new_callable=AsyncMock) as mock_git:
+        with patch("src.telegram.handlers.get_git_info", new_callable=AsyncMock) as mock_git:
             mock_git.return_value = MagicMock(
                 format=MagicMock(return_value="Branch: main")
             )
@@ -446,7 +447,7 @@ class TestHandleCallbackQuery:
         config.claude.update_command = "echo done"
         context.bot_data = {"config": config, "session_manager": MagicMock()}
         with patch(
-            "src.bot._run_update_command", new_callable=AsyncMock
+            "src.telegram.handlers._run_update_command", new_callable=AsyncMock
         ) as mock_run:
             mock_run.return_value = "OK: done"
             await handle_callback_query(update, context)
@@ -480,7 +481,7 @@ class TestHandleCallbackQuery:
         config.projects.root = "/tmp"
         config.projects.scan_depth = 1
         context.bot_data = {"config": config, "session_manager": MagicMock()}
-        with patch("src.bot.scan_projects") as mock_scan:
+        with patch("src.telegram.handlers.scan_projects") as mock_scan:
             mock_scan.return_value = [
                 Project(name=f"p{i}", path=f"/a/p{i}") for i in range(12)
             ]
@@ -583,7 +584,7 @@ class TestHandleGit:
         session = MagicMock(project_path="/a/proj")
         sm = MagicMock(get_active_session=MagicMock(return_value=session))
         context.bot_data = {"config": config, "session_manager": sm}
-        with patch("src.bot.get_git_info", new_callable=AsyncMock) as mock_git:
+        with patch("src.telegram.commands.get_git_info", new_callable=AsyncMock) as mock_git:
             mock_git.return_value = MagicMock(
                 format=MagicMock(return_value="Branch: main | No open PR")
             )
@@ -619,7 +620,7 @@ class TestHandleUpdateClaude:
         sm = MagicMock(has_active_sessions=MagicMock(return_value=False))
         context.bot_data = {"config": config, "session_manager": sm}
         with patch(
-            "src.bot._run_update_command", new_callable=AsyncMock
+            "src.telegram.commands._run_update_command", new_callable=AsyncMock
         ) as mock_run:
             mock_run.return_value = "Updated to v2.0"
             await handle_update_claude(update, context)
@@ -924,11 +925,11 @@ class TestBuildApp:
 class TestHandlerLogging:
     @pytest.mark.asyncio
     async def test_handle_start_logs_handler_entry(self, mock_update, mock_context, caplog):
-        from src.log_setup import setup_logging
+        from src.core.log_setup import setup_logging
         setup_logging(debug=True, trace=False, verbose=False)
         mock_context.bot_data["config"].projects.root = "/nonexistent"
         mock_context.bot_data["config"].projects.scan_depth = 1
-        with caplog.at_level(logging.DEBUG, logger="src.bot"):
+        with caplog.at_level(logging.DEBUG, logger="src.telegram.handlers"):
             await handle_start(mock_update, mock_context)
         assert any("handle_start" in r.message for r in caplog.records)
 
@@ -970,7 +971,7 @@ class TestSpawnErrorReporting:
         sm = AsyncMock()
         sm.create_session = AsyncMock(side_effect=OSError("bad"))
         context.bot_data = {"config": config, "session_manager": sm}
-        with patch("src.bot.get_git_info", new_callable=AsyncMock) as mock_git:
+        with patch("src.telegram.handlers.get_git_info", new_callable=AsyncMock) as mock_git:
             await handle_callback_query(update, context)
             mock_git.assert_not_called()
 
@@ -1072,8 +1073,8 @@ class TestOutputStateFiltering:
 
     def test_startup_to_unknown_guard_prevents_reentry(self):
         """Regression: once past STARTUP, classifier returning STARTUP must become UNKNOWN."""
-        from src.bot import _session_prev_state
-        from src.output_parser import ScreenEvent
+        from src.telegram.output import _session_prev_state
+        from src.parsing.ui_patterns import ScreenEvent
 
         # Simulate: session was in IDLE, classifier returns STARTUP (banner visible)
         key = (999, 999)
