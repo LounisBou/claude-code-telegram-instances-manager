@@ -25,22 +25,26 @@ _FILE_DATEFMT = "%Y-%m-%d %H:%M:%S"
 def setup_logging(
     *, debug: bool, trace: bool, verbose: bool
 ) -> logging.Logger:
-    root = logging.getLogger("claude-bot")
-    root.handlers.clear()
-    root.setLevel(TRACE)
-
-    # Console handler
-    console = logging.StreamHandler()
+    # Determine console level
     if trace and verbose:
-        console.setLevel(TRACE)
+        level = TRACE
     elif debug or trace:
-        console.setLevel(logging.DEBUG)
+        level = logging.DEBUG
     else:
-        console.setLevel(logging.INFO)
-    console.setFormatter(logging.Formatter(_CONSOLE_FMT))
-    root.addHandler(console)
+        level = logging.INFO
 
-    # File handler (trace only)
+    console = logging.StreamHandler()
+    console.setLevel(level)
+    console.setFormatter(logging.Formatter(_CONSOLE_FMT))
+
+    # Configure both "claude-bot" (used by main) and "src" (parent of all modules)
+    for name in ("claude-bot", "src"):
+        lg = logging.getLogger(name)
+        lg.handlers.clear()
+        lg.setLevel(TRACE)
+        lg.addHandler(console)
+
+    # File handler (trace only) — attach to "src" so all modules write to it
     if trace:
         os.makedirs(TRACE_DIR, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
@@ -48,6 +52,6 @@ def setup_logging(
         fh = logging.FileHandler(filepath)
         fh.setLevel(TRACE)
         fh.setFormatter(logging.Formatter(_FILE_FMT, datefmt=_FILE_DATEFMT))
-        root.addHandler(fh)
+        logging.getLogger("src").addHandler(fh)
 
-    return root
+    return logging.getLogger("claude-bot")

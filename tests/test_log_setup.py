@@ -34,8 +34,9 @@ class TestSetupLogging:
 
     def test_trace_creates_file_handler(self, tmp_path):
         with patch("src.log_setup.TRACE_DIR", str(tmp_path)):
-            root = setup_logging(debug=False, trace=True, verbose=False)
-        file_handlers = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
+            setup_logging(debug=False, trace=True, verbose=False)
+        src_logger = logging.getLogger("src")
+        file_handlers = [h for h in src_logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) == 1
         assert file_handlers[0].level == TRACE
 
@@ -60,8 +61,9 @@ class TestSetupLogging:
         assert log_files[0].suffix == ".log"
 
     def test_no_file_without_trace(self):
-        root = setup_logging(debug=True, trace=False, verbose=False)
-        file_handlers = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
+        setup_logging(debug=True, trace=False, verbose=False)
+        src_logger = logging.getLogger("src")
+        file_handlers = [h for h in src_logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) == 0
 
     def test_idempotent_clears_old_handlers(self):
