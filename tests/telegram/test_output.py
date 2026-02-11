@@ -681,6 +681,35 @@ class TestPollOutputStreaming:
 
         self._cleanup_session(key)
 
+    @pytest.mark.asyncio
+    async def test_edit_rate_limit_passed_to_streaming(self):
+        """poll_output must pass edit_rate_limit to StreamingMessage."""
+        key = (690, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.return_value = None
+        session = MagicMock()
+        session.process = process
+        sm_mock = MagicMock()
+        sm_mock._sessions = {690: {1: session}}
+        bot = AsyncMock()
+
+        with patch(
+            "src.telegram.output.asyncio.sleep",
+            side_effect=[None, asyncio.CancelledError],
+        ):
+            try:
+                await poll_output(bot, sm_mock, edit_rate_limit=5)
+            except asyncio.CancelledError:
+                pass
+
+        streaming = _session_streaming.get(key)
+        assert streaming is not None
+        assert streaming.edit_rate_limit == 5
+
+        self._cleanup_session(key)
+
 
 class TestBuildApp:
     """Tests for build_app wiring."""
