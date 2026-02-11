@@ -64,6 +64,13 @@ async def poll_output(
     gives content extraction only the delta (avoids re-sending all visible
     text every cycle).
 
+    Special case: THINKING→IDLE fast responses. When Claude responds within
+    one poll cycle, response content arrives with the thinking indicator and
+    is consumed by get_changes() during THINKING (not a content state). By
+    the IDLE cycle, get_changes() only has UI chrome. The fix: use the full
+    display for content extraction on THINKING→IDLE, with the dedup set
+    preventing old content from leaking.
+
     Args:
         bot: Telegram Bot instance for sending messages.
         session_manager: SessionManager with active sessions.
@@ -155,14 +162,26 @@ async def poll_output(
                     and prev in (ScreenState.THINKING, ScreenState.STREAMING)
                 )
                 if _should_extract:
-                    if changed:
-                        for ci, cl in enumerate(changed):
+                    # For THINKING→IDLE fast responses, response content
+                    # arrived in the same PTY read as the thinking indicator.
+                    # get_changes() consumed it during the THINKING cycle
+                    # (which doesn't extract content), so by IDLE only UI
+                    # chrome remains in changed. Use full display instead —
+                    # the dedup set prevents re-sending old content.
+                    _fast_idle = (
+                        event.state == ScreenState.IDLE
+                        and prev == ScreenState.THINKING
+                    )
+                    source = display if _fast_idle else changed
+                    if source:
+                        for ci, cl in enumerate(source):
                             if cl.strip():
                                 logger.debug(
-                                    "poll_output RAW changed[%d]: %r",
+                                    "poll_output RAW %s[%d]: %r",
+                                    "display" if _fast_idle else "changed",
                                     ci, cl.strip(),
                                 )
-                    content = extract_content(changed)
+                    content = extract_content(source)
                     if content:
                         # Dedup: filter out lines already sent (screen scroll
                         # causes get_changes() to re-report shifted lines)

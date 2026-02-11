@@ -478,12 +478,14 @@ class TestPollOutputStateTransitions:
         self._cleanup_session(key)
 
     @pytest.mark.asyncio
-    async def test_thinking_to_idle_extracts_fast_response(self):
+    async def test_thinking_to_idle_extracts_fast_response_from_display(self):
         """Regression: fast response completing within one poll cycle (THINKING→IDLE).
 
-        When Claude responds very quickly, the state goes THINKING→IDLE without
-        ever entering STREAMING. Content must still be extracted from changed
-        lines during the IDLE transition.
+        When Claude responds very quickly, the response content arrives in the
+        same PTY read as the thinking indicator. get_changes() consumes it
+        during the THINKING cycle, so by IDLE only UI chrome remains in changed.
+        The fix: use the full display (which still shows the response) instead
+        of changed for content extraction on THINKING→IDLE transitions.
         """
         key = (764, 1)
         self._cleanup_session(key)
@@ -499,7 +501,8 @@ class TestPollOutputStateTransitions:
 
         # Pre-init state as THINKING (start_thinking already called)
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        emu = TerminalEmulator()
+        _session_emulators[key] = emu
         streaming = StreamingMessage(bot=bot, chat_id=764, edit_rate_limit=3)
         streaming.message_id = 99
         streaming.state = StreamingState.THINKING
@@ -507,20 +510,33 @@ class TestPollOutputStateTransitions:
         _session_prev_state[key] = ScreenState.THINKING
         _session_sent_lines[key] = set()
 
-        # Classifier returns IDLE (response already complete)
+        # Classifier returns IDLE (response already complete).
+        # Capture what extract_content receives to verify it gets the
+        # full display (not just changed lines).
         idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        extract_calls = []
+
+        def _capture_extract(lines):
+            extract_calls.append(lines)
+            return "Four"
+
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output.classify_screen_state", return_value=idle_event),
-            patch("src.telegram.output.extract_content", return_value="Four"),
+            patch("src.telegram.output.extract_content", side_effect=_capture_extract),
         ):
             try:
                 await poll_output(bot, sm)
             except asyncio.CancelledError:
                 pass
 
+        # extract_content must have been called with the full display
+        # (which has all 24 rows from pyte), not just changed lines
+        assert len(extract_calls) == 1
+        source_lines = extract_calls[0]
+        assert len(source_lines) == 40  # full pyte display (40 rows), not incremental
+
         # Content should have been extracted and sent via append_content
-        # which edits the existing message
         bot.edit_message_text.assert_called()
         edit_text = bot.edit_message_text.call_args[1]["text"]
         assert "Four" in edit_text
