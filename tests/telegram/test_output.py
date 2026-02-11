@@ -1171,9 +1171,36 @@ class TestFindLastPrompt:
         assert _find_last_prompt(display) == 2
 
     def test_ignores_bare_prompt(self):
-        """Bare ❯ (no text or short text) must be ignored."""
-        display = ["❯", "content", "❯ hi", "more"]
+        """Bare ❯ (no text) must be ignored."""
+        display = ["❯", "content", "more"]
         assert _find_last_prompt(display) is None
+
+    def test_finds_short_user_prompt(self):
+        """Short user prompts like '❯ hi' (len 4) must be found."""
+        display = ["❯", "content", "❯ hi", "more"]
+        assert _find_last_prompt(display) == 2
+
+    def test_finds_emoji_only_prompt(self):
+        """Regression: emoji-only prompt '❯ 🤖💬🔥' (len 5) was incorrectly
+        skipped by the old > 5 threshold, causing previous response content
+        to leak into the new response during fast-IDLE extraction."""
+        display = [
+            "⏺ Two.",
+            "────────────────────────────────────",
+            "❯ 🤖💬🔥",
+            "────────────────────────────────────",
+            "⏺ Hey! What can I help you with?",
+            "────────────────────────────────────",
+            "❯",
+            "────────────────────────────────────",
+        ]
+        prompt_idx = _find_last_prompt(display)
+        assert prompt_idx == 2
+        # Trimmed display must NOT include old "Two." response
+        trimmed = display[prompt_idx:]
+        content = extract_content(trimmed)
+        assert "Hey! What can I help you with?" in content
+        assert "Two." not in content
 
     def test_returns_none_when_no_prompt(self):
         display = ["line one", "line two", "line three"]

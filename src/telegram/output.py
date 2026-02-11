@@ -61,8 +61,10 @@ _session_thinking_snapshot: dict[tuple[int, int], set[str]] = {}
 def _find_last_prompt(display: list[str]) -> int | None:
     """Find index of the last user prompt line on the display.
 
-    Looks for ``❯`` lines with text longer than 5 chars (to skip bare
-    prompts that are just the cursor marker).
+    Looks for ``❯`` lines with text longer than 2 chars (to skip bare
+    prompts that are just the cursor marker ``❯``).  The previous
+    threshold of 5 incorrectly skipped short user inputs like a
+    3-emoji message (``❯ 🤖💬🔥`` = 5 chars, which failed ``> 5``).
 
     Args:
         display: Terminal display lines from the emulator.
@@ -74,7 +76,7 @@ def _find_last_prompt(display: list[str]) -> int | None:
     result = None
     for i, line in enumerate(display):
         s = line.strip()
-        if s.startswith("❯") and len(s) > 5:
+        if s.startswith("❯") and len(s) > 2:
             result = i
     return result
 
