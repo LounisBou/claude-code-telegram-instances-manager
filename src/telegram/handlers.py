@@ -262,6 +262,31 @@ async def handle_callback_query(
             await query.answer()
             await query.edit_message_text("Update cancelled.")
 
+    elif data.startswith("tool:"):
+        # Tool approval: "tool:yes:<session_id>" or "tool:no:<session_id>"
+        parts = data.split(":", 2)
+        action = parts[1]  # "yes" or "no"
+        session_id = int(parts[2])
+        session = session_manager._sessions.get(user_id, {}).get(session_id)
+        if not session:
+            await query.answer("Session no longer active")
+            return
+        if action == "yes":
+            # Press Enter to accept the default (Yes) option
+            await session.process.write("\r")
+            label = "Allowed"
+        else:
+            # Press Escape to cancel the tool request
+            await session.process.write("\x1b")
+            label = "Denied"
+        await query.answer(label)
+        # Update the message to show the decision (remove keyboard)
+        original_text = query.message.text or query.message.caption or ""
+        await query.edit_message_text(
+            f"{html.escape(original_text)}\n\n<i>{label}</i>",
+            parse_mode="HTML",
+        )
+
     elif data.startswith("page:"):
         page = int(data[len("page:") :])
         projects = scan_projects(

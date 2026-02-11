@@ -6,11 +6,14 @@ import textwrap
 import time
 from enum import Enum
 
-from telegram import Bot
+import html as html_mod
+
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.core.log_setup import TRACE
 from src.parsing.screen_classifier import classify_screen_state
 from src.telegram.formatter import format_html, reflow_text, wrap_code_blocks
+from src.telegram.keyboards import build_tool_approval_keyboard
 from src.parsing.terminal_emulator import TerminalEmulator
 from src.parsing.ui_patterns import (
     ScreenEvent, ScreenState, classify_line, extract_content,
@@ -23,9 +26,10 @@ logger = logging.getLogger(__name__)
 # STARTUP, IDLE, USER_MESSAGE, UNKNOWN, and THINKING are suppressed:
 # they are UI chrome or transient states with no extractable content.
 # THINKING gets a one-time "_Thinking..._" notification instead.
+# TOOL_REQUEST is handled separately with an inline keyboard (not
+# extracted as plain content), so it is excluded from _CONTENT_STATES.
 _CONTENT_STATES = {
     ScreenState.STREAMING,
-    ScreenState.TOOL_REQUEST,
     ScreenState.TOOL_RUNNING,
     ScreenState.TOOL_RESULT,
     ScreenState.ERROR,
@@ -220,6 +224,41 @@ async def poll_output(
                             snap.add(stripped)
                     _session_thinking_snapshot[key] = snap
                     await streaming.start_thinking()
+
+                # --- Tool approval: send inline keyboard instead of text ---
+                if (
+                    event.state == ScreenState.TOOL_REQUEST
+                    and prev != ScreenState.TOOL_REQUEST
+                ):
+                    # Finalize any in-progress streaming message first
+                    await streaming.finalize()
+                    # Build the approval message from the classifier payload
+                    question = event.payload.get("question", "Tool approval requested")
+                    options = event.payload.get("options", [])
+                    safe_q = html_mod.escape(question)
+                    parts = [f"<b>{safe_q}</b>"]
+                    for i, opt in enumerate(options):
+                        parts.append(f"  {i + 1}. {html_mod.escape(opt)}")
+                    text = "\n".join(parts)
+                    kb_data = build_tool_approval_keyboard(sid)
+                    keyboard = InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text=btn["text"],
+                                    callback_data=btn["callback_data"],
+                                )
+                                for btn in row
+                            ]
+                            for row in kb_data
+                        ]
+                    )
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                    )
 
                 # Extract content for states that produce output.
                 # Also extract on IDLE when a response cycle is incomplete

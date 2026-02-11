@@ -92,6 +92,25 @@ def build_sessions_keyboard(
     return rows
 
 
+def build_tool_approval_keyboard(
+    session_id: int,
+) -> list[list[dict]]:
+    """Build an inline keyboard for tool approval (Accept / Reject).
+
+    Args:
+        session_id: Session whose PTY receives the approval response.
+
+    Returns:
+        A list of rows with two buttons: Allow and Deny.
+    """
+    return [
+        [
+            {"text": "Allow", "callback_data": f"tool:yes:{session_id}"},
+            {"text": "Deny", "callback_data": f"tool:no:{session_id}"},
+        ]
+    ]
+
+
 # --- Message formatting ---
 
 

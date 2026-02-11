@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 from src.telegram.keyboards import (
     build_project_keyboard,
     build_sessions_keyboard,
+    build_tool_approval_keyboard,
     format_history_entry,
     format_session_ended,
     format_session_started,
@@ -137,3 +138,19 @@ class TestFormatMessages:
         msg = format_history_entry(entry)
         assert "my-proj" in msg
         assert "active" in msg.lower()
+
+
+class TestBuildToolApprovalKeyboard:
+    """Tests for the tool approval inline keyboard builder."""
+
+    def test_returns_allow_deny_buttons(self):
+        keyboard = build_tool_approval_keyboard(session_id=1)
+        assert len(keyboard) == 1  # one row
+        assert len(keyboard[0]) == 2  # two buttons
+        assert keyboard[0][0]["text"] == "Allow"
+        assert keyboard[0][1]["text"] == "Deny"
+
+    def test_callback_data_includes_session_id(self):
+        keyboard = build_tool_approval_keyboard(session_id=42)
+        assert keyboard[0][0]["callback_data"] == "tool:yes:42"
+        assert keyboard[0][1]["callback_data"] == "tool:no:42"

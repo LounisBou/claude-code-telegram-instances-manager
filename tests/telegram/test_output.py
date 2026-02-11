@@ -39,8 +39,9 @@ class TestOutputStateFiltering:
     def test_streaming_in_content_states(self):
         assert ScreenState.STREAMING in _CONTENT_STATES
 
-    def test_tool_request_in_content_states(self):
-        assert ScreenState.TOOL_REQUEST in _CONTENT_STATES
+    def test_tool_request_not_in_content_states(self):
+        """TOOL_REQUEST is handled with an inline keyboard, not as content."""
+        assert ScreenState.TOOL_REQUEST not in _CONTENT_STATES
 
     def test_error_in_content_states(self):
         assert ScreenState.ERROR in _CONTENT_STATES
@@ -950,6 +951,73 @@ class TestPollOutputStateTransitions:
 
         # No content -> no edit
         bot.edit_message_text.assert_not_called()
+
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
+    async def test_tool_request_sends_inline_keyboard(self):
+        """Regression: TOOL_REQUEST must send an inline keyboard, not plain text.
+
+        When the classifier detects a tool approval prompt, the output
+        pipeline should finalize any in-progress streaming message and
+        send a new message with the question text and Allow/Deny buttons.
+        """
+        key = (769, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"tool", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {769: {1: session}}
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        streaming = StreamingMessage(bot=bot, chat_id=769, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.state = StreamingState.THINKING
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.THINKING
+        _session_sent_lines[key] = set()
+
+        tool_event = ScreenEvent(
+            state=ScreenState.TOOL_REQUEST,
+            payload={
+                "question": "Do you want to create test.txt?",
+                "options": ["Yes", "No"],
+                "selected": 0,
+                "has_hint": True,
+            },
+            raw_lines=[],
+        )
+        with (
+            patch(
+                "src.telegram.output.asyncio.sleep",
+                side_effect=[None, asyncio.CancelledError],
+            ),
+            patch(
+                "src.telegram.output.classify_screen_state",
+                return_value=tool_event,
+            ),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # Should have sent a message with inline keyboard
+        bot.send_message.assert_called_once()
+        call_kwargs = bot.send_message.call_args.kwargs
+        assert call_kwargs["chat_id"] == 769
+        assert "Do you want to create test.txt?" in call_kwargs["text"]
+        assert call_kwargs["reply_markup"] is not None
+        # Keyboard should have Allow/Deny buttons
+        keyboard = call_kwargs["reply_markup"]
+        buttons = keyboard.inline_keyboard[0]
+        assert any("Allow" in btn.text for btn in buttons)
+        assert any("Deny" in btn.text for btn in buttons)
 
         self._cleanup_session(key)
 

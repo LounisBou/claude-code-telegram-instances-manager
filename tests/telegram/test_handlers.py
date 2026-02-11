@@ -365,6 +365,70 @@ class TestHandleCallbackQuery:
             update.callback_query.edit_message_text.assert_called_once()
 
 
+class TestToolApprovalCallback:
+    """Tests for tool approval inline keyboard callback handling."""
+
+    @pytest.mark.asyncio
+    async def test_tool_yes_sends_enter_to_pty(self):
+        """Allow button sends Enter to PTY to accept the default option."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:yes:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Do you want to create test.txt?"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        session.process.write.assert_called_once_with("\r")
+        update.callback_query.answer.assert_called_once_with("Allowed")
+
+    @pytest.mark.asyncio
+    async def test_tool_no_sends_escape_to_pty(self):
+        """Deny button sends Escape to PTY to cancel the tool request."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:no:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Do you want to create test.txt?"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        session.process.write.assert_called_once_with("\x1b")
+        update.callback_query.answer.assert_called_once_with("Denied")
+
+    @pytest.mark.asyncio
+    async def test_tool_callback_no_session(self):
+        """Tool callback with dead session returns error."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:yes:99"
+        update.callback_query.answer = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        sm._sessions = {111: {}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        update.callback_query.answer.assert_called_once_with(
+            "Session no longer active"
+        )
+
+
 class TestHandlerLogging:
     @pytest.mark.asyncio
     async def test_handle_start_logs_handler_entry(self, mock_update, mock_context, caplog):
