@@ -7,16 +7,16 @@ import pytest
 
 from src.telegram.output import (
     _CONTENT_STATES,
-    _flush_buffer,
-    _session_buffers,
     _session_emulators,
     _session_prev_state,
     _session_sent_lines,
+    _session_streaming,
+    StreamingMessage,
+    StreamingState,
     poll_output,
 )
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import ScreenEvent, ScreenState, extract_content
-from src.session_manager import OutputBuffer
 
 
 class TestOutputStateFiltering:
@@ -44,7 +44,7 @@ class TestOutputStateFiltering:
         """A Claude Code startup banner must be classified as STARTUP."""
         lines = [
             "Claude Code v2.1.37",
-            " \u2590\u259b\u2588\u2588\u2588\u259c\u2590   Opus 4.6 · Claude Max",
+            " \u2590\u259b\u2588\u2588\u2588\u259c\u2590   Opus 4.6 \u00b7 Claude Max",
             "\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  ~/dev/my-project",
             "  \u2598\u2598 \u259d\u259d",
             "",
@@ -85,33 +85,29 @@ class TestOutputStateFiltering:
         del _session_prev_state[key]
 
     def test_thinking_notification_on_transition(self):
-        """Regression: THINKING must send '_Thinking..._' once, not every cycle."""
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
+        """Regression: THINKING must trigger start_thinking once, not every cycle."""
         prev = ScreenState.IDLE
+        triggered = False
 
-        # First transition to THINKING -> should append
+        # First transition to THINKING -> should trigger
         state = ScreenState.THINKING
         if state == ScreenState.THINKING and prev != ScreenState.THINKING:
-            buf.append("_Thinking..._\n")
-        assert "_Thinking..._" in buf.flush()
+            triggered = True
+        assert triggered
 
-        # Second cycle still THINKING -> should NOT append
+        # Second cycle still THINKING -> should NOT trigger
         prev = ScreenState.THINKING
+        triggered = False
         if state == ScreenState.THINKING and prev != ScreenState.THINKING:
-            buf.append("_Thinking..._\n")
-        assert buf.flush() == ""
+            triggered = True
+        assert not triggered
 
-    def test_flush_on_idle_transition(self):
-        """Regression: buffer must flush when state transitions to IDLE."""
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
-        buf.append("Hello World\n")
-        # Simulate transition to IDLE
+    def test_finalize_on_idle_transition(self):
+        """Regression: streaming must finalize when state transitions to IDLE."""
         prev = ScreenState.STREAMING
         state = ScreenState.IDLE
-        if state == ScreenState.IDLE and prev != ScreenState.IDLE:
-            if buf.is_ready():
-                text = buf.flush()
-                assert "Hello World" in text
+        should_finalize = state == ScreenState.IDLE and prev != ScreenState.IDLE
+        assert should_finalize
 
 
 class TestContentDedup:
@@ -233,83 +229,19 @@ class TestDedupSetClearing:
         del _session_sent_lines[key]
 
 
-class TestFlushBuffer:
-    """Tests for _flush_buffer: sends buffered text to Telegram."""
-
-    @pytest.mark.asyncio
-    async def test_flush_sends_message(self):
-        """Non-empty buffer should send message to user."""
-        bot = AsyncMock()
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
-        buf.append("Hello from Claude\n")
-
-        await _flush_buffer(bot, 12345, buf)
-
-        bot.send_message.assert_called_once()
-        sent_text = bot.send_message.call_args[1]["text"]
-        assert "Hello from Claude" in sent_text
-
-    @pytest.mark.asyncio
-    async def test_flush_skips_empty(self):
-        """Empty or whitespace-only buffer should not send."""
-        bot = AsyncMock()
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
-        buf.append("   \n")
-
-        await _flush_buffer(bot, 12345, buf)
-
-        bot.send_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_flush_skips_truly_empty(self):
-        """Flushing a buffer with no content should not send."""
-        bot = AsyncMock()
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
-
-        await _flush_buffer(bot, 12345, buf)
-
-        bot.send_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_flush_splits_long_message(self):
-        """Messages exceeding 4096 chars should be split."""
-        bot = AsyncMock()
-        buf = OutputBuffer(debounce_ms=0, max_buffer=10000)
-        # Create content longer than 4096 chars
-        long_text = "A" * 5000 + "\n"
-        buf.append(long_text)
-
-        await _flush_buffer(bot, 12345, buf)
-
-        assert bot.send_message.call_count >= 2
-
-    @pytest.mark.asyncio
-    async def test_flush_handles_send_error(self):
-        """Send failures should be logged, not raised."""
-        bot = AsyncMock()
-        bot.send_message.side_effect = Exception("Network error")
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
-        buf.append("Some content\n")
-
-        # Should not raise
-        await _flush_buffer(bot, 12345, buf)
-
-        bot.send_message.assert_called_once()
-
-
 class TestPollOutputIntegration:
     """Integration tests for poll_output loop behavior."""
 
     def _cleanup_session(self, key):
         """Remove session state created during tests."""
         _session_emulators.pop(key, None)
-        _session_buffers.pop(key, None)
+        _session_streaming.pop(key, None)
         _session_prev_state.pop(key, None)
         _session_sent_lines.pop(key, None)
 
     @pytest.mark.asyncio
     async def test_lazy_init_creates_all_state(self):
-        """First poll cycle for a session must create emulator, buffer, state, and sent set."""
+        """First poll cycle for a session must create emulator, streaming, state, and sent set."""
         key = (777, 1)
         self._cleanup_session(key)
 
@@ -331,45 +263,11 @@ class TestPollOutputIntegration:
                 pass
 
         assert key in _session_emulators
-        assert key in _session_buffers
+        assert key in _session_streaming
         assert key in _session_prev_state
         assert key in _session_sent_lines
         assert _session_prev_state[key] == ScreenState.STARTUP
         assert _session_sent_lines[key] == set()
-
-        self._cleanup_session(key)
-
-    @pytest.mark.asyncio
-    async def test_no_data_still_checks_buffer(self):
-        """When read_available returns None, buffer readiness should still be checked."""
-        key = (776, 1)
-        self._cleanup_session(key)
-
-        process = MagicMock()
-        process.read_available.return_value = None
-        session = MagicMock()
-        session.process = process
-        sm = MagicMock()
-        sm._sessions = {776: {1: session}}
-
-        bot = AsyncMock()
-
-        # Pre-fill buffer with ready content
-        _session_emulators[key] = MagicMock()
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
-        buf.append("Ready content\n")
-        _session_buffers[key] = buf
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = set()
-
-        with patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
-            try:
-                await poll_output(bot, sm)
-            except asyncio.CancelledError:
-                pass
-
-        # Buffer should have been flushed
-        bot.send_message.assert_called()
 
         self._cleanup_session(key)
 
@@ -405,14 +303,15 @@ class TestPollOutputStateTransitions:
     """Integration tests covering state-dependent paths in poll_output."""
 
     def _cleanup_session(self, key):
+        """Remove session state created during tests."""
         _session_emulators.pop(key, None)
-        _session_buffers.pop(key, None)
+        _session_streaming.pop(key, None)
         _session_prev_state.pop(key, None)
         _session_sent_lines.pop(key, None)
 
     @pytest.mark.asyncio
     async def test_thinking_transition_sends_notification(self):
-        """UNKNOWN→THINKING must append '_Thinking..._' to buffer."""
+        """UNKNOWN->THINKING must call start_thinking (send_chat_action + send_message)."""
         key = (770, 1)
         self._cleanup_session(key)
 
@@ -423,6 +322,7 @@ class TestPollOutputStateTransitions:
         sm = MagicMock()
         sm._sessions = {770: {1: session}}
         bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=42)
 
         thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
         with (
@@ -434,17 +334,18 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # Buffer should contain thinking notification
-        buf = _session_buffers.get(key)
-        assert buf is not None
-        text = buf.flush()
-        assert "_Thinking..._" in text
+        # start_thinking sends chat action and placeholder message
+        bot.send_chat_action.assert_called()
+        bot.send_message.assert_called()
+        call_kwargs = bot.send_message.call_args[1]
+        assert call_kwargs["text"] == "<i>Thinking...</i>"
+        assert call_kwargs["parse_mode"] == "HTML"
 
         self._cleanup_session(key)
 
     @pytest.mark.asyncio
     async def test_streaming_extracts_and_deduplicates_content(self):
-        """STREAMING state must extract content and dedup against sent set."""
+        """STREAMING state must extract content, dedup, and edit message in-place."""
         key = (769, 1)
         self._cleanup_session(key)
 
@@ -455,6 +356,18 @@ class TestPollOutputStateTransitions:
         sm = MagicMock()
         sm._sessions = {769: {1: session}}
         bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=42)
+
+        # Pre-init streaming message with a message_id (as if thinking was called)
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        streaming = StreamingMessage(bot=bot, chat_id=769, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.state = StreamingState.STREAMING
+        streaming.last_edit_time = 0
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.STREAMING
+        _session_sent_lines[key] = set()
 
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
@@ -467,12 +380,8 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # Content should be in buffer
-        buf = _session_buffers.get(key)
-        assert buf is not None
-        text = buf.flush()
-        assert "Hello world" in text
-        assert "New line" in text
+        # Content should have been edited into the message
+        bot.edit_message_text.assert_called()
 
         # Sent set should track the lines
         sent = _session_sent_lines.get(key, set())
@@ -483,7 +392,7 @@ class TestPollOutputStateTransitions:
 
     @pytest.mark.asyncio
     async def test_streaming_filters_already_sent_lines(self):
-        """Lines already in sent set must not appear in buffer."""
+        """Lines already in sent set must not appear in edited message."""
         key = (768, 1)
         self._cleanup_session(key)
 
@@ -495,10 +404,14 @@ class TestPollOutputStateTransitions:
         sm._sessions = {768: {1: session}}
         bot = AsyncMock()
 
-        # Pre-fill session state with already-sent lines
+        # Pre-fill session state with already-sent lines and a streaming message
         from src.parsing.terminal_emulator import TerminalEmulator
         _session_emulators[key] = TerminalEmulator()
-        _session_buffers[key] = OutputBuffer(debounce_ms=0, max_buffer=2000)
+        streaming = StreamingMessage(bot=bot, chat_id=768, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.state = StreamingState.STREAMING
+        streaming.last_edit_time = 0
+        _session_streaming[key] = streaming
         _session_prev_state[key] = ScreenState.STREAMING
         _session_sent_lines[key] = {"Already sent"}
 
@@ -513,17 +426,17 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # Buffer was flushed during poll (debounce_ms=0), check what was sent
-        bot.send_message.assert_called()
-        sent_text = bot.send_message.call_args[1]["text"]
-        assert "Already sent" not in sent_text
-        assert "Fresh content" in sent_text
+        # edit_message_text should have been called with content NOT including "Already sent"
+        bot.edit_message_text.assert_called()
+        edit_text = bot.edit_message_text.call_args[1]["text"]
+        assert "Already sent" not in edit_text
+        assert "Fresh content" in edit_text
 
         self._cleanup_session(key)
 
     @pytest.mark.asyncio
-    async def test_idle_transition_clears_dedup_and_flushes(self):
-        """STREAMING→IDLE must clear dedup set and flush buffer."""
+    async def test_idle_transition_clears_dedup_and_finalizes(self):
+        """STREAMING->IDLE must clear dedup set and finalize streaming message."""
         key = (767, 1)
         self._cleanup_session(key)
 
@@ -538,9 +451,11 @@ class TestPollOutputStateTransitions:
         # Pre-fill session state mid-stream
         from src.parsing.terminal_emulator import TerminalEmulator
         _session_emulators[key] = TerminalEmulator()
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
-        buf.append("Buffered content\n")
-        _session_buffers[key] = buf
+        streaming = StreamingMessage(bot=bot, chat_id=767, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.accumulated = "Buffered content"
+        streaming.state = StreamingState.STREAMING
+        _session_streaming[key] = streaming
         _session_prev_state[key] = ScreenState.STREAMING
         _session_sent_lines[key] = {"old line"}
 
@@ -556,8 +471,9 @@ class TestPollOutputStateTransitions:
 
         # Dedup set should be cleared
         assert _session_sent_lines.get(key) == set()
-        # Buffer should have been flushed (message sent)
-        bot.send_message.assert_called()
+        # finalize should have sent final edit and reset streaming state
+        bot.edit_message_text.assert_called()
+        assert streaming.state == StreamingState.IDLE
 
         self._cleanup_session(key)
 
@@ -587,8 +503,8 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # First cycle: state change (STARTUP→UNKNOWN) → debug
-        # Second cycle: unchanged (UNKNOWN→UNKNOWN) → TRACE via logger.log
+        # First cycle: state change (STARTUP->UNKNOWN) -> debug
+        # Second cycle: unchanged (UNKNOWN->UNKNOWN) -> TRACE via logger.log
         trace_calls = [c for c in mock_logger.log.call_args_list]
         assert len(trace_calls) >= 1  # At least one TRACE log for unchanged state
 
@@ -596,7 +512,7 @@ class TestPollOutputStateTransitions:
 
     @pytest.mark.asyncio
     async def test_streaming_empty_content_not_appended(self):
-        """STREAMING with empty extract_content should not append to buffer."""
+        """STREAMING with empty extract_content should not call edit_message_text."""
         key = (765, 1)
         self._cleanup_session(key)
 
@@ -608,6 +524,17 @@ class TestPollOutputStateTransitions:
         sm._sessions = {765: {1: session}}
         bot = AsyncMock()
 
+        # Pre-init with streaming message
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        streaming = StreamingMessage(bot=bot, chat_id=765, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.state = StreamingState.STREAMING
+        streaming.last_edit_time = 0
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.STREAMING
+        _session_sent_lines[key] = set()
+
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
@@ -619,17 +546,26 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        buf = _session_buffers.get(key)
-        assert buf is not None
-        text = buf.flush()
-        assert text == ""
+        # No content -> no edit
+        bot.edit_message_text.assert_not_called()
 
         self._cleanup_session(key)
 
+
+class TestPollOutputStreaming:
+    """poll_output uses StreamingMessage for edit-in-place streaming."""
+
+    def _cleanup_session(self, key):
+        """Remove session state created during tests."""
+        _session_emulators.pop(key, None)
+        _session_streaming.pop(key, None)
+        _session_prev_state.pop(key, None)
+        _session_sent_lines.pop(key, None)
+
     @pytest.mark.asyncio
-    async def test_non_idle_flush_when_ready(self):
-        """Buffer should flush during STREAMING if is_ready() returns True."""
-        key = (764, 1)
+    async def test_thinking_starts_streaming_message(self):
+        """THINKING transition must call start_thinking on StreamingMessage."""
+        key = (700, 1)
         self._cleanup_session(key)
 
         process = MagicMock()
@@ -637,37 +573,120 @@ class TestPollOutputStateTransitions:
         session = MagicMock()
         session.process = process
         sm = MagicMock()
-        sm._sessions = {764: {1: session}}
+        sm._sessions = {700: {1: session}}
         bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=42)
 
-        # Pre-fill with ready buffer
-        from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
-        buf = OutputBuffer(debounce_ms=0, max_buffer=2000)
-        buf.append("Ready to send\n")
-        _session_buffers[key] = buf
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = set()
-
-        # Stay in STREAMING (not IDLE) — should still flush via elif
-        streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
+        thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=streaming_event),
-            patch("src.telegram.output.extract_content", return_value=""),
+            patch("src.telegram.output.classify_screen_state", return_value=thinking_event),
         ):
             try:
                 await poll_output(bot, sm)
             except asyncio.CancelledError:
                 pass
 
+        bot.send_chat_action.assert_called()
         bot.send_message.assert_called()
+        # Verify placeholder message
+        call_kwargs = bot.send_message.call_args[1]
+        assert call_kwargs["text"] == "<i>Thinking...</i>"
+        assert call_kwargs["parse_mode"] == "HTML"
+
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
+    async def test_content_uses_format_html(self):
+        """Content must flow through format_html before append_content."""
+        key = (699, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"data", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {699: {1: session}}
+        bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=42)
+
+        # Pre-init with a streaming message that has a message_id (as if thinking was called)
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        streaming = StreamingMessage(bot=bot, chat_id=699, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.state = StreamingState.STREAMING
+        streaming.last_edit_time = 0
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.STREAMING
+        _session_sent_lines[key] = set()
+
+        streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
+        with (
+            patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
+            patch("src.telegram.output.classify_screen_state", return_value=streaming_event),
+            patch("src.telegram.output.extract_content", return_value="**bold** text"),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # edit_message_text should have HTML-formatted content
+        bot.edit_message_text.assert_called()
+        edit_text = bot.edit_message_text.call_args[1]["text"]
+        assert "<b>bold</b>" in edit_text
+
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
+    async def test_idle_calls_finalize(self):
+        """IDLE transition must call finalize on StreamingMessage."""
+        key = (698, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"data", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {698: {1: session}}
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        streaming = StreamingMessage(bot=bot, chat_id=698, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.accumulated = "Final content"
+        streaming.state = StreamingState.STREAMING
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.STREAMING
+        _session_sent_lines[key] = set()
+
+        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        with (
+            patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
+            patch("src.telegram.output.classify_screen_state", return_value=idle_event),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # finalize should have sent final edit
+        bot.edit_message_text.assert_called()
+        # streaming should be reset
+        assert streaming.state == StreamingState.IDLE
 
         self._cleanup_session(key)
 
 
 class TestBuildApp:
+    """Tests for build_app wiring."""
+
     def test_builds_app_with_handlers(self, tmp_path):
+        """build_app must return a valid Application."""
         import yaml
 
         from src.main import build_app
@@ -688,6 +707,7 @@ class TestBuildApp:
         assert app is not None
 
     def test_debug_flags_propagate_to_config(self, tmp_path):
+        """Debug flags must propagate through to config dataclass."""
         import yaml
 
         from src.main import build_app

@@ -9,10 +9,9 @@ from telegram import Bot
 
 from src.core.log_setup import TRACE
 from src.parsing.screen_classifier import classify_screen_state
-from src.telegram.formatter import reflow_text, split_message
+from src.telegram.formatter import format_html, reflow_text
 from src.parsing.terminal_emulator import TerminalEmulator
 from src.parsing.ui_patterns import ScreenEvent, ScreenState, extract_content
-from src.session_manager import OutputBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ _CONTENT_STATES = {
 
 # Per-session state for the output loop (keyed by (user_id, session_id))
 _session_emulators: dict[tuple[int, int], TerminalEmulator] = {}
-_session_buffers: dict[tuple[int, int], OutputBuffer] = {}
+_session_streaming: dict[tuple[int, int], StreamingMessage] = {}
 _session_prev_state: dict[tuple[int, int], ScreenState] = {}
 # Content dedup: tracks lines already sent to avoid re-sending when
 # pyte redraws the screen (e.g. terminal scroll shifts all line positions,
@@ -43,20 +42,33 @@ _session_prev_state: dict[tuple[int, int], ScreenState] = {}
 _session_sent_lines: dict[tuple[int, int], set[str]] = {}
 
 
-async def poll_output(bot: Bot, session_manager) -> None:
-    """Background loop that reads Claude output and sends it to Telegram.
+async def poll_output(
+    bot: Bot, session_manager, *, edit_rate_limit: int = 3
+) -> None:
+    """Background loop that reads Claude output and streams it to Telegram.
+
+    Uses StreamingMessage for edit-in-place streaming: a single Telegram
+    message is created on THINKING, edited in-place as content arrives,
+    and finalized when the response completes (IDLE transition).
 
     Pipeline per cycle (300ms):
       1. read_available() drains raw PTY bytes
       2. TerminalEmulator.feed() updates the pyte virtual screen
-      3. get_display() returns full screen → classify_screen_state()
-      4. get_changes() returns only changed lines → extract_content()
-      5. OutputBuffer accumulates text, flushes after debounce
+      3. get_display() returns full screen -> classify_screen_state()
+      4. get_changes() returns only changed lines -> extract_content()
+      5. format_html() converts to Telegram HTML
+      6. StreamingMessage.append_content() edits message in-place
 
     Two separate reads from the emulator: get_display() gives the classifier
     full context (screen-wide patterns like tool menus), while get_changes()
     gives content extraction only the delta (avoids re-sending all visible
     text every cycle).
+
+    Args:
+        bot: Telegram Bot instance for sending messages.
+        session_manager: SessionManager with active sessions.
+        edit_rate_limit: Maximum Telegram edit_message calls per second.
+            Passed to StreamingMessage on creation.
     """
     while True:
         await asyncio.sleep(0.3)
@@ -64,25 +76,22 @@ async def poll_output(bot: Bot, session_manager) -> None:
             for sid, session in list(sessions.items()):
                 key = (user_id, sid)
 
-                # Lazy-init emulator and buffer per session
+                # Lazy-init emulator and streaming message per session
                 if key not in _session_emulators:
                     _session_emulators[key] = TerminalEmulator()
-                    _session_buffers[key] = OutputBuffer(
-                        debounce_ms=500, max_buffer=2000
+                    _session_streaming[key] = StreamingMessage(
+                        bot=bot, chat_id=user_id,
+                        edit_rate_limit=edit_rate_limit,
                     )
                     _session_prev_state[key] = ScreenState.STARTUP
                     _session_sent_lines[key] = set()
 
                 raw = session.process.read_available()
                 if not raw:
-                    # Still check buffer readiness even without new data
-                    buf = _session_buffers[key]
-                    if buf.is_ready():
-                        await _flush_buffer(bot, user_id, buf)
                     continue
 
                 emu = _session_emulators[key]
-                buf = _session_buffers[key]
+                streaming = _session_streaming[key]
 
                 emu.feed(raw)
                 # Full display for classification (needs screen-wide context)
@@ -125,7 +134,7 @@ async def poll_output(bot: Bot, session_manager) -> None:
 
                 # Notify on state transitions to THINKING
                 if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
-                    buf.append("_Thinking..._\n")
+                    await streaming.start_thinking()
 
                 # Extract content for states that produce output
                 if event.state in _CONTENT_STATES:
@@ -142,29 +151,15 @@ async def poll_output(bot: Bot, session_manager) -> None:
                                 sent.add(stripped)
                         if new_lines:
                             deduped = "\n".join(new_lines)
-                            buf.append(reflow_text(deduped) + "\n")
+                            html = format_html(reflow_text(deduped))
+                            await streaming.append_content(html)
 
-                # Flush on transition to idle (response complete)
+                # Finalize on transition to idle (response complete)
                 if event.state == ScreenState.IDLE and prev != ScreenState.IDLE:
                     # Clear dedup set at response boundary so future
                     # responses can reuse the same phrases
                     _session_sent_lines[key] = set()
-                    if buf.is_ready():
-                        await _flush_buffer(bot, user_id, buf)
-                elif buf.is_ready():
-                    await _flush_buffer(bot, user_id, buf)
-
-
-async def _flush_buffer(bot: Bot, user_id: int, buf: OutputBuffer) -> None:
-    """Send buffered output to the user's Telegram chat."""
-    text = buf.flush()
-    if not text.strip():
-        return
-    for chunk in split_message(text):
-        try:
-            await bot.send_message(chat_id=user_id, text=chunk)
-        except Exception as exc:
-            logger.error("Failed to send output to user %d: %s", user_id, exc)
+                    await streaming.finalize()
 
 
 class StreamingState(Enum):
