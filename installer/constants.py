@@ -1,0 +1,13 @@
+APP_NAME = "claude-ctim"
+DEFAULT_INSTALL_DIR = f"/opt/{APP_NAME}"
+MANIFEST_FILENAME = "install_manifest.json"
+SERVICE_NAME = APP_NAME
+LAUNCHD_LABEL = f"com.{APP_NAME}"
+LAUNCHD_PLIST_DIR = "~/Library/LaunchAgents"
+SYSTEMD_USER_DIR = "~/.config/systemd/user"
+SYSTEMD_SYSTEM_DIR = "/etc/systemd/system"
+MIN_PYTHON = (3, 11)
+CONFIG_FILENAME = "config.yaml"
+VENV_DIR = ".venv"
+DATA_DIR = "data"
+DB_FILENAME = "sessions.db"

@@ -6,7 +6,32 @@
 - **Claude Code CLI** installed and authenticated (`claude` available in your PATH)
 - **Telegram bot token** obtained from [BotFather](https://t.me/BotFather)
 
-## Clone and Install
+## Quick Install
+
+One-line install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lounisbou/claude-ctim/main/scripts/bootstrap.sh | bash
+```
+
+Or clone and run:
+
+```bash
+git clone https://github.com/lounisbou/claude-ctim.git
+cd claude-ctim
+./scripts/bootstrap.sh
+```
+
+### Management Commands
+
+| Command | Description |
+|---------|-------------|
+| `claude-ctim-configure` | Re-run interactive configuration |
+| `claude-ctim-health` | Run health check diagnostics |
+| `claude-ctim-upgrade` | Upgrade to latest version |
+| `claude-ctim-uninstall` | Remove installation |
+
+## Clone and Install (Manual)
 
 ```bash
 git clone https://github.com/lounisbou/claude-instance-manager.git
