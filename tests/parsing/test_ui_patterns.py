@@ -116,16 +116,25 @@ class TestClassifyLine:
 
     def test_box_drawing_with_text_is_content(self):
         """Box lines with substantial text content are content (table data rows)."""
-        assert (
-            classify_line("╭─── Claude Code v2.1.37 ─────────────────────────╮")
-            == "content"
-        )
         assert classify_line("│            Welcome back!           │") == "content"
         assert classify_line("│ bot.py             │ Telegram bot handlers                    │") == "content"
+
+    def test_startup_banner_box(self):
+        """Startup banner lines are classified as 'startup', not content."""
+        assert (
+            classify_line("╭─── Claude Code v2.1.37 ─────────────────────────╮")
+            == "startup"
+        )
 
     def test_logo(self):
         assert classify_line("▐▛███▜▌   Opus 4.6") == "logo"
         assert classify_line("▝▜█████▛▘  ~/dev/project") == "logo"
+
+    def test_startup_line(self):
+        """Startup banner lines (version string) must be classified as 'startup'."""
+        assert classify_line("Claude Code v2.1.39") == "startup"
+        assert classify_line("           Claude Code v2.1.37") == "startup"
+        assert classify_line("╭─── Claude Code v2.1.37 ─────────╮") == "startup"
 
     def test_content(self):
         assert classify_line("Hello, this is a response from Claude") == "content"
@@ -150,6 +159,19 @@ class TestExtractContent:
         assert "────" not in result
         assert "claude-instance-manager" not in result
         assert "❯" not in result
+
+    def test_filters_startup_banner(self):
+        """Startup banner lines must be filtered out by extract_content."""
+        lines = [
+            "Claude Code v2.1.39",
+            "Formatting tip: Keep lines short",
+            "This is the actual response content",
+        ]
+        result = extract_content(lines)
+        assert "Claude Code" not in result
+        assert "This is the actual response content" in result
+        # Tip lines are classified as status_bar, also filtered
+        assert "Formatting tip" not in result
 
     def test_preserves_all_content(self):
         lines = ["First line", "Second line", "Third line"]

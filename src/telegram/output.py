@@ -114,6 +114,16 @@ async def poll_output(
 
                 _session_prev_state[key] = event.state
 
+                # Pre-seed dedup set during STARTUP: add all visible content
+                # lines so they don't leak into the first response when pyte
+                # redraws the screen (the banner persists in the buffer).
+                if event.state == ScreenState.STARTUP:
+                    sent = _session_sent_lines.get(key, set())
+                    for line in display:
+                        stripped = line.strip()
+                        if stripped:
+                            sent.add(stripped)
+
                 if event.state != prev:
                     logger.debug(
                         "poll_output user=%d sid=%d state=%s prev=%s",
@@ -207,8 +217,19 @@ class StreamingMessage:
         """Send typing action and placeholder message.
 
         Transitions: IDLE -> THINKING.
+        If still in STREAMING state (previous response not finalized),
+        auto-finalizes the previous response first.
         Starts a background task that resends typing action every 4 seconds.
         """
+        # Safety net: if previous response was not finalized (IDLE missed),
+        # finalize it now before starting a new response cycle.
+        if self.state == StreamingState.STREAMING:
+            logger.warning(
+                "start_thinking called while still STREAMING — "
+                "auto-finalizing previous response"
+            )
+            await self.finalize()
+
         await self.bot.send_chat_action(chat_id=self.chat_id, action="typing")
         msg = await self.bot.send_message(
             chat_id=self.chat_id,
@@ -225,12 +246,32 @@ class StreamingMessage:
         On first call, cancels typing indicator and transitions to STREAMING.
         Handles overflow when accumulated content exceeds 4096 chars.
 
+        Safety net: if called while IDLE (start_thinking was never called,
+        e.g. classifier skipped THINKING state), sends a new message first
+        so there is a message_id to edit.
+
         Args:
             html: HTML-formatted content to append.
         """
         if self._typing_task:
             self._typing_task.cancel()
             self._typing_task = None
+
+        # Safety net: create a message if start_thinking() was never called
+        if self.state == StreamingState.IDLE or self.message_id is None:
+            logger.warning(
+                "append_content called without start_thinking — "
+                "sending new message (state=%s)",
+                self.state.value,
+            )
+            msg = await self.bot.send_message(
+                chat_id=self.chat_id, text=html, parse_mode="HTML"
+            )
+            self.message_id = msg.message_id
+            self.accumulated = html
+            self.last_edit_time = time.monotonic()
+            self.state = StreamingState.STREAMING
+            return
 
         self.state = StreamingState.STREAMING
         self.accumulated += html

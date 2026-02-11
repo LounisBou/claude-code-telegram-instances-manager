@@ -242,3 +242,74 @@ class TestStreamingMessageEdgeErrors:
         assert bot.edit_message_text.call_count == 2
         second_call = bot.edit_message_text.call_args_list[1]
         assert second_call.kwargs.get("parse_mode") is None
+
+
+class TestStreamingMessageSafetyNets:
+    """Safety nets: auto-finalize on re-entry and auto-create on missing thinking."""
+
+    @pytest.mark.asyncio
+    async def test_start_thinking_auto_finalizes_if_streaming(self):
+        """start_thinking() while still STREAMING must finalize previous response."""
+        bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=42)
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        sm.message_id = 10
+        sm.accumulated = "Previous response"
+        sm.state = StreamingState.STREAMING
+        sm.last_edit_time = 0
+
+        await sm.start_thinking()
+
+        # Previous response was finalized (edit with final content)
+        bot.edit_message_text.assert_called_with(
+            chat_id=123, message_id=10, text="Previous response", parse_mode="HTML"
+        )
+        # New thinking message was sent
+        assert sm.message_id == 42
+        assert sm.state == StreamingState.THINKING
+
+    @pytest.mark.asyncio
+    async def test_append_content_creates_message_if_idle(self):
+        """append_content() while IDLE (no start_thinking) must send a new message."""
+        bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=55)
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        assert sm.state == StreamingState.IDLE
+        assert sm.message_id is None
+
+        await sm.append_content("Direct content")
+
+        bot.send_message.assert_called_once_with(
+            chat_id=123, text="Direct content", parse_mode="HTML"
+        )
+        assert sm.message_id == 55
+        assert sm.state == StreamingState.STREAMING
+        assert sm.accumulated == "Direct content"
+
+    @pytest.mark.asyncio
+    async def test_append_content_creates_message_if_message_id_none(self):
+        """append_content() with None message_id must send a new message."""
+        bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=66)
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        sm.state = StreamingState.STREAMING
+        sm.message_id = None
+
+        await sm.append_content("Orphaned content")
+
+        bot.send_message.assert_called_once()
+        assert sm.message_id == 66
+
+    @pytest.mark.asyncio
+    async def test_start_thinking_from_idle_no_finalize(self):
+        """start_thinking() from IDLE should NOT call finalize (nothing to finalize)."""
+        bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=42)
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        assert sm.state == StreamingState.IDLE
+
+        await sm.start_thinking()
+
+        # No edit_message_text called (nothing to finalize)
+        bot.edit_message_text.assert_not_called()
+        assert sm.state == StreamingState.THINKING

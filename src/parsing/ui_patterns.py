@@ -111,7 +111,7 @@ _ERROR_RE = re.compile(
 _STARTUP_RE = re.compile(r"Claude Code v[\d.]+")
 
 # Status bar tip / hint lines
-_TIP_RE = re.compile(r"^(?:Naming )?[Tt]ip:\s")
+_TIP_RE = re.compile(r"^(?:\w+\s+)?[Tt]ip:\s")
 _BARE_TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
 _CLAUDE_HINT_RE = re.compile(r"claude\s+--(?:continue|resume)")
 
@@ -131,9 +131,10 @@ def classify_line(line: str) -> str:
         line: A single terminal screen line to classify.
 
     Returns:
-        One of: 'separator', 'diff_delimiter', 'status_bar', 'thinking',
-        'tool_header', 'response', 'tool_connector', 'todo_item',
-        'agent_tree', 'prompt', 'box', 'logo', 'empty', or 'content'.
+        One of: 'separator', 'diff_delimiter', 'status_bar', 'startup',
+        'thinking', 'tool_header', 'response', 'tool_connector',
+        'todo_item', 'agent_tree', 'prompt', 'box', 'logo', 'empty',
+        or 'content'.
     """
     stripped = line.strip()
     if not stripped:
@@ -145,6 +146,10 @@ def classify_line(line: str) -> str:
         return "separator"
     if _DIFF_DELIMITER_RE.match(stripped):
         return "diff_delimiter"
+    # Startup banner line (e.g. "Claude Code v2.1.39") — must be filtered
+    # to prevent leaking into response content when pyte redraws the screen.
+    if _STARTUP_RE.search(stripped):
+        return "startup"
     # Pre-check: require distinctive status bar markers (⎇ branch or Usage:)
     # to avoid false positives on table data rows containing │
     if ("⎇" in stripped or "Usage:" in stripped) and _STATUS_BAR_RE.search(stripped):

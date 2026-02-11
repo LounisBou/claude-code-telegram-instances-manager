@@ -14,6 +14,8 @@ from src.core.log_setup import TRACE
 from src.parsing.ui_patterns import (
     ScreenEvent,
     ScreenState,
+    _BARE_TIME_RE,
+    _CLAUDE_HINT_RE,
     _ERROR_RE,
     _EXTRA_AGENTS_RE,
     _EXTRA_BASH_RE,
@@ -21,9 +23,12 @@ from src.parsing.ui_patterns import (
     _LOGO_RE,
     _PROMPT_MARKER_RE,
     _RESPONSE_MARKER_RE,
+    _SEPARATOR_PREFIX_RE,
     _SEPARATOR_RE,
     _STARTUP_RE,
     _STATUS_BAR_RE,
+    _TIMER_RE,
+    _TIP_RE,
     _TOOL_BASH_RE,
     _TOOL_DIFF_RE,
     _TOOL_FILE_RE,
@@ -111,7 +116,12 @@ def classify_screen_state(
 
     # --- Second pass: bottom-up scan for current activity ---
 
-    # Find last meaningful line (skip status bar, separators, empty lines)
+    # Find last meaningful line (skip status bar, separators, empty lines).
+    # Must skip ALL patterns that classify_line() considers non-content UI:
+    # tips, bare times, claude hints, timer lines, and separators with
+    # trailing text overlay (_SEPARATOR_PREFIX_RE).  Missing any of these
+    # makes the scan stop on a UI chrome line, which breaks IDLE detection
+    # (the prompt ❯ never becomes last_line).
     active_idx = len(lines) - 1
     while active_idx >= 0:
         stripped = lines[active_idx].strip()
@@ -119,6 +129,11 @@ def classify_screen_state(
             stripped
             and not _STATUS_BAR_RE.search(stripped)
             and not _SEPARATOR_RE.match(stripped)
+            and not _SEPARATOR_PREFIX_RE.match(stripped)
+            and not _TIP_RE.match(stripped)
+            and not _BARE_TIME_RE.match(stripped)
+            and not _CLAUDE_HINT_RE.search(stripped)
+            and not _TIMER_RE.search(stripped)
             and not _EXTRA_BASH_RE.search(stripped)
             and not _EXTRA_AGENTS_RE.search(stripped)
             and not _EXTRA_FILES_RE.search(stripped)
@@ -168,20 +183,22 @@ def classify_screen_state(
     last_line = lines[active_idx].strip()
 
     # 8. IDLE: ❯ between separators — 3-line gap tolerance because pyte
-    #    may insert blank/artifact lines between the separator and prompt
+    #    may insert blank/artifact lines between the separator and prompt.
+    #    Check both _SEPARATOR_RE (pure separator) and _SEPARATOR_PREFIX_RE
+    #    (separator with trailing text overlay from pyte column bleed).
     if _PROMPT_MARKER_RE.match(last_line):
         found_sep_above = False
         for i in range(active_idx - 1, max(-1, active_idx - 4), -1):
             if i < 0:
                 break
             s = lines[i].strip()
-            if s and _SEPARATOR_RE.match(s):
+            if s and (_SEPARATOR_RE.match(s) or _SEPARATOR_PREFIX_RE.match(s)):
                 found_sep_above = True
                 break
         found_sep_below = False
         for i in range(active_idx + 1, min(len(lines), active_idx + 4)):
             s = lines[i].strip()
-            if s and _SEPARATOR_RE.match(s):
+            if s and (_SEPARATOR_RE.match(s) or _SEPARATOR_PREFIX_RE.match(s)):
                 found_sep_below = True
                 break
         if found_sep_above and found_sep_below:

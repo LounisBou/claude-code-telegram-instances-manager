@@ -138,6 +138,44 @@ class TestClassifyScreenState:
         event = classify_screen_state(lines)
         assert event.state == ScreenState.IDLE
 
+    def test_idle_with_tip_line_below_separator(self):
+        """Regression: tip line below separator must be skipped by bottom-up scan.
+
+        Without this fix, the bottom-up scan stops on the tip line, making
+        it the 'last meaningful line' instead of the ❯ prompt, so IDLE
+        is never detected.
+        """
+        lines = [""] * 12
+        lines[5] = "─" * 40
+        lines[6] = "❯ Try something"
+        lines[7] = "─" * 40
+        lines[8] = "Tip: Run /help for more info"
+        lines[9] = "  my-project │ ⎇ main │ Usage: 5%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
+    def test_idle_with_time_and_hint_below_separator(self):
+        """Regression: bare time and claude hints must be skipped by scan."""
+        lines = [""] * 12
+        lines[5] = "─" * 40
+        lines[6] = "❯"
+        lines[7] = "─" * 40
+        lines[8] = "9:59"
+        lines[9] = "claude --continue to resume"
+        lines[10] = "  my-project │ ⎇ main │ Usage: 5%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
+    def test_idle_with_separator_prefix_overlay(self):
+        """Regression: separator with trailing text overlay (pyte bleed)."""
+        lines = [""] * 12
+        lines[5] = "─" * 30 + "my-project │ ⎇ main"
+        lines[6] = "❯"
+        lines[7] = "─" * 40
+        lines[8] = "  my-project │ ⎇ main │ Usage: 5%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
     def test_streaming_with_content_below_response_marker(self):
         """Regression: ⏺ not on last line — content lines below must still detect STREAMING."""
         lines = [""] * 15
