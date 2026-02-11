@@ -7,7 +7,7 @@ from telegram import Bot
 
 from src.core.log_setup import TRACE
 from src.parsing.screen_classifier import classify_screen_state
-from src.telegram.formatter import split_message
+from src.telegram.formatter import reflow_text, split_message
 from src.parsing.terminal_emulator import TerminalEmulator
 from src.parsing.ui_patterns import ScreenEvent, ScreenState, extract_content
 from src.session_manager import OutputBuffer
@@ -123,7 +123,7 @@ async def poll_output(bot: Bot, session_manager) -> None:
                 if event.state in _CONTENT_STATES:
                     content = extract_content(changed)
                     if content:
-                        buf.append(content + "\n")
+                        buf.append(reflow_text(content) + "\n")
 
                 # Flush on transition to idle (response complete)
                 if event.state == ScreenState.IDLE and prev != ScreenState.IDLE:

@@ -80,6 +80,94 @@ def format_telegram(text: str) -> str:
     return result
 
 
+# Patterns that indicate a line starts a new block (should NOT be joined to previous)
+_BLOCK_START_RE = re.compile(
+    r"^(?:"
+    r"[-*•]\s"           # unordered list
+    r"|\d+[.)]\s"        # ordered list
+    r"|#+\s"             # heading
+    r"|\|"               # table row
+    r"|```"              # code fence
+    r"|>\ "              # blockquote
+    r"|Key components:"  # common label lines
+    r")"
+)
+
+
+def reflow_text(text: str) -> str:
+    """Reflow terminal-wrapped text into natural paragraphs for Telegram.
+
+    Joins continuation lines (caused by pyte's fixed-width terminal) with
+    spaces, while preserving intentional structure: blank lines, list items,
+    table rows, code fences, and headings.
+
+    Args:
+        text: Content extracted from the terminal with hard line wraps.
+
+    Returns:
+        Reflowed text suitable for Telegram display.
+    """
+    if not text:
+        return ""
+
+    lines = text.split("\n")
+    result: list[str] = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Preserve blank lines as paragraph separators
+        if not line.strip():
+            result.append("")
+            i += 1
+            continue
+
+        # Preserve code fences and their content verbatim
+        if line.strip().startswith("```"):
+            result.append(line)
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                result.append(lines[i])
+                i += 1
+            if i < len(lines):
+                result.append(lines[i])
+                i += 1
+            continue
+
+        # Start accumulating a paragraph
+        paragraph = line
+
+        # Join subsequent lines that look like continuations
+        while i + 1 < len(lines):
+            next_line = lines[i + 1]
+
+            # Stop joining at blank lines
+            if not next_line.strip():
+                break
+
+            # Stop joining at block-start patterns
+            if _BLOCK_START_RE.match(next_line.strip()):
+                break
+
+            # Stop joining at code fences
+            if next_line.strip().startswith("```"):
+                break
+
+            # If current line ends with a colon, it's a label — don't join
+            if paragraph.rstrip().endswith(":"):
+                break
+
+            # Join the continuation line
+            paragraph = paragraph.rstrip() + " " + next_line.strip()
+            i += 1
+
+        result.append(paragraph)
+        i += 1
+
+    return "\n".join(result)
+
+
 TELEGRAM_MAX_LENGTH = 4096
 
 
