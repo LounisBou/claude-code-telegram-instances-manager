@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -81,3 +82,73 @@ class TestClaudeProcess:
         await asyncio.sleep(0.2)
         output = proc.read_available()
         assert "hello world" in output
+
+
+class TestBuildEnv:
+    def test_merges_extra_vars(self):
+        env = ClaudeProcess._build_env({"MY_VAR": "hello"})
+        assert env["MY_VAR"] == "hello"
+        # Inherits existing env
+        assert "PATH" in env
+
+    def test_expands_tilde_in_values(self):
+        import os
+        env = ClaudeProcess._build_env({"MY_DIR": "~/.my-config"})
+        expected = os.path.expanduser("~/.my-config")
+        assert env["MY_DIR"] == expected
+        assert "~" not in env["MY_DIR"]
+
+    def test_no_tilde_left_unchanged(self):
+        env = ClaudeProcess._build_env({"FOO": "/absolute/path"})
+        assert env["FOO"] == "/absolute/path"
+
+    def test_empty_extra_returns_environ_copy(self):
+        import os
+        env = ClaudeProcess._build_env({})
+        assert env == os.environ.copy()
+
+    def test_env_passed_to_pexpect(self):
+        proc = ClaudeProcess(
+            command="echo", args=[], cwd="/tmp",
+            env={"CLAUDE_CONFIG_DIR": "~/.claude-work"},
+        )
+        assert "CLAUDE_CONFIG_DIR" in proc._env
+        assert "~" not in proc._env["CLAUDE_CONFIG_DIR"]
+
+
+class TestSubmit:
+    @pytest.mark.asyncio
+    async def test_submit_sends_text_then_cr(self):
+        proc = ClaudeProcess(command="cat", args=[], cwd="/tmp")
+        await proc.spawn()
+        await proc.submit("hello")
+        await asyncio.sleep(0.3)
+        output = proc.read_available()
+        # Both the text and the carriage return should have been received
+        assert "hello" in output
+        await proc.terminate()
+
+    @pytest.mark.asyncio
+    async def test_submit_calls_write_twice(self):
+        """submit() must send text and \\r as two separate writes."""
+        proc = ClaudeProcess(command="cat", args=[], cwd="/tmp")
+        calls = []
+        async def mock_write(text):
+            calls.append(text)
+        proc.write = mock_write
+        await proc.submit("test msg")
+        assert len(calls) == 2
+        assert calls[0] == "test msg"
+        assert calls[1] == "\r"
+
+
+class TestClaudeProcessLogging:
+    @pytest.mark.asyncio
+    async def test_spawn_logs_command(self, caplog):
+        from src.log_setup import setup_logging
+        setup_logging(debug=True, trace=False, verbose=False)
+        proc = ClaudeProcess(command="echo", args=["hello"], cwd="/tmp")
+        with caplog.at_level(logging.DEBUG, logger="src.claude_process"):
+            await proc.spawn()
+        assert any("spawn" in r.message.lower() for r in caplog.records)
+        await proc.terminate()

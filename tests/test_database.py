@@ -14,6 +14,27 @@ async def db(tmp_path):
     await database.close()
 
 
+class TestDatabaseInitialize:
+    """Regression: initialize() must create parent dir before connecting."""
+
+    async def test_creates_missing_parent_dir(self, tmp_path):
+        nested = tmp_path / "deep" / "nested" / "dir"
+        db_path = str(nested / "sessions.db")
+        database = Database(db_path)
+        await database.initialize()
+        assert nested.exists()
+        await database.close()
+
+    async def test_works_when_dir_exists(self, tmp_path):
+        db_path = str(tmp_path / "sessions.db")
+        database = Database(db_path)
+        await database.initialize()
+        # Should not raise
+        sessions = await database.list_sessions(user_id=1)
+        assert sessions == []
+        await database.close()
+
+
 class TestDatabase:
     async def test_initialize_creates_table(self, db):
         sessions = await db.list_sessions(user_id=1)

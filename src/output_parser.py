@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 
 import pyte
+
+from src.log_setup import TRACE
+
+logger = logging.getLogger(__name__)
 
 
 class TerminalEmulator:
@@ -260,8 +265,8 @@ def classify_line(line: str) -> str:
 def extract_content(lines: list[str]) -> str:
     """Extract meaningful content from screen lines, filtering UI chrome.
 
-    Keeps only lines classified as 'content' by classify_line, stripping
-    surrounding whitespace.
+    Keeps lines classified as 'content', 'response' (⏺ prefix stripped),
+    and 'tool_connector' (⎿ prefix stripped) by classify_line.
 
     Args:
         lines: List of terminal screen lines to filter.
@@ -271,8 +276,21 @@ def extract_content(lines: list[str]) -> str:
     """
     content_lines = []
     for line in lines:
-        if classify_line(line) == "content":
+        cls = classify_line(line)
+        if cls == "content":
             content_lines.append(line.strip())
+        elif cls == "response":
+            # ⏺ lines carry Claude's response text — strip the marker.
+            # Without this, the first line of every response was silently dropped.
+            m = _RESPONSE_MARKER_RE.match(line.strip())
+            if m and m.group(1).strip():
+                content_lines.append(m.group(1).strip())
+        elif cls == "tool_connector":
+            # ⎿ lines carry tool output (file contents, command results).
+            # Strip the connector prefix to get the actual content.
+            text = re.sub(r"^\s*⎿\s*", "", line).strip()
+            if text:
+                content_lines.append(text)
     return "\n".join(content_lines).strip()
 
 
@@ -834,26 +852,31 @@ def classify_screen_state(
         and the original raw lines.
     """
     non_empty = [l for l in lines if l.strip()]
+    logger.log(TRACE, "classify_screen_state lines=%d non_empty=%d", len(lines), len(non_empty))
+
+    def _return(event: ScreenEvent) -> ScreenEvent:
+        logger.log(TRACE, "classify_screen_state -> %s payload_keys=%s", event.state.name, list(event.payload.keys()))
+        return event
 
     if not non_empty:
-        return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
 
     # --- First pass: screen-wide patterns (need full context) ---
 
     # 1. Tool approval / selection menu (needs user action - highest priority)
     payload = detect_tool_request(lines)
     if payload:
-        return ScreenEvent(state=ScreenState.TOOL_REQUEST, payload=payload, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.TOOL_REQUEST, payload=payload, raw_lines=lines))
 
     # 2. TODO list
     payload = detect_todo_list(lines)
     if payload:
-        return ScreenEvent(state=ScreenState.TODO_LIST, payload=payload, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.TODO_LIST, payload=payload, raw_lines=lines))
 
     # 3. Parallel agents
     payload = detect_parallel_agents(lines)
     if payload:
-        return ScreenEvent(state=ScreenState.PARALLEL_AGENTS, payload=payload, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.PARALLEL_AGENTS, payload=payload, raw_lines=lines))
 
     # --- Second pass: bottom-up scan for current activity ---
 
@@ -873,7 +896,7 @@ def classify_screen_state(
         active_idx -= 1
 
     if active_idx < 0:
-        return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
 
     # Check the bottom content area (last ~8 meaningful lines)
     bottom_start = max(0, active_idx - 7)
@@ -882,32 +905,32 @@ def classify_screen_state(
     # 4. Thinking indicator
     payload = detect_thinking(bottom_lines)
     if payload:
-        return ScreenEvent(state=ScreenState.THINKING, payload=payload, raw_lines=lines)
+        return _return(ScreenEvent(state=ScreenState.THINKING, payload=payload, raw_lines=lines))
 
     # 5. Tool running/waiting
     for line in reversed(bottom_lines):
         if _TOOL_STATUS_RE.search(line) or _TOOL_HOOKS_RE.search(line):
             tool_info = _extract_tool_info(lines)
-            return ScreenEvent(
+            return _return(ScreenEvent(
                 state=ScreenState.TOOL_RUNNING, payload=tool_info, raw_lines=lines
-            )
+            ))
 
     # 6. Tool result (diff summary)
     for line in reversed(bottom_lines):
         m = _TOOL_DIFF_RE.search(line)
         if m:
-            return ScreenEvent(
+            return _return(ScreenEvent(
                 state=ScreenState.TOOL_RESULT,
                 payload={"added": int(m.group(1)), "removed": int(m.group(2))},
                 raw_lines=lines,
-            )
+            ))
 
     # 7. Background task
     payload = detect_background_task(bottom_lines)
     if payload:
-        return ScreenEvent(
+        return _return(ScreenEvent(
             state=ScreenState.BACKGROUND_TASK, payload=payload, raw_lines=lines
-        )
+        ))
 
     # --- Third pass: check last meaningful line ---
 
@@ -932,48 +955,58 @@ def classify_screen_state(
                 break
         if found_sep_above and found_sep_below:
             placeholder = re.sub(r"^❯\s*", "", last_line)
-            return ScreenEvent(
+            return _return(ScreenEvent(
                 state=ScreenState.IDLE,
                 payload={"placeholder": placeholder},
                 raw_lines=lines,
-            )
+            ))
 
-    # 9. Streaming: last line starts with ⏺
-    m = _RESPONSE_MARKER_RE.match(last_line)
-    if m:
-        return ScreenEvent(
-            state=ScreenState.STREAMING,
-            payload={"text": m.group(1)},
-            raw_lines=lines,
-        )
+    # 9. Streaming: ⏺ response marker visible anywhere on screen.
+    # We scan all lines, not just the last, because during streaming the ⏺
+    # marker sits above content text — the last meaningful line is content
+    # (e.g. "  2. File B"), not the ⏺ itself. Previous versions only
+    # checked last_line, causing streaming to fall through to STARTUP.
+    for line in non_empty:
+        m = _RESPONSE_MARKER_RE.match(line.strip())
+        if m:
+            return _return(ScreenEvent(
+                state=ScreenState.STREAMING,
+                payload={"text": m.group(1)},
+                raw_lines=lines,
+            ))
 
     # 10. User message: ❯ followed by text (not between separators)
     if _PROMPT_MARKER_RE.match(last_line):
         user_text = re.sub(r"^❯\s*", "", last_line)
-        return ScreenEvent(
+        return _return(ScreenEvent(
             state=ScreenState.USER_MESSAGE,
             payload={"text": user_text},
             raw_lines=lines,
-        )
+        ))
 
-    # 11. Startup
-    for line in non_empty[:10]:
-        if _STARTUP_RE.search(line):
-            return ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines)
-        stripped = line.strip()
-        if _LOGO_RE.search(stripped) and sum(1 for c in stripped if _LOGO_RE.match(c)) >= 3:
-            return ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines)
+    # 11. Startup — only if no ⏺ response marker visible.
+    # pyte never clears the banner (logo + version) because Claude Code
+    # redraws in-place rather than scrolling. Without this guard, every
+    # screen after startup would match STARTUP as a fallback.
+    has_response = any(_RESPONSE_MARKER_RE.match(l.strip()) for l in non_empty)
+    if not has_response:
+        for line in non_empty[:10]:
+            if _STARTUP_RE.search(line):
+                return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
+            stripped = line.strip()
+            if _LOGO_RE.search(stripped) and sum(1 for c in stripped if _LOGO_RE.match(c)) >= 3:
+                return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
 
     # 12. Error
     for line in non_empty:
         if _ERROR_RE.search(line):
-            return ScreenEvent(
+            return _return(ScreenEvent(
                 state=ScreenState.ERROR,
                 payload={"text": line.strip()},
                 raw_lines=lines,
-            )
+            ))
 
-    return ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines)
+    return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
 
 
 # --- Telegram formatting ---

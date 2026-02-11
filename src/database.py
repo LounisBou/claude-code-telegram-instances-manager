@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import aiosqlite
 
@@ -39,9 +40,10 @@ class Database:
     async def initialize(self) -> None:
         """Open the database connection and ensure the schema exists.
 
-        Creates the sessions table and its indexes if they do not
-        already exist, then commits the transaction.
+        Creates the parent directory and the sessions table with its
+        indexes if they do not already exist, then commits the transaction.
         """
+        Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self._path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)

@@ -1,4 +1,6 @@
 # tests/test_project_scanner.py
+import logging
+
 from src.project_scanner import scan_projects, Project
 
 
@@ -61,3 +63,21 @@ class TestProject:
     def test_project_repr(self):
         p = Project(name="foo", path="/a/foo")
         assert "foo" in repr(p)
+
+
+class TestScanProjectsLogging:
+    def test_logs_root_and_count(self, tmp_projects, caplog):
+        from src.log_setup import setup_logging
+        setup_logging(debug=True, trace=False, verbose=False)
+        with caplog.at_level(logging.DEBUG, logger="src.project_scanner"):
+            projects = scan_projects(str(tmp_projects))
+        assert any("Scanning" in r.message for r in caplog.records)
+        assert any("Found 2 projects" in r.message for r in caplog.records)
+
+    def test_trace_logs_each_entry(self, tmp_projects, caplog):
+        from src.log_setup import TRACE, setup_logging
+        setup_logging(debug=False, trace=False, verbose=False)
+        with caplog.at_level(TRACE, logger="src.project_scanner"):
+            projects = scan_projects(str(tmp_projects))
+        trace_records = [r for r in caplog.records if r.levelno == TRACE]
+        assert len(trace_records) >= 2

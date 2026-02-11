@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -174,6 +175,42 @@ class TestSessionManager:
             assert manager.active_session_count() == 2
 
 
+class TestSessionManagerShutdown:
+    """Regression: shutdown() must terminate all sessions and clear state."""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_terminates_all_sessions(self, manager):
+        with patch("src.session_manager.ClaudeProcess") as MockProc:
+            proc1 = _mock_process()
+            proc2 = _mock_process()
+            MockProc.side_effect = [proc1, proc2]
+            await manager.create_session(111, "p1", "/a/p1")
+            await manager.create_session(222, "p2", "/a/p2")
+
+            await manager.shutdown()
+
+            proc1.terminate.assert_called_once()
+            proc2.terminate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_clears_sessions(self, manager):
+        with patch("src.session_manager.ClaudeProcess") as MockProc:
+            MockProc.return_value = _mock_process()
+            await manager.create_session(111, "p1", "/a/p1")
+
+            await manager.shutdown()
+
+            assert manager.list_sessions(111) == []
+            assert manager.get_active_session(111) is None
+            assert manager.active_session_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_shutdown_empty_is_noop(self, manager):
+        # Should not raise when no sessions exist
+        await manager.shutdown()
+        assert manager.active_session_count() == 0
+
+
 class TestOutputBuffer:
     def test_buffer_accumulates(self):
         buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
@@ -205,3 +242,21 @@ class TestOutputBuffer:
     def test_empty_buffer_not_ready(self):
         buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
         assert buf.is_ready() is False
+
+
+class TestSessionManagerLogging:
+    @pytest.mark.asyncio
+    async def test_create_session_logs(self, caplog):
+        from src.log_setup import setup_logging
+        setup_logging(debug=True, trace=False, verbose=False)
+        db = AsyncMock()
+        db.create_session = AsyncMock(return_value=1)
+        fh = MagicMock()
+        sm = SessionManager(
+            claude_command="echo", claude_args=[], max_per_user=3, db=db, file_handler=fh
+        )
+        with patch("src.session_manager.ClaudeProcess") as mock_cp:
+            mock_cp.return_value.spawn = AsyncMock()
+            with caplog.at_level(logging.DEBUG, logger="src.session_manager"):
+                await sm.create_session(111, "test-project", "/tmp/test")
+        assert any("create_session" in r.message for r in caplog.records)

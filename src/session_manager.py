@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -7,6 +8,9 @@ from datetime import datetime, timezone
 from src.claude_process import ClaudeProcess
 from src.database import Database
 from src.file_handler import FileHandler
+from src.log_setup import TRACE
+
+logger = logging.getLogger(__name__)
 
 
 class SessionError(Exception):
@@ -39,6 +43,7 @@ class SessionManager:
         max_per_user: int,
         db: Database,
         file_handler: FileHandler,
+        claude_env: dict[str, str] | None = None,
     ) -> None:
         """Initialize the session manager.
 
@@ -48,9 +53,11 @@ class SessionManager:
             max_per_user: Maximum number of concurrent sessions per user.
             db: Database instance for persisting session records.
             file_handler: File handler for cleaning up session artifacts.
+            claude_env: Extra environment variables for Claude processes.
         """
         self._command = claude_command
         self._args = claude_args
+        self._env = claude_env or {}
         self._max_per_user = max_per_user
         self._db = db
         self._file_handler = file_handler
@@ -78,6 +85,7 @@ class SessionManager:
             SessionError: If the user has reached the maximum number
                 of concurrent sessions.
         """
+        logger.debug("create_session user_id=%d project=%s", user_id, project_name)
         # Check limit before spawning to avoid orphaned processes on rejection
         user_sessions = self._sessions.get(user_id, {})
         if len(user_sessions) >= self._max_per_user:
@@ -90,9 +98,10 @@ class SessionManager:
         self._next_id[user_id] = session_id + 1
 
         process = ClaudeProcess(
-            command=self._command, args=self._args, cwd=project_path
+            command=self._command, args=self._args, cwd=project_path, env=self._env
         )
         await process.spawn()
+        logger.debug("Session #%d created for user %d", session_id, user_id)
 
         db_id = await self._db.create_session(
             user_id=user_id, project=project_name, project_path=project_path
@@ -139,6 +148,7 @@ class SessionManager:
         Raises:
             SessionError: If the session does not exist for this user.
         """
+        logger.debug("switch_session user_id=%d -> session_id=%d", user_id, session_id)
         if session_id not in self._sessions.get(user_id, {}):
             raise SessionError(f"Session {session_id} not found")
         self._active[user_id] = session_id
@@ -168,6 +178,7 @@ class SessionManager:
         Raises:
             SessionError: If the session does not exist for this user.
         """
+        logger.debug("kill_session user_id=%d session_id=%d", user_id, session_id)
         session = self._sessions.get(user_id, {}).get(session_id)
         if session is None:
             raise SessionError(f"Session {session_id} not found")
@@ -188,6 +199,14 @@ class SessionManager:
             self._active[user_id] = next(iter(remaining))
         else:
             self._active.pop(user_id, None)
+
+    async def shutdown(self) -> None:
+        """Terminate all active sessions. Used during bot shutdown."""
+        for user_sessions in list(self._sessions.values()):
+            for session in list(user_sessions.values()):
+                await session.process.terminate()
+        self._sessions.clear()
+        self._active.clear()
 
     def has_active_sessions(self) -> bool:
         """Check whether any user has at least one live session.
@@ -231,6 +250,7 @@ class OutputBuffer:
         """
         self._buffer += text
         self._last_append = time.monotonic()
+        logger.log(TRACE, "OutputBuffer append len=%d total=%d", len(text), len(self._buffer))
 
     def flush(self) -> str:
         """Drain the buffer and return its contents.
@@ -239,6 +259,7 @@ class OutputBuffer:
             The accumulated text. The buffer is empty after this call.
         """
         result = self._buffer
+        logger.debug("OutputBuffer flush len=%d", len(result))
         self._buffer = ""
         self._last_append = 0
         return result

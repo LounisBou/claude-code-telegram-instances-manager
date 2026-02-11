@@ -4,11 +4,20 @@ import asyncio
 import logging
 import os
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src.git_info import get_git_info
+from src.log_setup import TRACE
+from src.output_parser import (
+    ScreenState,
+    TerminalEmulator,
+    classify_screen_state,
+    extract_content,
+    split_message,
+)
 from src.project_scanner import Project, scan_projects
+from src.session_manager import OutputBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +183,7 @@ async def handle_start(
         context: Bot context providing access to bot_data (config, etc.).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_start user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -215,6 +225,7 @@ async def handle_sessions(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_sessions user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -259,6 +270,7 @@ async def handle_exit(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_exit user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -296,6 +308,7 @@ async def handle_text_message(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_text_message user_id=%d len=%d", user_id, len(update.message.text))
     config = context.bot_data["config"]
 
     # Silently ignore unauthorized users for text messages to avoid reply spam
@@ -308,7 +321,7 @@ async def handle_text_message(
         await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
-    await active.process.write(update.message.text + "\n")
+    await active.process.submit(update.message.text)
 
 
 # --- Callback query handler ---
@@ -339,15 +352,24 @@ async def handle_callback_query(
         return
 
     data = query.data
+    logger.debug("handle_callback_query user_id=%d action=%s", user_id, data.split(":")[0])
     session_manager = context.bot_data["session_manager"]
 
     if data.startswith("project:"):
         project_path = data[len("project:") :]
         # Extract project name from path to avoid storing it separately in callback_data
         project_name = project_path.rstrip("/").split("/")[-1]
-        session = await session_manager.create_session(
-            user_id, project_name, project_path
-        )
+        try:
+            session = await session_manager.create_session(
+                user_id, project_name, project_path
+            )
+        except Exception as exc:
+            logger.error("Failed to create session for %s: %s", project_name, exc)
+            await query.answer()
+            await query.edit_message_text(
+                f"Failed to start Claude for *{project_name}*:\n`{exc}`"
+            )
+            return
         git_info = await get_git_info(project_path)
         msg = format_session_started(project_name, session.session_id)
         msg += f"\n{git_info.format()}"
@@ -416,6 +438,7 @@ async def handle_history(
         context: Bot context providing access to bot_data (config, db).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_history user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -447,6 +470,7 @@ async def handle_git(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_git user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -479,6 +503,7 @@ async def handle_update_claude(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_update_claude user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -524,6 +549,7 @@ async def handle_context(
             session_manager).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_context user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -536,7 +562,7 @@ async def handle_context(
         await update.message.reply_text("No active session.")
         return
 
-    await active.process.write("/context\n")
+    await active.process.submit("/context")
     await update.message.reply_text("Context info requested. Output will follow.")
 
 
@@ -555,6 +581,7 @@ async def handle_download(
             file_handler).
     """
     user_id = update.effective_user.id
+    logger.debug("handle_download user_id=%d", user_id)
     config = context.bot_data["config"]
 
     if not is_authorized(user_id, config.telegram.authorized_users):
@@ -609,6 +636,7 @@ async def handle_file_upload(
             file downloads.
     """
     user_id = update.effective_user.id
+    logger.debug("handle_file_upload user_id=%d", user_id)
     config = context.bot_data["config"]
 
     # Silently ignore unauthorized uploads to avoid reply spam
@@ -666,3 +694,167 @@ async def _run_update_command(command: str) -> str:
         return "Error: update command timed out after 60s"
     prefix = "OK" if proc.returncode == 0 else f"FAILED (exit {proc.returncode})"
     return f"{prefix}: {stdout.decode().strip()}"
+
+
+# --- Command menu ---
+
+BOT_COMMANDS = [
+    ("start", "Start a new session / pick a project"),
+    ("sessions", "List and switch active sessions"),
+    ("exit", "Kill the active session"),
+    ("history", "Show past sessions"),
+    ("git", "Show git info for current project"),
+    ("context", "Show context window usage"),
+    ("download", "Download a file from the session"),
+    ("update_claude", "Update the Claude Code CLI"),
+]
+
+
+async def handle_unknown_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Forward unrecognised slash commands to the active Claude session.
+
+    Claude Code has its own slash commands (/status, /approve, etc.).
+    If the user has an active session, forward the text as-is.
+    Otherwise reply with the list of valid bot commands.
+    """
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+    if not is_authorized(user_id, config.telegram.authorized_users):
+        return
+
+    session_manager = context.bot_data["session_manager"]
+    active = session_manager.get_active_session(user_id)
+    if active:
+        await active.process.submit(update.message.text)
+        return
+
+    known = "\n".join(f"/{cmd} — {desc}" for cmd, desc in BOT_COMMANDS)
+    await update.message.reply_text(f"Unknown command.\n\n{known}")
+
+
+# --- Output polling loop ---
+
+
+# States that produce user-visible output sent to Telegram.
+# STARTUP, IDLE, USER_MESSAGE, UNKNOWN, and THINKING are suppressed:
+# they are UI chrome or transient states with no extractable content.
+# THINKING gets a one-time "_Thinking..._" notification instead.
+_CONTENT_STATES = {
+    ScreenState.STREAMING,
+    ScreenState.TOOL_REQUEST,
+    ScreenState.TOOL_RUNNING,
+    ScreenState.TOOL_RESULT,
+    ScreenState.ERROR,
+    ScreenState.TODO_LIST,
+    ScreenState.PARALLEL_AGENTS,
+    ScreenState.BACKGROUND_TASK,
+}
+
+# Per-session state for the output loop (keyed by (user_id, session_id))
+_session_emulators: dict[tuple[int, int], TerminalEmulator] = {}
+_session_buffers: dict[tuple[int, int], OutputBuffer] = {}
+_session_prev_state: dict[tuple[int, int], ScreenState] = {}
+
+
+async def poll_output(bot: Bot, session_manager) -> None:
+    """Background loop that reads Claude output and sends it to Telegram.
+
+    Pipeline per cycle (300ms):
+      1. read_available() drains raw PTY bytes
+      2. TerminalEmulator.feed() updates the pyte virtual screen
+      3. get_display() returns full screen → classify_screen_state()
+      4. get_changes() returns only changed lines → extract_content()
+      5. OutputBuffer accumulates text, flushes after debounce
+
+    Two separate reads from the emulator: get_display() gives the classifier
+    full context (screen-wide patterns like tool menus), while get_changes()
+    gives content extraction only the delta (avoids re-sending all visible
+    text every cycle).
+    """
+    while True:
+        await asyncio.sleep(0.3)
+        for user_id, sessions in list(session_manager._sessions.items()):
+            for sid, session in list(sessions.items()):
+                key = (user_id, sid)
+
+                # Lazy-init emulator and buffer per session
+                if key not in _session_emulators:
+                    _session_emulators[key] = TerminalEmulator()
+                    _session_buffers[key] = OutputBuffer(
+                        debounce_ms=500, max_buffer=2000
+                    )
+                    _session_prev_state[key] = ScreenState.STARTUP
+
+                raw = session.process.read_available()
+                if not raw:
+                    # Still check buffer readiness even without new data
+                    buf = _session_buffers[key]
+                    if buf.is_ready():
+                        await _flush_buffer(bot, user_id, buf)
+                    continue
+
+                emu = _session_emulators[key]
+                buf = _session_buffers[key]
+
+                emu.feed(raw)
+                # Full display for classification (needs screen-wide context)
+                display = emu.get_display()
+                # Changed lines only for content extraction (incremental delta)
+                changed = emu.get_changes()
+                event = classify_screen_state(display, _session_prev_state.get(key))
+                prev = _session_prev_state.get(key)
+
+                # Once we've left STARTUP, never go back — the banner
+                # persists in pyte's screen buffer and tricks the classifier
+                if event.state == ScreenState.STARTUP and prev not in (
+                    ScreenState.STARTUP, None,
+                ):
+                    event = event.__class__(
+                        state=ScreenState.UNKNOWN,
+                        payload=event.payload,
+                        raw_lines=event.raw_lines,
+                    )
+
+                _session_prev_state[key] = event.state
+
+                logger.debug(
+                    "poll_output user=%d sid=%d state=%s prev=%s",
+                    user_id, sid, event.state.name, prev.name if prev else "None",
+                )
+
+                # Dump screen on state transitions for debugging
+                if event.state != prev:
+                    non_empty = [l for l in display if l.strip()]
+                    for i, line in enumerate(non_empty[-10:]):
+                        logger.log(TRACE, "  screen[%d]: %s", i, line)
+
+                # Notify on state transitions to THINKING
+                if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
+                    buf.append("_Thinking..._\n")
+
+                # Extract content for states that produce output
+                if event.state in _CONTENT_STATES:
+                    content = extract_content(changed)
+                    if content:
+                        buf.append(content + "\n")
+
+                # Flush on transition to idle (response complete)
+                if event.state == ScreenState.IDLE and prev != ScreenState.IDLE:
+                    if buf.is_ready():
+                        await _flush_buffer(bot, user_id, buf)
+                elif buf.is_ready():
+                    await _flush_buffer(bot, user_id, buf)
+
+
+async def _flush_buffer(bot: Bot, user_id: int, buf: OutputBuffer) -> None:
+    """Send buffered output to the user's Telegram chat."""
+    text = buf.flush()
+    if not text.strip():
+        return
+    for chunk in split_message(text):
+        try:
+            await bot.send_message(chat_id=user_id, text=chunk)
+        except Exception as exc:
+            logger.error("Failed to send output to user %d: %s", user_id, exc)

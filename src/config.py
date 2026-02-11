@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigError(Exception):
@@ -60,6 +63,8 @@ class DebugConfig:
     """Debug mode settings."""
 
     enabled: bool = False
+    trace: bool = False
+    verbose: bool = False
 
 
 @dataclass
@@ -116,6 +121,9 @@ def load_config(path: str) -> AppConfig:
     sessions_raw = raw.get("sessions", {}) or {}
     claude_raw = raw.get("claude", {}) or {}
     database_raw = raw.get("database", {}) or {}
+
+    logger.debug("Loaded config from %s", path)
+    logger.debug("Projects root=%s scan_depth=%d", projects_raw["root"], projects_raw.get("scan_depth", 1))
 
     return AppConfig(
         telegram=TelegramConfig(
