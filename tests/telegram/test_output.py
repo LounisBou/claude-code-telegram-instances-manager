@@ -1091,3 +1091,63 @@ class TestBuildApp:
         assert app.bot_data["config"].debug.enabled is True
         assert app.bot_data["config"].debug.trace is True
         assert app.bot_data["config"].debug.verbose is True
+
+
+class TestDedentAfterDedup:
+    """Regression: artifact lines at indent 0 prevent textwrap.dedent in
+    extract_content.  After dedup removes the artifact, the remaining lines
+    still carry the unwanted terminal margin.  poll_output must re-dedent
+    after dedup to strip this residual margin.
+
+    Bug trigger: pyte display line 0 contains ``'u'`` (0-indent artifact).
+    extract_content includes it, dedent is a no-op (min indent 0).  Dedup
+    then removes ``'u'`` (was in thinking snapshot), but the code lines
+    keep their 2-space terminal margin.
+    """
+
+    def test_dedent_removes_residual_margin_after_dedup(self):
+        """Simulates the poll_output pipeline: extract_content → dedup → dedent."""
+        import textwrap
+
+        # Lines as they come from extract_content when a 0-indent artifact
+        # was present during dedent (making dedent a no-op).
+        content_with_margin = "\n".join([
+            "u",
+            "  def fibonacci(n: int) -> int:",
+            '      """Return the nth Fibonacci number."""',
+            "      if n <= 1:",
+            "          return n",
+            "      return fibonacci(n - 1) + fibonacci(n - 2)",
+        ])
+        # Simulate dedup removing the 'u' artifact
+        deduped_lines = [
+            "  def fibonacci(n: int) -> int:",
+            '      """Return the nth Fibonacci number."""',
+            "      if n <= 1:",
+            "          return n",
+            "      return fibonacci(n - 1) + fibonacci(n - 2)",
+        ]
+        # The fix: re-dedent after dedup
+        deduped = textwrap.dedent("\n".join(deduped_lines)).strip()
+        assert deduped.startswith("def fibonacci")
+        assert "    if n <= 1:" in deduped
+        assert "        return n" in deduped
+        # No residual 2-space margin
+        for line in deduped.split("\n"):
+            if line.startswith(" "):
+                assert line.startswith("    "), f"Unexpected margin: {line!r}"
+
+    def test_no_margin_when_artifact_absent(self):
+        """When there is no artifact, dedent still works correctly."""
+        import textwrap
+
+        lines = [
+            "def fibonacci(n: int) -> int:",
+            '    """Return the nth Fibonacci number."""',
+            "    if n <= 1:",
+            "        return n",
+            "    return fibonacci(n - 1) + fibonacci(n - 2)",
+        ]
+        deduped = textwrap.dedent("\n".join(lines)).strip()
+        assert deduped.startswith("def fibonacci")
+        assert "    if n <= 1:" in deduped

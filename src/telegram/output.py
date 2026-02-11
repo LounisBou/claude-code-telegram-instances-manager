@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import textwrap
 import time
 from enum import Enum
 
@@ -242,7 +243,9 @@ async def poll_output(
                                 new_lines.append(line)
                                 sent.add(stripped)
                         if new_lines:
-                            deduped = "\n".join(new_lines)
+                            deduped = textwrap.dedent(
+                                "\n".join(new_lines)
+                            ).strip()
                             logger.debug(
                                 "poll_output CONTENT lines=%r changed_count=%d",
                                 new_lines, len(changed),
