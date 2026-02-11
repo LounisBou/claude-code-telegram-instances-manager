@@ -47,6 +47,27 @@ _session_sent_lines: dict[tuple[int, int], set[str]] = {}
 _session_thinking_snapshot: dict[tuple[int, int], set[str]] = {}
 
 
+def _find_last_prompt(display: list[str]) -> int | None:
+    """Find index of the last user prompt line on the display.
+
+    Looks for ``❯`` lines with text longer than 5 chars (to skip bare
+    prompts that are just the cursor marker).
+
+    Args:
+        display: Terminal display lines from the emulator.
+
+    Returns:
+        Line index of the last prompt, or ``None`` if no prompt is visible
+        (e.g. it scrolled off the 36-row pyte screen).
+    """
+    result = None
+    for i, line in enumerate(display):
+        s = line.strip()
+        if s.startswith("❯") and len(s) > 5:
+            result = i
+    return result
+
+
 async def poll_output(
     bot: Bot, session_manager, *, edit_rate_limit: int = 3
 ) -> None:
@@ -144,6 +165,12 @@ async def poll_output(
                         if stripped:
                             sent.add(stripped)
 
+                # Reset dedup state on new user interaction so stale
+                # data from a previous response cycle never bleeds in.
+                if event.state == ScreenState.USER_MESSAGE:
+                    _session_sent_lines[key] = set()
+                    _session_thinking_snapshot.pop(key, None)
+
                 if event.state != prev:
                     logger.debug(
                         "poll_output user=%d sid=%d state=%s prev=%s",
@@ -171,21 +198,25 @@ async def poll_output(
                     # response don't incorrectly dedup from the new response.
                     # Include both raw lines AND extracted content lines so
                     # dedup works after extract_content strips ⏺/⎿ markers.
-                    last_prompt_idx = 0
-                    for i, line in enumerate(display):
-                        s = line.strip()
-                        if s.startswith("❯") and len(s) > 5:
-                            last_prompt_idx = i
-                    trimmed = display[last_prompt_idx:]
-                    snap = set()
-                    for line in trimmed:
-                        stripped = line.strip()
-                        if stripped:
-                            snap.add(stripped)
-                    for line in extract_content(trimmed).split("\n"):
-                        stripped = line.strip()
-                        if stripped:
-                            snap.add(stripped)
+                    #
+                    # When no prompt is found (scrolled off the pyte screen),
+                    # use an empty snapshot — it's safer to risk sending
+                    # duplicate content than to eat patterns from a new
+                    # response that happen to match old content.
+                    prompt_idx = _find_last_prompt(display)
+                    if prompt_idx is not None:
+                        trimmed = display[prompt_idx:]
+                        snap: set[str] = set()
+                        for line in trimmed:
+                            stripped = line.strip()
+                            if stripped:
+                                snap.add(stripped)
+                        for line in extract_content(trimmed).split("\n"):
+                            stripped = line.strip()
+                            if stripped:
+                                snap.add(stripped)
+                    else:
+                        snap = set()
                     _session_thinking_snapshot[key] = snap
                     await streaming.start_thinking()
 
@@ -221,6 +252,8 @@ async def poll_output(
                     # to the last user prompt — this excludes old responses
                     # that would otherwise need aggressive snapshot dedup
                     # (which incorrectly eats common patterns like "Args:").
+                    # When no prompt is found (scrolled off), use the full
+                    # display — the empty snapshot ensures no content dedup.
                     # For ultra-fast responses (no THINKING detected), use
                     # changed lines — they contain the fresh response delta.
                     _fast_idle = (
@@ -228,26 +261,13 @@ async def poll_output(
                         and streaming.state == StreamingState.THINKING
                     )
                     if _fast_idle:
-                        # Find the last user prompt (❯ with text) and trim
-                        # the display from that point forward.  Old responses
-                        # above the prompt are excluded, so snapshot dedup
-                        # won't accidentally eat common docstring patterns.
-                        last_prompt_idx = 0
-                        for i, line in enumerate(display):
-                            stripped = line.strip()
-                            if stripped.startswith("❯") and len(stripped) > 5:
-                                last_prompt_idx = i
-                        source = display[last_prompt_idx:]
+                        prompt_idx = _find_last_prompt(display)
+                        if prompt_idx is not None:
+                            source = display[prompt_idx:]
+                        else:
+                            source = display
                     else:
                         source = changed
-                    if source:
-                        for ci, cl in enumerate(source):
-                            if cl.strip():
-                                logger.debug(
-                                    "poll_output RAW %s[%d]: %r",
-                                    "display" if _fast_idle else "changed",
-                                    ci, cl.strip(),
-                                )
                     content = extract_content(source)
                     if content:
                         # Dedup: filter out lines already sent (screen scroll
@@ -265,14 +285,12 @@ async def poll_output(
                             if stripped and stripped not in sent and stripped not in snap:
                                 new_lines.append(line)
                                 sent.add(stripped)
+                            elif stripped:
+                                sent.add(stripped)
                         if new_lines:
                             deduped = textwrap.dedent(
                                 "\n".join(new_lines)
                             ).strip()
-                            logger.debug(
-                                "poll_output CONTENT lines=%r changed_count=%d",
-                                new_lines, len(changed),
-                            )
                             html = format_html(reflow_text(wrap_code_blocks(deduped)))
                             await streaming.append_content(html)
 

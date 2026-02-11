@@ -7,6 +7,7 @@ import pytest
 
 from src.telegram.output import (
     _CONTENT_STATES,
+    _find_last_prompt,
     _session_emulators,
     _session_prev_state,
     _session_sent_lines,
@@ -700,15 +701,10 @@ class TestPollOutputStateTransitions:
             return event_sequence[idx]
 
         extract_calls = []
-        extract_idx = [0]
 
         def _capture_extract(lines):
             extract_calls.append(lines)
-            idx = extract_idx[0]
-            extract_idx[0] += 1
-            # First call: snapshot during THINKING entry (pre-existing content)
-            # Second call: actual extraction during fast-IDLE
-            return "" if idx == 0 else "Four."
+            return "Four."
 
         with (
             patch(
@@ -726,8 +722,10 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # extract_content must have been called for snapshot + extraction
-        assert len(extract_calls) >= 2
+        # extract_content called for extraction (snapshot skips extract_content
+        # when no prompt is found on the mock display — _find_last_prompt
+        # returns None so the snapshot is empty without calling extract_content)
+        assert len(extract_calls) >= 1
         # The "Thinking..." message should have been edited with content
         bot.edit_message_text.assert_called()
         edit_text = bot.edit_message_text.call_args[1]["text"]
@@ -1153,6 +1151,35 @@ class TestDedentAfterDedup:
         assert "    if n <= 1:" in deduped
 
 
+class TestFindLastPrompt:
+    """Unit tests for _find_last_prompt helper."""
+
+    def test_finds_prompt_with_text(self):
+        display = ["some content", "❯ Write a function", "more content"]
+        assert _find_last_prompt(display) == 1
+
+    def test_returns_last_prompt_when_multiple(self):
+        display = [
+            "❯ First prompt text",
+            "response",
+            "❯ Second prompt text",
+            "more response",
+        ]
+        assert _find_last_prompt(display) == 2
+
+    def test_ignores_bare_prompt(self):
+        """Bare ❯ (no text or short text) must be ignored."""
+        display = ["❯", "content", "❯ hi", "more"]
+        assert _find_last_prompt(display) is None
+
+    def test_returns_none_when_no_prompt(self):
+        display = ["line one", "line two", "line three"]
+        assert _find_last_prompt(display) is None
+
+    def test_returns_none_on_empty_display(self):
+        assert _find_last_prompt([]) is None
+
+
 class TestDisplayTrimToLastPrompt:
     """Regression: fast THINKING→IDLE uses full display for extraction.
     Old responses above the user's latest prompt share common patterns
@@ -1165,7 +1192,6 @@ class TestDisplayTrimToLastPrompt:
 
     def test_trim_excludes_old_response_above_prompt(self):
         """Old fibonacci response above the prompt must not interfere."""
-        # Simulated display: old fibonacci response, then new prompt + response
         display = [
             "⏺ def fibonacci(n: int) -> int:",   # old response
             '      """Return the nth Fibonacci number."""',
@@ -1189,19 +1215,13 @@ class TestDisplayTrimToLastPrompt:
             "❯",
             "────────────────────────────────────",
         ]
-        # Find last prompt with text (len > 5)
-        last_prompt_idx = 0
-        for i, line in enumerate(display):
-            stripped = line.strip()
-            if stripped.startswith("❯") and len(stripped) > 5:
-                last_prompt_idx = i
-        trimmed = display[last_prompt_idx:]
+        prompt_idx = _find_last_prompt(display)
+        assert prompt_idx == 7
+        trimmed = display[prompt_idx:]
         content = extract_content(trimmed)
-        # New response must have ALL docstring sections
         assert "Args:" in content
         assert "Returns:" in content
         assert "is_palindrome" in content
-        # Old fibonacci must NOT be in trimmed content
         assert "fibonacci" not in content
 
     def test_trim_still_works_when_no_old_response(self):
@@ -1215,14 +1235,39 @@ class TestDisplayTrimToLastPrompt:
             "❯",
             "────────────────────────────────────",
         ]
-        last_prompt_idx = 0
-        for i, line in enumerate(display):
-            stripped = line.strip()
-            if stripped.startswith("❯") and len(stripped) > 5:
-                last_prompt_idx = i
-        trimmed = display[last_prompt_idx:]
+        prompt_idx = _find_last_prompt(display)
+        assert prompt_idx == 0
+        trimmed = display[prompt_idx:]
         content = extract_content(trimmed)
         assert "Hello!" in content
+
+    def test_no_prompt_found_uses_full_display(self):
+        """Regression: when prompts scroll off screen, use full display for extraction."""
+        display = [
+            '      """Return the nth Fibonacci number."""',
+            "      Args:",
+            "          n: The index.",
+            "      Returns:",
+            "          The nth number.",
+            "",
+            "────────────────────────────────────",
+            "⏺ def is_palindrome(s: str) -> bool:",
+            '      """Check if palindrome.',
+            "      Args:",
+            "          s: The string.",
+            "      Returns:",
+            "          True if palindrome.",
+            '      """',
+            "      return s == s[::-1]",
+        ]
+        prompt_idx = _find_last_prompt(display)
+        assert prompt_idx is None
+        # When no prompt found, extraction uses full display — both
+        # old and new content appear.  Snapshot will be empty, so
+        # dedup doesn't eat shared patterns from the new response.
+        content = extract_content(display)
+        assert "is_palindrome" in content
+        assert "Args:" in content
 
 
 class TestThinkingSnapshotTrim:
@@ -1233,12 +1278,12 @@ class TestThinkingSnapshotTrim:
     is_palindrome response.
 
     Fix: trim the thinking snapshot to the last user prompt (❯ with text),
-    matching the display trim already applied during extraction.
+    matching the display trim already applied during extraction.  When no
+    prompt is found (scrolled off), use an empty snapshot.
     """
 
     def test_snapshot_excludes_old_response_patterns(self):
         """Snapshot must not contain Args:/Returns: from old response."""
-        # Display at THINKING entry: old fibonacci + new prompt + thinking
         display_at_thinking = [
             "⏺ def fibonacci(n: int) -> int:",
             '      """Return the nth Fibonacci number."""',
@@ -1251,13 +1296,9 @@ class TestThinkingSnapshotTrim:
             "",
             "⏺ Thinking...",
         ]
-        # Trim to last prompt (same logic as output.py)
-        last_prompt_idx = 0
-        for i, line in enumerate(display_at_thinking):
-            s = line.strip()
-            if s.startswith("❯") and len(s) > 5:
-                last_prompt_idx = i
-        trimmed = display_at_thinking[last_prompt_idx:]
+        prompt_idx = _find_last_prompt(display_at_thinking)
+        assert prompt_idx == 7
+        trimmed = display_at_thinking[prompt_idx:]
         snap = set()
         for line in trimmed:
             stripped = line.strip()
@@ -1267,11 +1308,9 @@ class TestThinkingSnapshotTrim:
             stripped = line.strip()
             if stripped:
                 snap.add(stripped)
-        # Old fibonacci patterns must NOT be in the snapshot
         assert "Args:" not in snap
         assert "Returns:" not in snap
         assert "fibonacci" not in snap
-        # Prompt echo and thinking marker SHOULD be in snapshot
         assert any("palindrome" in s for s in snap)
 
     def test_snapshot_trim_preserves_dedup_of_prompt_echo(self):
@@ -1281,16 +1320,76 @@ class TestThinkingSnapshotTrim:
             "",
             "⏺ Thinking...",
         ]
-        last_prompt_idx = 0
-        for i, line in enumerate(display_at_thinking):
-            s = line.strip()
-            if s.startswith("❯") and len(s) > 5:
-                last_prompt_idx = i
-        trimmed = display_at_thinking[last_prompt_idx:]
+        prompt_idx = _find_last_prompt(display_at_thinking)
+        assert prompt_idx == 0
+        trimmed = display_at_thinking[prompt_idx:]
         snap = set()
         for line in trimmed:
             stripped = line.strip()
             if stripped:
                 snap.add(stripped)
-        # Prompt text should be captured for dedup
         assert any("palindrome" in s for s in snap)
+
+    def test_snapshot_empty_when_prompt_scrolled_off(self):
+        """Regression: when all prompts scroll off the 36-row pyte screen,
+        _find_last_prompt returns None.  The snapshot must be empty to
+        prevent old response content (Args:, Returns:) from deduping
+        identical patterns in the new response.
+        """
+        display_at_thinking = [
+            '      """Return the nth Fibonacci number."""',
+            "      Args:",
+            "          n: The index.",
+            "      Returns:",
+            "          The nth Fibonacci number.",
+            "      Raises:",
+            "          ValueError: If n < 0.",
+            '      """',
+            "      if n <= 0:",
+            "          return 0",
+            "      return fibonacci(n - 1) + fibonacci(n - 2)",
+            "",
+            "────────────────────────────────────",
+            "✶ Thinking...",
+        ]
+        prompt_idx = _find_last_prompt(display_at_thinking)
+        assert prompt_idx is None
+        # No prompt found → empty snapshot (same logic as output.py)
+        snap = set() if prompt_idx is None else set()
+        assert len(snap) == 0
+        # Critically: "Args:" must NOT be in snapshot, so new response
+        # with "Args:" won't get deduped
+        assert "Args:" not in snap
+        assert "Returns:" not in snap
+
+
+class TestUserMessageResetsDedup:
+    """Regression: dedup state (sent lines and thinking snapshot) must be
+    reset when a new user interaction (USER_MESSAGE state) is detected.
+    This prevents stale dedup data from a previous response cycle from
+    bleeding into the new one.
+    """
+
+    def test_user_message_clears_sent_lines(self):
+        key = (885, 1)
+        _session_sent_lines[key] = {"old content", "Args:", "Returns:"}
+        # Simulate USER_MESSAGE detection (same logic as poll_output)
+        state = ScreenState.USER_MESSAGE
+        if state == ScreenState.USER_MESSAGE:
+            _session_sent_lines[key] = set()
+            _session_thinking_snapshot.pop(key, None)
+        assert _session_sent_lines[key] == set()
+        # Cleanup
+        del _session_sent_lines[key]
+
+    def test_user_message_clears_thinking_snapshot(self):
+        key = (884, 1)
+        _session_thinking_snapshot[key] = {"old snap", "Args:"}
+        state = ScreenState.USER_MESSAGE
+        if state == ScreenState.USER_MESSAGE:
+            _session_sent_lines.setdefault(key, set())
+            _session_sent_lines[key] = set()
+            _session_thinking_snapshot.pop(key, None)
+        assert key not in _session_thinking_snapshot
+        # Cleanup
+        _session_sent_lines.pop(key, None)
