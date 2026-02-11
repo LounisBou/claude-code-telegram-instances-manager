@@ -47,9 +47,16 @@ class TestReflowText:
         assert "\n\n" in result
 
     def test_continuation_lines_joined(self):
-        """Lines that look like terminal wraps get joined with spaces."""
-        result = reflow_text("This is a long sentence that was\nwrapped by the terminal")
-        assert "that was wrapped by" in result
+        """Lines that look like terminal wraps (≥72 chars) get joined with spaces."""
+        # Simulate pyte wrapping at ~80 cols: first line is 75 chars
+        long_line = "This is a long sentence that demonstrates how pyte wraps text at the column"
+        result = reflow_text(f"{long_line}\nlimit of the terminal")
+        assert "column limit" in result
+
+    def test_short_lines_not_joined(self):
+        """Short lines (<72 chars) are intentional breaks, not terminal wraps."""
+        result = reflow_text("Red\nGreen\nBlue")
+        assert result == "Red\nGreen\nBlue"
 
     def test_code_fence_preserved_verbatim(self):
         """Code blocks must not be reflowed."""

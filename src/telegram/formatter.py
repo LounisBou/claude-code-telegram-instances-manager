@@ -159,6 +159,14 @@ def reflow_text(text: str) -> str:
             if paragraph.rstrip().endswith(":"):
                 break
 
+            # Short lines are intentional breaks, not terminal wrapping.
+            # pyte content area is ~80 chars (based on separator width).
+            # Lines well below that are intentional line breaks (e.g. a
+            # list without bullets, short phrases, single words).
+            last_physical = paragraph.rsplit("\n", 1)[-1] if "\n" in paragraph else paragraph
+            if len(last_physical.rstrip()) < 72:
+                break
+
             # Join the continuation line
             paragraph = paragraph.rstrip() + " " + next_line.strip()
             i += 1
