@@ -66,6 +66,26 @@ class TestSetupLogging:
         file_handlers = [h for h in src_logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) == 0
 
+    def test_src_logger_gets_debug_handler(self):
+        """Regression: src.* loggers must inherit debug-level handler."""
+        setup_logging(debug=True, trace=False, verbose=False)
+        src_logger = logging.getLogger("src")
+        console = [
+            h for h in src_logger.handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert len(console) == 1
+        assert console[0].level == logging.DEBUG
+
+    def test_src_child_logger_inherits(self):
+        """Module loggers like src.bot must propagate to the src handler."""
+        setup_logging(debug=True, trace=False, verbose=False)
+        child = logging.getLogger("src.bot")
+        # child should propagate and use src's handlers
+        assert child.propagate is True
+        assert child.parent.name == "src"
+
     def test_idempotent_clears_old_handlers(self):
         setup_logging(debug=True, trace=False, verbose=False)
         root = setup_logging(debug=False, trace=False, verbose=False)

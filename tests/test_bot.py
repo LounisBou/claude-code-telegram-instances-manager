@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.bot import (
+    _CONTENT_STATES,
     _run_update_command,
     build_project_keyboard,
     build_sessions_keyboard,
@@ -22,8 +23,15 @@ from src.bot import (
     handle_sessions,
     handle_start,
     handle_text_message,
+    handle_unknown_command,
     handle_update_claude,
     is_authorized,
+)
+from src.output_parser import (
+    ScreenState,
+    TerminalEmulator,
+    classify_screen_state,
+    extract_content,
 )
 from src.project_scanner import Project
 
@@ -922,3 +930,141 @@ class TestHandlerLogging:
         with caplog.at_level(logging.DEBUG, logger="src.bot"):
             await handle_start(mock_update, mock_context)
         assert any("handle_start" in r.message for r in caplog.records)
+
+
+class TestSpawnErrorReporting:
+    """Regression: spawn failures must send error message to Telegram user."""
+
+    @pytest.mark.asyncio
+    async def test_spawn_error_sends_telegram_message(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "project:/a/bad-project"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = AsyncMock()
+        sm.create_session = AsyncMock(
+            side_effect=RuntimeError("command not found")
+        )
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        update.callback_query.edit_message_text.assert_called_once()
+        msg = update.callback_query.edit_message_text.call_args[0][0]
+        assert "Failed" in msg
+        assert "command not found" in msg
+
+    @pytest.mark.asyncio
+    async def test_spawn_error_does_not_call_git_info(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "project:/a/proj"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = AsyncMock()
+        sm.create_session = AsyncMock(side_effect=OSError("bad"))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.bot.get_git_info", new_callable=AsyncMock) as mock_git:
+            await handle_callback_query(update, context)
+            mock_git.assert_not_called()
+
+
+class TestHandleUnknownCommand:
+    """Regression: unknown /commands must either forward to session or show help."""
+
+    @pytest.mark.asyncio
+    async def test_forwards_to_active_session(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/status"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock()
+        session.process.submit = AsyncMock()
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_unknown_command(update, context)
+        session.process.submit.assert_called_once_with("/status")
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shows_help_without_session(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/bogus"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_unknown_command(update, context)
+        update.message.reply_text.assert_called_once()
+        msg = update.message.reply_text.call_args[0][0]
+        assert "Unknown command" in msg
+        assert "/start" in msg
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_ignored(self):
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        context.bot_data = {"config": config, "session_manager": MagicMock()}
+        await handle_unknown_command(update, context)
+        update.message.reply_text.assert_not_called()
+
+
+class TestOutputStateFiltering:
+    """Regression: poll_output must suppress UI chrome and only send content."""
+
+    def test_startup_not_in_content_states(self):
+        assert ScreenState.STARTUP not in _CONTENT_STATES
+
+    def test_idle_not_in_content_states(self):
+        assert ScreenState.IDLE not in _CONTENT_STATES
+
+    def test_unknown_not_in_content_states(self):
+        assert ScreenState.UNKNOWN not in _CONTENT_STATES
+
+    def test_streaming_in_content_states(self):
+        assert ScreenState.STREAMING in _CONTENT_STATES
+
+    def test_tool_request_in_content_states(self):
+        assert ScreenState.TOOL_REQUEST in _CONTENT_STATES
+
+    def test_error_in_content_states(self):
+        assert ScreenState.ERROR in _CONTENT_STATES
+
+    def test_startup_screen_classified_and_filtered(self):
+        """A Claude Code startup banner must be classified as STARTUP."""
+        lines = [
+            "Claude Code v2.1.37",
+            " \u2590\u259b\u2588\u2588\u2588\u259c\u2590   Opus 4.6 · Claude Max",
+            "\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  ~/dev/my-project",
+            "  \u2598\u2598 \u259d\u259d",
+            "",
+        ] + [""] * 35
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.STARTUP
+        # extract_content should return nothing useful from startup chrome
+        content = extract_content(lines)
+        # No meaningful user content in startup screen
+        assert "Opus" not in content or content == ""
+
+    def test_extract_content_filters_separators(self):
+        """Separator lines must be stripped by extract_content."""
+        lines = [
+            "\u2500" * 80,
+            "This is real content from Claude",
+            "\u2500" * 80,
+        ]
+        content = extract_content(lines)
+        assert "real content" in content
+        assert "\u2500" * 10 not in content

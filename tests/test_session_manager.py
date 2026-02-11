@@ -175,6 +175,42 @@ class TestSessionManager:
             assert manager.active_session_count() == 2
 
 
+class TestSessionManagerShutdown:
+    """Regression: shutdown() must terminate all sessions and clear state."""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_terminates_all_sessions(self, manager):
+        with patch("src.session_manager.ClaudeProcess") as MockProc:
+            proc1 = _mock_process()
+            proc2 = _mock_process()
+            MockProc.side_effect = [proc1, proc2]
+            await manager.create_session(111, "p1", "/a/p1")
+            await manager.create_session(222, "p2", "/a/p2")
+
+            await manager.shutdown()
+
+            proc1.terminate.assert_called_once()
+            proc2.terminate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_clears_sessions(self, manager):
+        with patch("src.session_manager.ClaudeProcess") as MockProc:
+            MockProc.return_value = _mock_process()
+            await manager.create_session(111, "p1", "/a/p1")
+
+            await manager.shutdown()
+
+            assert manager.list_sessions(111) == []
+            assert manager.get_active_session(111) is None
+            assert manager.active_session_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_shutdown_empty_is_noop(self, manager):
+        # Should not raise when no sessions exist
+        await manager.shutdown()
+        assert manager.active_session_count() == 0
+
+
 class TestOutputBuffer:
     def test_buffer_accumulates(self):
         buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
