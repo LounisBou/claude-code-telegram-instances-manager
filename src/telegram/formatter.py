@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as _html_mod
 import re
 
 
@@ -212,3 +213,144 @@ def split_message(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[str]
         remaining = remaining[split_at:].lstrip()
 
     return chunks if chunks else [""]
+
+
+# --- Telegram HTML formatting ---
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters: <, >, &.
+
+    Args:
+        text: Plain text to escape.
+
+    Returns:
+        Text with ``<``, ``>``, and ``&`` replaced by HTML entities.
+    """
+    return _html_mod.escape(text, quote=False)
+
+
+# Patterns for format_html
+_MD_CODE_BLOCK_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
+_MD_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+_LABEL_DASH_RE = re.compile(r"^- (.+?) — (.+)$", re.MULTILINE)
+_PLAIN_DASH_RE = re.compile(r"^- (.+)$", re.MULTILINE)
+_SECTION_HEADER_RE = re.compile(r"^([A-Z][^:\n]{2,50}):$", re.MULTILINE)
+
+
+def format_html(text: str) -> str:
+    """Convert reflowed plain text to Telegram HTML.
+
+    Handles: bold, italic, inline code, code blocks, list items
+    with label--description, section headers, and HTML escaping.
+
+    Processing order:
+      1. Extract code blocks and inline code (protect from escaping).
+      2. Extract bold and italic markers.
+      3. Escape HTML in remaining text.
+      4. Restore bold/italic with ``<b>``/``<i>`` tags.
+      5. Restore code blocks with ``<pre><code>``.
+      6. Restore inline code with ``<code>``.
+      7. Convert list items (``- label -- desc`` and ``- item``).
+      8. Bold section headers (``Word(s):`` alone on a line).
+
+    Args:
+        text: Reflowed text from :func:`reflow_text`.
+
+    Returns:
+        Telegram HTML-formatted string. Empty string if input is empty.
+    """
+    if not text:
+        return ""
+
+    # 1. Extract code blocks and inline code before escaping
+    code_blocks: list[tuple[str, str]] = []
+    inline_codes: list[str] = []
+
+    def _save_block(match: re.Match) -> str:
+        idx = len(code_blocks)
+        code_blocks.append((match.group(1), match.group(2)))
+        return f"\x00HTMLBLOCK{idx}\x00"
+
+    def _save_inline(match: re.Match) -> str:
+        idx = len(inline_codes)
+        inline_codes.append(match.group(1))
+        return f"\x00HTMLINLINE{idx}\x00"
+
+    result = _MD_CODE_BLOCK_RE.sub(_save_block, text)
+    result = _MD_INLINE_CODE_RE.sub(_save_inline, result)
+
+    # 2. Extract bold and italic before escaping
+    bolds: list[str] = []
+    italics: list[str] = []
+
+    def _save_bold(match: re.Match) -> str:
+        idx = len(bolds)
+        bolds.append(match.group(1))
+        return f"\x00HTMLBOLD{idx}\x00"
+
+    def _save_italic(match: re.Match) -> str:
+        idx = len(italics)
+        italics.append(match.group(1))
+        return f"\x00HTMLITALIC{idx}\x00"
+
+    result = _MD_BOLD_RE.sub(_save_bold, result)
+    result = _MD_ITALIC_RE.sub(_save_italic, result)
+
+    # 3. Escape HTML in remaining text
+    result = _escape_html(result)
+
+    # 4. Restore bold/italic with HTML tags (content also escaped)
+    for idx, content in enumerate(bolds):
+        result = result.replace(
+            f"\x00HTMLBOLD{idx}\x00", f"<b>{_escape_html(content)}</b>"
+        )
+
+    for idx, content in enumerate(italics):
+        result = result.replace(
+            f"\x00HTMLITALIC{idx}\x00", f"<i>{_escape_html(content)}</i>"
+        )
+
+    # 5. Restore code blocks
+    for idx, (lang, code) in enumerate(code_blocks):
+        escaped_code = _escape_html(code)
+        if lang:
+            replacement = (
+                f'<pre><code class="language-{_escape_html(lang)}">'
+                f"{escaped_code}</code></pre>"
+            )
+        else:
+            replacement = f"<pre><code>{escaped_code}</code></pre>"
+        result = result.replace(f"\x00HTMLBLOCK{idx}\x00", replacement)
+
+    # 6. Restore inline code
+    for idx, code in enumerate(inline_codes):
+        result = result.replace(
+            f"\x00HTMLINLINE{idx}\x00", f"<code>{_escape_html(code)}</code>"
+        )
+
+    # 7. List items: label — description (must run before plain dash)
+    def _label_replace(m: re.Match) -> str:
+        label = m.group(1)
+        desc = m.group(2)
+        # Skip wrapping if bold was already applied (avoids nested <b> tags)
+        if "<b>" in label:
+            return f"• {label} — {desc}"
+        return f"• <b>{label}</b> — {desc}"
+
+    result = _LABEL_DASH_RE.sub(_label_replace, result)
+    # Plain list items
+    result = _PLAIN_DASH_RE.sub(lambda m: f"• {m.group(1)}", result)
+
+    # 8. Section headers (line = "Word(s):" alone on a line)
+    # Only match lines that don't contain :// (URLs)
+    def _header_replace(m: re.Match) -> str:
+        line = m.group(0)
+        if "://" in line:
+            return line
+        return f"<b>{m.group(1)}:</b>"
+
+    result = _SECTION_HEADER_RE.sub(_header_replace, result)
+
+    return result
