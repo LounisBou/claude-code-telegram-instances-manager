@@ -97,10 +97,17 @@ async def poll_output(bot: Bot, session_manager) -> None:
 
                 _session_prev_state[key] = event.state
 
-                logger.debug(
-                    "poll_output user=%d sid=%d state=%s prev=%s",
-                    user_id, sid, event.state.name, prev.name if prev else "None",
-                )
+                if event.state != prev:
+                    logger.debug(
+                        "poll_output user=%d sid=%d state=%s prev=%s",
+                        user_id, sid, event.state.name, prev.name if prev else "None",
+                    )
+                else:
+                    logger.log(
+                        TRACE,
+                        "poll_output user=%d sid=%d state=%s (unchanged)",
+                        user_id, sid, event.state.name,
+                    )
 
                 # Dump screen on state transitions for debugging
                 if event.state != prev:
