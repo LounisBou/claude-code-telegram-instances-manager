@@ -8,7 +8,13 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src.git_info import get_git_info
-from src.output_parser import TerminalEmulator, format_telegram, split_message
+from src.output_parser import (
+    ScreenState,
+    TerminalEmulator,
+    classify_screen_state,
+    extract_content,
+    split_message,
+)
 from src.project_scanner import Project, scan_projects
 from src.session_manager import OutputBuffer
 
@@ -730,20 +736,32 @@ async def handle_unknown_command(
 # --- Output polling loop ---
 
 
+# States that produce user-visible output
+_CONTENT_STATES = {
+    ScreenState.STREAMING,
+    ScreenState.TOOL_REQUEST,
+    ScreenState.TOOL_RUNNING,
+    ScreenState.TOOL_RESULT,
+    ScreenState.ERROR,
+    ScreenState.TODO_LIST,
+    ScreenState.PARALLEL_AGENTS,
+    ScreenState.BACKGROUND_TASK,
+}
+
 # Per-session state for the output loop (keyed by (user_id, session_id))
 _session_emulators: dict[tuple[int, int], TerminalEmulator] = {}
 _session_buffers: dict[tuple[int, int], OutputBuffer] = {}
+_session_prev_state: dict[tuple[int, int], ScreenState] = {}
 
 
 async def poll_output(bot: Bot, session_manager) -> None:
     """Background loop that reads Claude output and sends it to Telegram.
 
     Polls every 300ms. For each active session, reads available PTY output,
-    feeds it through the terminal emulator, buffers with debounce, and sends
-    formatted chunks back to the user's Telegram chat.
+    feeds it through the terminal emulator, classifies the screen state,
+    and sends meaningful content back to the user's Telegram chat.
+    Suppresses UI chrome (startup banners, status bars, idle prompts).
     """
-    config = None  # Loaded on first iteration from session_manager
-
     while True:
         await asyncio.sleep(0.3)
         for user_id, sessions in list(session_manager._sessions.items()):
@@ -756,31 +774,55 @@ async def poll_output(bot: Bot, session_manager) -> None:
                     _session_buffers[key] = OutputBuffer(
                         debounce_ms=500, max_buffer=2000
                     )
+                    _session_prev_state[key] = ScreenState.STARTUP
 
                 raw = session.process.read_available()
                 if not raw:
+                    # Still check buffer readiness even without new data
+                    buf = _session_buffers[key]
+                    if buf.is_ready():
+                        await _flush_buffer(bot, user_id, buf)
                     continue
 
                 emu = _session_emulators[key]
                 buf = _session_buffers[key]
 
                 emu.feed(raw)
-                new_content = emu.get_new_content()
-                if new_content:
-                    buf.append(new_content)
+                display = emu.get_display()
+                event = classify_screen_state(display, _session_prev_state.get(key))
+                prev = _session_prev_state.get(key)
+                _session_prev_state[key] = event.state
 
-                if buf.is_ready():
-                    text = buf.flush()
-                    formatted = format_telegram(text)
-                    if not formatted.strip():
-                        continue
-                    for chunk in split_message(formatted):
-                        try:
-                            await bot.send_message(
-                                chat_id=user_id, text=chunk
-                            )
-                        except Exception as exc:
-                            logger.error(
-                                "Failed to send output to user %d: %s",
-                                user_id, exc,
-                            )
+                logger.debug(
+                    "poll_output user=%d sid=%d state=%s prev=%s",
+                    user_id, sid, event.state.name, prev.name if prev else "None",
+                )
+
+                # Notify on state transitions to THINKING
+                if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
+                    buf.append("_Thinking..._\n")
+
+                # Extract content for states that produce output
+                if event.state in _CONTENT_STATES:
+                    content = extract_content(display)
+                    if content:
+                        buf.append(content + "\n")
+
+                # Flush on transition to idle (response complete)
+                if event.state == ScreenState.IDLE and prev != ScreenState.IDLE:
+                    if buf.is_ready():
+                        await _flush_buffer(bot, user_id, buf)
+                elif buf.is_ready():
+                    await _flush_buffer(bot, user_id, buf)
+
+
+async def _flush_buffer(bot: Bot, user_id: int, buf: OutputBuffer) -> None:
+    """Send buffered output to the user's Telegram chat."""
+    text = buf.flush()
+    if not text.strip():
+        return
+    for chunk in split_message(text):
+        try:
+            await bot.send_message(chat_id=user_id, text=chunk)
+        except Exception as exc:
+            logger.error("Failed to send output to user %d: %s", user_id, exc)
