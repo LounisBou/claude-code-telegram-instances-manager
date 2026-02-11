@@ -86,7 +86,7 @@ class ClaudeProcess:
         return self._process.isalive()
 
     async def write(self, text: str) -> None:
-        """Send text to the process stdin via the PTY.
+        """Send raw text to the process stdin via the PTY.
 
         Does nothing if the process is not alive. Runs the write
         on a background thread to avoid blocking the event loop.
@@ -99,6 +99,20 @@ class ClaudeProcess:
         logger.debug("PTY write: %r", text[:200])
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._process.send, text)
+
+    async def submit(self, text: str) -> None:
+        """Send text and press Enter, mimicking user input to Claude Code.
+
+        Claude Code's TUI interprets text+Enter sent together as a paste.
+        This method sends them separately with a short delay so the TUI
+        treats it as typed input followed by a submit.
+
+        Args:
+            text: The user message to submit.
+        """
+        await self.write(text)
+        await asyncio.sleep(0.15)
+        await self.write("\r")
 
     def read_available(self) -> str:
         """Read all currently available output from the PTY buffer.

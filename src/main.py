@@ -28,6 +28,7 @@ from src.bot import (
     handle_text_message,
     handle_unknown_command,
     handle_update_claude,
+    poll_output,
 )
 from src.config import load_config
 from src.database import Database
@@ -146,8 +147,14 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
 
+    # Start background output polling loop
+    session_manager = app.bot_data["session_manager"]
+    poll_task = asyncio.create_task(poll_output(app.bot, session_manager))
+
     logger.info("Bot is running. Press Ctrl+C to stop.")
     await stop_event.wait()
+
+    poll_task.cancel()
 
     # Second Ctrl+C during shutdown → force exit immediately
     for sig in (signal.SIGINT, signal.SIGTERM):

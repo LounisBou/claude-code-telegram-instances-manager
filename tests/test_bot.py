@@ -298,7 +298,7 @@ class TestHandleTextMessage:
         update.message.text = "hello world"
         context = MagicMock()
         session = MagicMock()
-        session.process.write = AsyncMock()
+        session.process.submit = AsyncMock()
         context.bot_data = {
             "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
             "session_manager": MagicMock(
@@ -306,7 +306,7 @@ class TestHandleTextMessage:
             ),
         }
         await handle_text_message(update, context)
-        session.process.write.assert_called_once_with("hello world\n")
+        session.process.submit.assert_called_once_with("hello world")
 
     @pytest.mark.asyncio
     async def test_unauthorized_ignored(self):
@@ -642,11 +642,11 @@ class TestHandleContext:
         context = MagicMock()
         config = MagicMock(telegram=MagicMock(authorized_users=[111]))
         session = MagicMock()
-        session.process.write = AsyncMock()
+        session.process.submit = AsyncMock()
         sm = MagicMock(get_active_session=MagicMock(return_value=session))
         context.bot_data = {"config": config, "session_manager": sm}
         await handle_context(update, context)
-        session.process.write.assert_called_once_with("/context\n")
+        session.process.submit.assert_called_once_with("/context")
         update.message.reply_text.assert_called_once()
 
     @pytest.mark.asyncio

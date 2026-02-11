@@ -4,11 +4,13 @@ import asyncio
 import logging
 import os
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src.git_info import get_git_info
+from src.output_parser import TerminalEmulator, format_telegram, split_message
 from src.project_scanner import Project, scan_projects
+from src.session_manager import OutputBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +314,7 @@ async def handle_text_message(
         await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
-    await active.process.write(update.message.text + "\n")
+    await active.process.submit(update.message.text)
 
 
 # --- Callback query handler ---
@@ -553,7 +555,7 @@ async def handle_context(
         await update.message.reply_text("No active session.")
         return
 
-    await active.process.write("/context\n")
+    await active.process.submit("/context")
     await update.message.reply_text("Context info requested. Output will follow.")
 
 
@@ -718,8 +720,67 @@ async def handle_unknown_command(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if active:
-        await active.process.write(update.message.text + "\n")
+        await active.process.submit(update.message.text)
         return
 
     known = "\n".join(f"/{cmd} — {desc}" for cmd, desc in BOT_COMMANDS)
     await update.message.reply_text(f"Unknown command.\n\n{known}")
+
+
+# --- Output polling loop ---
+
+
+# Per-session state for the output loop (keyed by (user_id, session_id))
+_session_emulators: dict[tuple[int, int], TerminalEmulator] = {}
+_session_buffers: dict[tuple[int, int], OutputBuffer] = {}
+
+
+async def poll_output(bot: Bot, session_manager) -> None:
+    """Background loop that reads Claude output and sends it to Telegram.
+
+    Polls every 300ms. For each active session, reads available PTY output,
+    feeds it through the terminal emulator, buffers with debounce, and sends
+    formatted chunks back to the user's Telegram chat.
+    """
+    config = None  # Loaded on first iteration from session_manager
+
+    while True:
+        await asyncio.sleep(0.3)
+        for user_id, sessions in list(session_manager._sessions.items()):
+            for sid, session in list(sessions.items()):
+                key = (user_id, sid)
+
+                # Lazy-init emulator and buffer per session
+                if key not in _session_emulators:
+                    _session_emulators[key] = TerminalEmulator()
+                    _session_buffers[key] = OutputBuffer(
+                        debounce_ms=500, max_buffer=2000
+                    )
+
+                raw = session.process.read_available()
+                if not raw:
+                    continue
+
+                emu = _session_emulators[key]
+                buf = _session_buffers[key]
+
+                emu.feed(raw)
+                new_content = emu.get_new_content()
+                if new_content:
+                    buf.append(new_content)
+
+                if buf.is_ready():
+                    text = buf.flush()
+                    formatted = format_telegram(text)
+                    if not formatted.strip():
+                        continue
+                    for chunk in split_message(formatted):
+                        try:
+                            await bot.send_message(
+                                chat_id=user_id, text=chunk
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                "Failed to send output to user %d: %s",
+                                user_id, exc,
+                            )
