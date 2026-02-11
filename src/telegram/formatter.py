@@ -160,7 +160,7 @@ _BLOCK_START_RE = re.compile(
     r"|\|"               # table row
     r"|```"              # code fence
     r"|>\ "              # blockquote
-    r"|Key components:"  # common label lines
+    r"|[A-Z]\w+:"        # capitalized label (Class:, Fields:, Purpose:)
     r")"
 )
 

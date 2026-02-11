@@ -107,6 +107,16 @@ class TestReflowText:
         result = reflow_text(text)
         assert "Table below\n| col1 | col2 |" in result
 
+    def test_capitalized_label_not_joined(self):
+        """Regression: capitalized labels like Class:, Fields: must break."""
+        # Simulate terminal output where a long line is followed by labels
+        long_line = "Fields: enabled: bool = False, trace: bool = False, verbose: bool = False"
+        text = f"{long_line}\nPurpose: Debug flags\nClass: AppConfig"
+        result = reflow_text(text)
+        # Each label should be on its own line, not joined
+        assert "Purpose: Debug flags" in result
+        assert "\nClass: AppConfig" in result
+
 
 class TestSplitMessage:
     def test_short_message_unchanged(self):
