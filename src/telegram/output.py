@@ -319,13 +319,19 @@ async def poll_output(
                             _session_thinking_snapshot.get(key, set())
                             if _fast_idle else set()
                         )
+                        # Check against pre-existing sent set, but do NOT
+                        # add to sent during iteration — repeated lines
+                        # within the same response (e.g. multiple "return
+                        # False" in code) must be preserved.  Only record
+                        # lines as sent AFTER the full batch is extracted.
                         new_lines = []
                         for line in content.split("\n"):
                             stripped = line.strip()
                             if stripped and stripped not in sent and stripped not in snap:
                                 new_lines.append(line)
-                                sent.add(stripped)
-                            elif stripped:
+                        for line in content.split("\n"):
+                            stripped = line.strip()
+                            if stripped:
                                 sent.add(stripped)
                         if new_lines:
                             deduped = textwrap.dedent(

@@ -164,7 +164,11 @@ class TestContentDedup:
     """Regression: screen scroll must not cause duplicate content in Telegram."""
 
     def _run_dedup(self, content: str, sent: set[str]) -> tuple[str, set[str]]:
-        """Run the dedup logic from poll_output and return (deduped, updated_sent)."""
+        """Run the dedup logic from poll_output and return (deduped, updated_sent).
+
+        Mirrors the two-pass approach: first pass filters against pre-existing
+        sent set (without modifying it), second pass records all lines as sent.
+        """
         from src.telegram.formatter import reflow_text
 
         new_lines = []
@@ -172,6 +176,9 @@ class TestContentDedup:
             stripped = line.strip()
             if stripped and stripped not in sent:
                 new_lines.append(line)
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if stripped:
                 sent.add(stripped)
         if new_lines:
             return reflow_text("\n".join(new_lines)), sent
@@ -227,6 +234,39 @@ class TestContentDedup:
         assert "Another new one" in result
         assert "Brand new line" in sent
         assert "Another new one" in sent
+
+    def test_repeated_lines_within_response_preserved(self):
+        """Regression: identical lines within the same response must not be deduped.
+
+        Code responses often contain repeated lines like 'return False' or
+        'return True' at multiple points. These must all be preserved.
+        """
+        content = (
+            "def is_prime(n):\n"
+            "    if n < 2:\n"
+            "        return False\n"
+            "    if n % 2 == 0:\n"
+            "        return False\n"
+            "    return True"
+        )
+        result, sent = self._run_dedup(content, set())
+        assert result.count("return False") == 2
+        assert "return True" in result
+
+    def test_repeated_lines_still_dedup_across_responses(self):
+        """Repeated lines from a PREVIOUS response must still be deduped."""
+        sent = {"return False", "return True"}
+        content = (
+            "def is_prime(n):\n"
+            "    if n < 2:\n"
+            "        return False\n"
+            "    return True"
+        )
+        result, _ = self._run_dedup(content, sent)
+        assert "return False" not in result
+        assert "return True" not in result
+        assert "def is_prime(n):" in result
+        assert "if n < 2:" in result
 
 
 class TestDedupSetClearing:
