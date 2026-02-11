@@ -206,7 +206,7 @@ async def handle_callback_query(
         return
 
     data = query.data
-    logger.debug("handle_callback_query user_id=%d action=%s", user_id, data.split(":")[0])
+    logger.debug("handle_callback_query user_id=%d data=%s", user_id, data)
     session_manager = context.bot_data["session_manager"]
 
     if data.startswith("project:"):

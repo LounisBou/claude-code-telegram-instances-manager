@@ -118,6 +118,10 @@ _CLAUDE_HINT_RE = re.compile(r"claude\s+--(?:continue|resume)")
 # PR indicator in status bar area (standalone "PR #13" line)
 _PR_INDICATOR_RE = re.compile(r"^PR\s*#\d+$")
 
+# Context window progress bar (block elements) and/or timer (↻ HH:MM)
+_CONTEXT_TIMER_RE = re.compile(r"↻\s*\d+:\d+")
+_PROGRESS_BAR_RE = re.compile(r"^[▊▉█▌▍▎▏░▒▓\s]+$")
+
 # Extra status line
 _EXTRA_BASH_RE = re.compile(r"(\d+) bash")
 _EXTRA_AGENTS_RE = re.compile(r"(\d+) local agents?")
@@ -165,6 +169,11 @@ def classify_line(line: str) -> str:
     if _CLAUDE_HINT_RE.search(stripped):
         return "status_bar"
     if _PR_INDICATOR_RE.match(stripped):
+        return "status_bar"
+    # Context window progress bar and/or timer (e.g. "▊░░░░░░░░░ ↻ 11:00")
+    if _CONTEXT_TIMER_RE.search(stripped):
+        return "status_bar"
+    if _PROGRESS_BAR_RE.match(stripped):
         return "status_bar"
     if _THINKING_STAR_RE.match(stripped):
         return "thinking"

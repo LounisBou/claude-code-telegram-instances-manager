@@ -69,6 +69,19 @@ class TestClassifyLine:
         # PR mention inside a sentence is content, not status bar
         assert classify_line("See PR #13 for details") == "content"
 
+    def test_progress_bar_timer_is_status_bar(self):
+        """Progress bar and/or timer from context window area."""
+        # Progress bar + timer
+        assert classify_line("▊░░░░░░░░░ ↻ 11:00") == "status_bar"
+        # Timer alone
+        assert classify_line("↻ 5:00") == "status_bar"
+        assert classify_line("↻ 12:34") == "status_bar"
+        # Progress bar alone (only block elements)
+        assert classify_line("▊▊▊░░░░░░░") == "status_bar"
+        assert classify_line("█████░░░░░") == "status_bar"
+        # ↻ inside content sentence should still match (timer is distinctive)
+        assert classify_line("something ↻ 3:00") == "status_bar"
+
     def test_thinking_star(self):
         assert classify_line("✶ Activating sleeper agents…") == "thinking"
         assert classify_line("✳ Deploying robot army…") == "thinking"

@@ -40,6 +40,10 @@ _session_prev_state: dict[tuple[int, int], ScreenState] = {}
 # making get_changes() report previously-sent content as "changed").
 # Cleared on IDLE transitions (response boundary).
 _session_sent_lines: dict[tuple[int, int], set[str]] = {}
+# Display snapshot captured on THINKING entry.  Used to subtract
+# pre-existing content (banner artifacts, user echo, status bar)
+# from the full display during fast THINKING→IDLE extraction.
+_session_thinking_snapshot: dict[tuple[int, int], set[str]] = {}
 
 
 async def poll_output(
@@ -151,26 +155,36 @@ async def poll_output(
 
                 # Notify on state transitions to THINKING
                 if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
+                    # Snapshot current display so fast THINKING→IDLE can
+                    # subtract pre-existing content (banner, user echo, etc.)
+                    snap = set()
+                    for line in display:
+                        stripped = line.strip()
+                        if stripped:
+                            snap.add(stripped)
+                    _session_thinking_snapshot[key] = snap
                     await streaming.start_thinking()
 
                 # Extract content for states that produce output.
-                # Also extract on IDLE transition from THINKING/STREAMING:
-                # fast responses may complete within a single poll cycle,
-                # going THINKING→IDLE without ever entering STREAMING.
+                # Also extract on IDLE when a response cycle is incomplete
+                # (streaming is THINKING or STREAMING but not yet finalized).
+                # This handles both direct (THINKING→IDLE) and indirect
+                # (THINKING→UNKNOWN→IDLE) fast-response transitions where
+                # intermediate states don't trigger extraction.
                 _should_extract = event.state in _CONTENT_STATES or (
                     event.state == ScreenState.IDLE
-                    and prev in (ScreenState.THINKING, ScreenState.STREAMING)
+                    and streaming.state in (
+                        StreamingState.THINKING, StreamingState.STREAMING,
+                    )
                 )
                 if _should_extract:
-                    # For THINKING→IDLE fast responses, response content
-                    # arrived in the same PTY read as the thinking indicator.
-                    # get_changes() consumed it during the THINKING cycle
-                    # (which doesn't extract content), so by IDLE only UI
-                    # chrome remains in changed. Use full display instead —
-                    # the dedup set prevents re-sending old content.
+                    # When streaming is still in THINKING, response content
+                    # hasn't been extracted via get_changes() yet (THINKING
+                    # and UNKNOWN don't extract). Use the full display —
+                    # the thinking snapshot filters pre-existing content.
                     _fast_idle = (
                         event.state == ScreenState.IDLE
-                        and prev == ScreenState.THINKING
+                        and streaming.state == StreamingState.THINKING
                     )
                     source = display if _fast_idle else changed
                     if source:
@@ -186,10 +200,16 @@ async def poll_output(
                         # Dedup: filter out lines already sent (screen scroll
                         # causes get_changes() to re-report shifted lines)
                         sent = _session_sent_lines.get(key, set())
+                        # For fast-IDLE, also subtract lines that existed
+                        # before THINKING (banner artifacts, user echo, etc.)
+                        snap = (
+                            _session_thinking_snapshot.get(key, set())
+                            if _fast_idle else set()
+                        )
                         new_lines = []
                         for line in content.split("\n"):
                             stripped = line.strip()
-                            if stripped and stripped not in sent:
+                            if stripped and stripped not in sent and stripped not in snap:
                                 new_lines.append(line)
                                 sent.add(stripped)
                         if new_lines:
