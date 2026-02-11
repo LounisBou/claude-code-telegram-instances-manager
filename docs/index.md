@@ -19,6 +19,8 @@ Active plans in [`docs/plans/`](plans/):
 | [Project Restructure Plan](plans/2026-02-11-project-restructure-plan.md) | Implementation plan for restructure |
 | [PR Documentation Design](plans/2026-02-11-pr-documentation-design.md) | PR and documentation workflow |
 | [Debug Trace Logging](plans/2026-02-10-debug-trace-logging.md) | TRACE log level design |
+| [Rich Output Streaming Design](plans/2026-02-11-rich-output-streaming-design.md) | HTML streaming output design |
+| [Rich Output Streaming Plan](plans/2026-02-11-rich-output-streaming-plan.md) | Implementation plan for streaming |
 
 Archived plans from earlier phases are in [`docs/archive/`](archive/).
 
