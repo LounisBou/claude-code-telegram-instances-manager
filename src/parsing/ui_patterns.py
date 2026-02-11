@@ -115,6 +115,9 @@ _TIP_RE = re.compile(r"^(?:\w+\s+)?[Tt]ip:\s")
 _BARE_TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
 _CLAUDE_HINT_RE = re.compile(r"claude\s+--(?:continue|resume)")
 
+# PR indicator in status bar area (standalone "PR #13" line)
+_PR_INDICATOR_RE = re.compile(r"^PR\s*#\d+$")
+
 # Extra status line
 _EXTRA_BASH_RE = re.compile(r"(\d+) bash")
 _EXTRA_AGENTS_RE = re.compile(r"(\d+) local agents?")
@@ -160,6 +163,8 @@ def classify_line(line: str) -> str:
     if _BARE_TIME_RE.match(stripped):
         return "status_bar"
     if _CLAUDE_HINT_RE.search(stripped):
+        return "status_bar"
+    if _PR_INDICATOR_RE.match(stripped):
         return "status_bar"
     if _THINKING_STAR_RE.match(stripped):
         return "thinking"

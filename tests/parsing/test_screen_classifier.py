@@ -176,6 +176,17 @@ class TestClassifyScreenState:
         event = classify_screen_state(lines)
         assert event.state == ScreenState.IDLE
 
+    def test_idle_with_pr_indicator_below_separator(self):
+        """Regression: PR indicator in status area must be skipped by bottom-up scan."""
+        lines = [""] * 12
+        lines[5] = "─" * 40
+        lines[6] = "❯"
+        lines[7] = "─" * 40
+        lines[8] = "  my-project │ ⎇ main │ Usage: 5%"
+        lines[9] = "PR #13"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
     def test_streaming_with_content_below_response_marker(self):
         """Regression: ⏺ not on last line — content lines below must still detect STREAMING."""
         lines = [""] * 15

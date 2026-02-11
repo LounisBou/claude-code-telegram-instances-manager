@@ -62,6 +62,13 @@ class TestClassifyLine:
             == "status_bar"
         )
 
+    def test_pr_indicator_is_status_bar(self):
+        assert classify_line("PR #13") == "status_bar"
+        assert classify_line("PR #1") == "status_bar"
+        assert classify_line("PR #999") == "status_bar"
+        # PR mention inside a sentence is content, not status bar
+        assert classify_line("See PR #13 for details") == "content"
+
     def test_thinking_star(self):
         assert classify_line("✶ Activating sleeper agents…") == "thinking"
         assert classify_line("✳ Deploying robot army…") == "thinking"
@@ -172,6 +179,17 @@ class TestExtractContent:
         assert "This is the actual response content" in result
         # Tip lines are classified as status_bar, also filtered
         assert "Formatting tip" not in result
+
+    def test_filters_pr_indicator(self):
+        """PR indicator from status bar must be filtered by extract_content."""
+        lines = [
+            "────────────────────────────────",
+            "❯",
+            "ScreenBuddies │ ⎇ feat/1.2 ⇡2 │ Usage: 48%",
+            "PR #13",
+        ]
+        result = extract_content(lines)
+        assert "PR #13" not in result
 
     def test_preserves_all_content(self):
         lines = ["First line", "Second line", "Third line"]

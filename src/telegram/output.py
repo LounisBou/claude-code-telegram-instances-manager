@@ -148,6 +148,13 @@ async def poll_output(
 
                 # Extract content for states that produce output
                 if event.state in _CONTENT_STATES:
+                    if changed:
+                        for ci, cl in enumerate(changed):
+                            if cl.strip():
+                                logger.debug(
+                                    "poll_output RAW changed[%d]: %r",
+                                    ci, cl.strip(),
+                                )
                     content = extract_content(changed)
                     if content:
                         # Dedup: filter out lines already sent (screen scroll
@@ -161,6 +168,10 @@ async def poll_output(
                                 sent.add(stripped)
                         if new_lines:
                             deduped = "\n".join(new_lines)
+                            logger.debug(
+                                "poll_output CONTENT lines=%r changed_count=%d",
+                                new_lines, len(changed),
+                            )
                             html = format_html(reflow_text(deduped))
                             await streaming.append_content(html)
 

@@ -21,6 +21,7 @@ from src.parsing.ui_patterns import (
     _EXTRA_BASH_RE,
     _EXTRA_FILES_RE,
     _LOGO_RE,
+    _PR_INDICATOR_RE,
     _PROMPT_MARKER_RE,
     _RESPONSE_MARKER_RE,
     _SEPARATOR_PREFIX_RE,
@@ -137,6 +138,7 @@ def classify_screen_state(
             and not _EXTRA_BASH_RE.search(stripped)
             and not _EXTRA_AGENTS_RE.search(stripped)
             and not _EXTRA_FILES_RE.search(stripped)
+            and not _PR_INDICATOR_RE.match(stripped)
         ):
             break
         active_idx -= 1
