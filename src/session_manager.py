@@ -200,6 +200,14 @@ class SessionManager:
         else:
             self._active.pop(user_id, None)
 
+    async def shutdown(self) -> None:
+        """Terminate all active sessions. Used during bot shutdown."""
+        for user_sessions in list(self._sessions.values()):
+            for session in list(user_sessions.values()):
+                await session.process.terminate()
+        self._sessions.clear()
+        self._active.clear()
+
     def has_active_sessions(self) -> bool:
         """Check whether any user has at least one live session.
 

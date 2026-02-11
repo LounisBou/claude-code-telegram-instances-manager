@@ -149,9 +149,17 @@ async def main() -> None:
     logger.info("Bot is running. Press Ctrl+C to stop.")
     await stop_event.wait()
 
+    # Second Ctrl+C during shutdown → force exit immediately
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.remove_signal_handler(sig)
+
     logger.info("Shutting down...")
     await app.updater.stop()
     await app.stop()
+    session_manager = app.bot_data["session_manager"]
+    await session_manager.shutdown()
+    db = app.bot_data["db"]
+    await db.close()
     await app.shutdown()
     logger.info("Bye.")
 
