@@ -155,6 +155,27 @@ class TestHandleGit:
             assert "main" in update.message.reply_text.call_args[0][0]
 
     @pytest.mark.asyncio
+    async def test_git_uses_html_parse_mode(self):
+        """Regression: /git must use parse_mode=HTML since format() produces HTML."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock(project_path="/a/proj")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.commands.get_git_info", new_callable=AsyncMock) as mock_git:
+            mock_git.return_value = MagicMock(
+                format=MagicMock(
+                    return_value='Branch: <code>main</code> | No open PR'
+                )
+            )
+            await handle_git(update, context)
+            call_kwargs = update.message.reply_text.call_args
+            assert call_kwargs.kwargs.get("parse_mode") == "HTML"
+
+    @pytest.mark.asyncio
     async def test_no_active_session(self):
         update = MagicMock()
         update.effective_user.id = 111

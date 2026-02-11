@@ -75,7 +75,7 @@ async def handle_git(
         return
 
     git_info = await get_git_info(active.project_path)
-    await update.message.reply_text(git_info.format())
+    await update.message.reply_text(git_info.format(), parse_mode="HTML")
 
 
 async def handle_update_claude(
