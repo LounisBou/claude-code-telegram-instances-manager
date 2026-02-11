@@ -12,7 +12,9 @@ from src.core.log_setup import TRACE
 from src.parsing.screen_classifier import classify_screen_state
 from src.telegram.formatter import format_html, reflow_text, wrap_code_blocks
 from src.parsing.terminal_emulator import TerminalEmulator
-from src.parsing.ui_patterns import ScreenEvent, ScreenState, extract_content
+from src.parsing.ui_patterns import (
+    ScreenEvent, ScreenState, classify_line, extract_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,15 @@ _CONTENT_STATES = {
     ScreenState.PARALLEL_AGENTS,
     ScreenState.BACKGROUND_TASK,
 }
+
+# Line categories that are pure UI chrome — never part of Claude's actual
+# response content.  Used when building the THINKING snapshot so that
+# content from a *previous* response (still visible on the pyte screen)
+# doesn't accidentally dedup identical patterns from a *new* response.
+_CHROME_CATEGORIES = frozenset({
+    "separator", "diff_delimiter", "status_bar", "prompt",
+    "thinking", "startup", "logo", "box", "empty",
+})
 
 # Per-session state for the output loop (keyed by (user_id, session_id))
 _session_emulators: dict[tuple[int, int], TerminalEmulator] = {}
@@ -191,32 +202,20 @@ async def poll_output(
 
                 # Notify on state transitions to THINKING
                 if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
-                    # Snapshot current display so fast THINKING→IDLE can
-                    # subtract pre-existing content (banner, user echo, etc.)
-                    # Trim to last user prompt — exclude old responses above
-                    # so common patterns like "Args:", "Returns:" in a prior
-                    # response don't incorrectly dedup from the new response.
-                    # Include both raw lines AND extracted content lines so
-                    # dedup works after extract_content strips ⏺/⎿ markers.
+                    # Snapshot UI chrome visible on the display so fast
+                    # THINKING→IDLE can subtract non-content artifacts
+                    # (separators, status bar, prompt echo, thinking stars).
                     #
-                    # When no prompt is found (scrolled off the pyte screen),
-                    # use an empty snapshot — it's safer to risk sending
-                    # duplicate content than to eat patterns from a new
-                    # response that happen to match old content.
-                    prompt_idx = _find_last_prompt(display)
-                    if prompt_idx is not None:
-                        trimmed = display[prompt_idx:]
-                        snap: set[str] = set()
-                        for line in trimmed:
-                            stripped = line.strip()
-                            if stripped:
-                                snap.add(stripped)
-                        for line in extract_content(trimmed).split("\n"):
-                            stripped = line.strip()
-                            if stripped:
-                                snap.add(stripped)
-                    else:
-                        snap = set()
+                    # ONLY chrome lines are captured (via classify_line).
+                    # Content/response/tool lines are excluded because a
+                    # previous response may still be visible on the pyte
+                    # screen and common patterns like "Args:", "Returns:"
+                    # would incorrectly dedup from the *new* response.
+                    snap: set[str] = set()
+                    for line in display:
+                        stripped = line.strip()
+                        if stripped and classify_line(line) in _CHROME_CATEGORIES:
+                            snap.add(stripped)
                     _session_thinking_snapshot[key] = snap
                     await streaming.start_thinking()
 

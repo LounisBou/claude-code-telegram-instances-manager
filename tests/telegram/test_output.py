@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.telegram.output import (
+    _CHROME_CATEGORIES,
     _CONTENT_STATES,
     _find_last_prompt,
     _session_emulators,
@@ -18,7 +19,9 @@ from src.telegram.output import (
     poll_output,
 )
 from src.parsing.screen_classifier import classify_screen_state
-from src.parsing.ui_patterns import ScreenEvent, ScreenState, extract_content
+from src.parsing.ui_patterns import (
+    ScreenEvent, ScreenState, classify_line, extract_content,
+)
 
 
 class TestOutputStateFiltering:
@@ -722,9 +725,9 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # extract_content called for extraction (snapshot skips extract_content
-        # when no prompt is found on the mock display — _find_last_prompt
-        # returns None so the snapshot is empty without calling extract_content)
+        # extract_content called for extraction (snapshot uses classify_line
+        # on the mock display, not extract_content — so only 1 call expected
+        # from the IDLE fast-path extraction)
         assert len(extract_calls) >= 1
         # The "Thinking..." message should have been edited with content
         bot.edit_message_text.assert_called()
@@ -1270,20 +1273,17 @@ class TestDisplayTrimToLastPrompt:
         assert "Args:" in content
 
 
-class TestThinkingSnapshotTrim:
-    """Regression: thinking snapshot captured the FULL display including old
-    responses above the current prompt.  Common docstring patterns like
-    'Args:' and 'Returns:' from a previous fibonacci response appeared in
-    the snapshot, causing them to be incorrectly deduped from the new
-    is_palindrome response.
+class TestThinkingSnapshotChromeOnly:
+    """Regression: thinking snapshot captured content lines (Args:, Returns:,
+    code) from a previous response still visible on the pyte screen.  When
+    the next response used the same patterns, they were incorrectly deduped.
 
-    Fix: trim the thinking snapshot to the last user prompt (❯ with text),
-    matching the display trim already applied during extraction.  When no
-    prompt is found (scrolled off), use an empty snapshot.
+    Fix: snapshot only captures UI chrome lines (classify_line result in
+    _CHROME_CATEGORIES).  Content, response, and tool lines are excluded.
     """
 
-    def test_snapshot_excludes_old_response_patterns(self):
-        """Snapshot must not contain Args:/Returns: from old response."""
+    def test_snapshot_excludes_content_lines(self):
+        """Content lines from a previous response must not be in snapshot."""
         display_at_thinking = [
             "⏺ def fibonacci(n: int) -> int:",
             '      """Return the nth Fibonacci number."""',
@@ -1292,75 +1292,101 @@ class TestThinkingSnapshotTrim:
             "      Returns:",
             "          The nth Fibonacci number.",
             "",
+            "────────────────────────────────────",
             "❯ Write a palindrome function",
-            "",
-            "⏺ Thinking...",
+            "✶ Assimilating human knowledge…",
         ]
-        prompt_idx = _find_last_prompt(display_at_thinking)
-        assert prompt_idx == 7
-        trimmed = display_at_thinking[prompt_idx:]
         snap = set()
-        for line in trimmed:
+        for line in display_at_thinking:
             stripped = line.strip()
-            if stripped:
-                snap.add(stripped)
-        for line in extract_content(trimmed).split("\n"):
-            stripped = line.strip()
-            if stripped:
+            if stripped and classify_line(line) in _CHROME_CATEGORIES:
                 snap.add(stripped)
         assert "Args:" not in snap
         assert "Returns:" not in snap
-        assert "fibonacci" not in snap
-        assert any("palindrome" in s for s in snap)
+        assert "def fibonacci(n: int) -> int:" not in snap
+        assert '"""Return the nth Fibonacci number."""' not in snap
 
-    def test_snapshot_trim_preserves_dedup_of_prompt_echo(self):
-        """Snapshot must still contain the prompt text for dedup."""
+    def test_snapshot_includes_chrome_elements(self):
+        """UI chrome (separators, prompts, thinking, status) must be in snapshot."""
         display_at_thinking = [
-            "❯ Write a palindrome function that checks strings",
-            "",
-            "⏺ Thinking...",
+            "────────────────────────────────────",
+            "❯ Write a palindrome function",
+            "✶ Assimilating human knowledge…",
+            "project │ ⎇ main │ Usage: 34%",
+            "PR #5",
         ]
-        prompt_idx = _find_last_prompt(display_at_thinking)
-        assert prompt_idx == 0
-        trimmed = display_at_thinking[prompt_idx:]
         snap = set()
-        for line in trimmed:
+        for line in display_at_thinking:
             stripped = line.strip()
-            if stripped:
+            if stripped and classify_line(line) in _CHROME_CATEGORIES:
                 snap.add(stripped)
-        assert any("palindrome" in s for s in snap)
+        assert any("palindrome" in s for s in snap)  # prompt
+        assert any("────" in s for s in snap)  # separator
+        assert any("Assimilating" in s for s in snap)  # thinking star
 
-    def test_snapshot_empty_when_prompt_scrolled_off(self):
-        """Regression: when all prompts scroll off the 36-row pyte screen,
-        _find_last_prompt returns None.  The snapshot must be empty to
-        prevent old response content (Args:, Returns:) from deduping
-        identical patterns in the new response.
-        """
+    def test_snapshot_excludes_response_and_tool_lines(self):
+        """Response markers (⏺) and tool connectors (⎿) must be excluded."""
         display_at_thinking = [
+            "⏺ Here is the code:",
+            "  ⎿ file.py content here",
+            "────────────────────────────────────",
+            "❯ Next prompt",
+            "✶ Launching Skynet initiative…",
+        ]
+        snap = set()
+        for line in display_at_thinking:
+            stripped = line.strip()
+            if stripped and classify_line(line) in _CHROME_CATEGORIES:
+                snap.add(stripped)
+        assert not any("⏺" in s for s in snap)
+        assert not any("⎿" in s for s in snap)
+
+    def test_fibonacci_palindrome_regression(self):
+        """Exact regression: fibonacci Args:/Returns: must not dedup from
+        is_palindrome response when both are on the pyte screen at THINKING.
+
+        This reproduces the real scenario where _find_last_prompt found the
+        fibonacci prompt (not the is_palindrome prompt, which Claude Code
+        already cleared), causing the entire fibonacci response to land in
+        the snapshot.
+        """
+        # Simulated display at THINKING entry for is_palindrome
+        display_at_thinking = [
+            "Claude Code v2.1.39",
+            "────────────────────────────────────────",
+            "claude-instance-manager │ ⎇ main │ Usage: 34%",
+            "PR #5",
+            "❯ Write a fibonacci function",
+            "  fibonacci prompt continuation",
+            "⏺ def fibonacci(n: int) -> int:",
             '      """Return the nth Fibonacci number."""',
             "      Args:",
             "          n: The index.",
             "      Returns:",
             "          The nth Fibonacci number.",
             "      Raises:",
-            "          ValueError: If n < 0.",
+            '          ValueError: If n < 0.',
             '      """',
-            "      if n <= 0:",
-            "          return 0",
-            "      return fibonacci(n - 1) + fibonacci(n - 2)",
-            "",
-            "────────────────────────────────────",
-            "✶ Thinking...",
+            "      if n < 0:",
+            "────────────────────────────────────────",
+            "✢ Initiating singularity sequence…",
+            "███▌░░░░░░ ↻ 10:59",
         ]
-        prompt_idx = _find_last_prompt(display_at_thinking)
-        assert prompt_idx is None
-        # No prompt found → empty snapshot (same logic as output.py)
-        snap = set() if prompt_idx is None else set()
-        assert len(snap) == 0
-        # Critically: "Args:" must NOT be in snapshot, so new response
-        # with "Args:" won't get deduped
+        snap = set()
+        for line in display_at_thinking:
+            stripped = line.strip()
+            if stripped and classify_line(line) in _CHROME_CATEGORIES:
+                snap.add(stripped)
+        # These MUST NOT be in the snap
         assert "Args:" not in snap
         assert "Returns:" not in snap
+        assert "Raises:" not in snap
+        assert '"""' not in snap
+        assert "def fibonacci(n: int) -> int:" not in snap
+        # These chrome elements MUST be in the snap
+        assert any("────" in s for s in snap)
+        assert any("Initiating" in s for s in snap)
+        assert any("PR #5" in s for s in snap)
 
 
 class TestUserMessageResetsDedup:
