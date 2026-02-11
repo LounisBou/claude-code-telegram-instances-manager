@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 from src.telegram.keyboards import (
+    _format_timestamp,
     build_project_keyboard,
     build_sessions_keyboard,
     build_tool_approval_keyboard,
@@ -124,7 +125,7 @@ class TestFormatMessages:
             "exit_code": 0,
         }
         msg = format_history_entry(entry)
-        assert "my-proj" in msg
+        assert "<b>my-proj</b>" in msg
         assert "ended" in msg.lower()
 
     def test_history_entry_no_end(self):
@@ -136,8 +137,67 @@ class TestFormatMessages:
             "exit_code": None,
         }
         msg = format_history_entry(entry)
-        assert "my-proj" in msg
+        assert "<b>my-proj</b>" in msg
         assert "active" in msg.lower()
+
+    def test_history_entry_uses_html_not_markdown(self):
+        """Regression: history entry must use HTML bold, not Markdown asterisks."""
+        entry = {
+            "project": "my-proj",
+            "started_at": "2026-02-09T10:00:00.123456+00:00",
+            "ended_at": None,
+            "status": "active",
+            "exit_code": None,
+        }
+        msg = format_history_entry(entry)
+        assert "<b>my-proj</b>" in msg
+        assert "*my-proj*" not in msg
+
+    def test_history_entry_short_timestamps(self):
+        """Regression: timestamps must be short, not raw ISO with microseconds."""
+        entry = {
+            "project": "my-proj",
+            "started_at": "2026-02-09T10:02:35.958687+00:00",
+            "ended_at": "2026-02-09T11:03:45.307838+00:00",
+            "status": "ended",
+            "exit_code": None,
+        }
+        msg = format_history_entry(entry)
+        assert "2026-02-09 10:02" in msg
+        assert "2026-02-09 11:03" in msg
+        assert ".958687" not in msg
+        assert "+00:00" not in msg
+
+    def test_history_entry_escapes_html(self):
+        """Project names with special chars must be HTML-escaped."""
+        entry = {
+            "project": "my<proj>&test",
+            "started_at": "2026-02-09T10:00:00",
+            "ended_at": None,
+            "status": "active",
+            "exit_code": None,
+        }
+        msg = format_history_entry(entry)
+        assert "<b>my&lt;proj&gt;&amp;test</b>" in msg
+
+
+class TestFormatTimestamp:
+    """Tests for the _format_timestamp helper."""
+
+    def test_strips_microseconds_and_timezone(self):
+        assert _format_timestamp("2026-02-09T10:02:35.958687+00:00") == "2026-02-09 10:02"
+
+    def test_no_microseconds(self):
+        assert _format_timestamp("2026-02-09T10:02:35+00:00") == "2026-02-09 10:02"
+
+    def test_no_timezone(self):
+        assert _format_timestamp("2026-02-09T10:02:35") == "2026-02-09 10:02"
+
+    def test_z_timezone(self):
+        assert _format_timestamp("2026-02-09T10:02:35Z") == "2026-02-09 10:02"
+
+    def test_already_short(self):
+        assert _format_timestamp("2026-02-09T10:02") == "2026-02-09 10:02"
 
 
 class TestBuildToolApprovalKeyboard:

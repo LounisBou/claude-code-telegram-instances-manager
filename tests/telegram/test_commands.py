@@ -92,6 +92,35 @@ class TestHandleHistory:
         update.message.reply_text.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_history_uses_html_parse_mode(self):
+        """Regression: /history must use parse_mode=HTML, not raw text."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        db = AsyncMock()
+        db.list_sessions = AsyncMock(
+            return_value=[
+                {
+                    "project": "my-proj",
+                    "started_at": "2026-02-09T10:02:35.958687+00:00",
+                    "ended_at": None,
+                    "status": "active",
+                    "exit_code": None,
+                }
+            ]
+        )
+        context.bot_data = {"config": config, "db": db}
+        await handle_history(update, context)
+        call_kwargs = update.message.reply_text.call_args
+        assert call_kwargs.kwargs.get("parse_mode") == "HTML"
+        body = call_kwargs.args[0]
+        assert "<b>my-proj</b>" in body
+        assert "*my-proj*" not in body
+        assert ".958687" not in body
+
+    @pytest.mark.asyncio
     async def test_empty_history(self):
         update = MagicMock()
         update.effective_user.id = 111

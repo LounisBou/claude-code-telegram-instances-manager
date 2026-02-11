@@ -22,7 +22,7 @@ async def handle_history(
     """Handle the /history command by displaying recent session history.
 
     Retrieves up to 20 of the user's most recent sessions from the
-    database and formats them as a Markdown message.
+    database and formats them as an HTML message.
 
     Args:
         update: Incoming Telegram update containing the /history command.
@@ -43,7 +43,7 @@ async def handle_history(
         return
 
     lines = [format_history_entry(s) for s in sessions[:20]]
-    await update.message.reply_text("\n\n".join(lines))
+    await update.message.reply_text("\n\n".join(lines), parse_mode="HTML")
 
 
 async def handle_git(

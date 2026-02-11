@@ -142,8 +142,33 @@ def format_session_ended(project_name: str, session_id: int) -> str:
     return f"Session #{session_id} on <b>{safe_name}</b> ended."
 
 
+def _format_timestamp(raw: str) -> str:
+    """Convert a raw ISO timestamp to a short human-readable format.
+
+    Strips microseconds and timezone offset, returning ``YYYY-MM-DD HH:MM``.
+
+    Args:
+        raw: An ISO-8601 timestamp string (e.g. from the database).
+
+    Returns:
+        A short date-time string like ``2026-02-11 22:02``.
+    """
+    # Strip microseconds (.123456) and timezone (+00:00 / Z)
+    clean = raw.split(".")[0].replace("T", " ")
+    # Remove trailing timezone offset if present (e.g. +00:00)
+    if "+" in clean:
+        clean = clean.split("+")[0]
+    elif clean.endswith("Z"):
+        clean = clean[:-1]
+    # Truncate to minutes (drop :SS) only when seconds are present
+    # A time like "10:02:35" has 2 colons; "10:02" has 1 colon
+    if clean.count(":") >= 2:
+        clean = clean.rsplit(":", 1)[0]
+    return clean
+
+
 def format_history_entry(entry: dict) -> str:
-    """Format a single session history record as a Markdown text block.
+    """Format a single session history record as an HTML text block.
 
     Includes the project name, start time, optional end time, status, and
     optional exit code.
@@ -153,16 +178,18 @@ def format_history_entry(entry: dict) -> str:
             and optionally ``ended_at`` and ``exit_code``.
 
     Returns:
-        A multi-line Markdown-formatted string representing the history
-        entry.
+        A multi-line HTML-formatted string representing the history entry.
     """
+    safe_name = html.escape(entry["project"])
+    started = _format_timestamp(entry["started_at"])
     parts = [
-        f"*{entry['project']}*",
-        f"Started: {entry['started_at']}",
+        f"<b>{safe_name}</b>",
+        f"Started: {html.escape(started)}",
     ]
     if entry.get("ended_at"):
-        parts.append(f"Ended: {entry['ended_at']}")
-    parts.append(f"Status: {entry['status']}")
+        ended = _format_timestamp(entry["ended_at"])
+        parts.append(f"Ended: {html.escape(ended)}")
+    parts.append(f"Status: {html.escape(entry['status'])}")
     if entry.get("exit_code") is not None:
         parts.append(f"Exit code: {entry['exit_code']}")
     return "\n".join(parts)
