@@ -1528,6 +1528,40 @@ class TestDisplayTrimToLastPrompt:
         assert "is_palindrome" in content
         assert "Args:" in content
 
+    def test_idle_hint_prompt_does_not_truncate_response(self):
+        """Regression for issue 004: idle hint prompt causes response loss.
+
+        When Claude goes IDLE, it may display a hint like
+        '❯ Try "how does <filepath> work?"' at the bottom of the screen.
+        _find_last_prompt must select the user's input prompt (which has
+        ⏺ below it), not the idle hint (which has no ⏺ below it).
+        Without this fix, source = full[hint_idx:] would contain only
+        the hint + chrome, extract_content would return empty, and
+        "Thinking..." would stay stuck permanently.
+        """
+        display = [
+            "⏺ Previous response content",       # old response
+            "",
+            "────────────────────────────────────",
+            "❯ /nonexistent",                     # user's actual prompt
+            "",
+            "⏺ I don't have a command called /nonexistent.",  # new response
+            "",
+            "────────────────────────────────────",
+            '❯ Try "how does <filepath> work?"',  # idle hint (MUST be skipped)
+            "────────────────────────────────────",
+            "  project │ ⎇ main │ Usage: 5%",
+        ]
+        prompt_idx = _find_last_prompt(display)
+        # Must select the user prompt (index 3), NOT the idle hint (index 8)
+        assert prompt_idx == 3
+        trimmed = display[prompt_idx:]
+        content = extract_content(trimmed)
+        # Response must be extracted
+        assert "/nonexistent" in content
+        # Old response above the prompt must be excluded
+        assert "Previous response" not in content
+
 
 class TestThinkingSnapshotChromeOnly:
     """Regression: thinking snapshot captured content lines (Args:, Returns:,
