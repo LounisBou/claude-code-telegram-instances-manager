@@ -258,7 +258,10 @@ async def handle_callback_query(
             await query.answer()
             await query.edit_message_text("Updating Claude CLI...")
             result = await _run_update_command(config.claude.update_command)
-            await query.edit_message_text(f"Update result:\n{result}")
+            await query.edit_message_text(
+                f"Update result:\n<code>{html.escape(result)}</code>",
+                parse_mode="HTML",
+            )
         else:
             await query.answer()
             await query.edit_message_text("Update cancelled.")

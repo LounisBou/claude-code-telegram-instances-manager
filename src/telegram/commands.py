@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 
@@ -126,7 +127,10 @@ async def handle_update_claude(
 
     status_msg = await update.message.reply_text("Updating Claude CLI...")
     result = await _run_update_command(config.claude.update_command)
-    await status_msg.edit_text(f"Update result:\n{result}")
+    await status_msg.edit_text(
+        f"Update result:\n<code>{html.escape(result)}</code>",
+        parse_mode="HTML",
+    )
 
 
 async def handle_context(
