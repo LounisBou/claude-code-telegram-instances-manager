@@ -123,6 +123,39 @@ class TestHandleHistory:
         assert ".958687" not in body
 
     @pytest.mark.asyncio
+    async def test_history_readability(self):
+        """Regression for issue 001: /history must have header, entry limit, and visual structure."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        db = AsyncMock()
+        # 15 sessions — only first 10 should be shown
+        sessions = [
+            {
+                "id": i,
+                "project": f"proj-{i}",
+                "started_at": f"2026-02-09T10:0{i % 10}:00",
+                "ended_at": None,
+                "status": "active" if i <= 2 else "ended",
+                "exit_code": None if i <= 2 else 0,
+            }
+            for i in range(1, 16)
+        ]
+        db.list_sessions = AsyncMock(return_value=sessions)
+        context.bot_data = {"config": config, "db": db}
+        await handle_history(update, context)
+        body = update.message.reply_text.call_args.args[0]
+        # Header with count
+        assert "<b>Session history</b> (last 10):" in body
+        # Only 10 entries shown (not 15)
+        assert "proj-11" not in body
+        assert "proj-10" in body
+        # Double newline separation between entries
+        assert "\n\n" in body
+
+    @pytest.mark.asyncio
     async def test_empty_history(self):
         update = MagicMock()
         update.effective_user.id = 111
