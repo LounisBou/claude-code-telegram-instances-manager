@@ -536,6 +536,42 @@ class TestNoSessionMessagesIncludeStartHint:
         assert "/start" in call_text, f"text_message no-session message missing /start hint: {call_text!r}"
 
 
+class TestDownloadSessionCheckBeforeUsage:
+    """Regression for issue 008: /download must check for active session before showing usage."""
+
+    @pytest.mark.asyncio
+    async def test_no_session_returns_start_hint_not_usage(self):
+        """Without an active session, /download (no args) should say 'no active session', not show usage."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text
+        assert "usage" not in call_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_session_with_path_returns_start_hint(self):
+        """Without an active session, /download /some/file should also say 'no active session'."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download /tmp/test.txt"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text
+        assert "no active" in call_text.lower()
+
+
 class TestDownloadUsageFormatting:
     """Regression for issue 007: /download usage path must not be parsed as Telegram commands."""
 
