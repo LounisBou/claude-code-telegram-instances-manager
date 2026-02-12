@@ -251,10 +251,10 @@ def mark_tool_acted(user_id: int, session_id: int) -> None:
 
 def is_tool_request_pending(user_id: int, session_id: int) -> bool:
     """Check whether the session is currently showing a tool approval menu."""
-    return (
-        _session_prev_state.get((user_id, session_id))
-        == ScreenState.TOOL_REQUEST
-    )
+    key = (user_id, session_id)
+    if _session_tool_acted.get(key):
+        return False
+    return _session_prev_state.get(key) == ScreenState.TOOL_REQUEST
 
 
 def _find_last_prompt(display: list[str]) -> int | None:
