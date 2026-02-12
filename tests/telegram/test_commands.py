@@ -534,6 +534,30 @@ class TestNoSessionMessagesIncludeStartHint:
         assert "/start" in call_text, f"text_message no-session message missing /start hint: {call_text!r}"
 
 
+class TestDownloadUsageFormatting:
+    """Regression for issue 007: /download usage path must not be parsed as Telegram commands."""
+
+    @pytest.mark.asyncio
+    async def test_usage_text_uses_html_code_tags(self):
+        """The example path in usage must be wrapped in <code> to prevent command parsing."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        fh = MagicMock()
+        context.bot_data = {"config": config, "file_handler": fh}
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        call_kwargs = update.message.reply_text.call_args[1]
+        # Must use HTML parse mode
+        assert call_kwargs.get("parse_mode") == "HTML"
+        # Path must be inside <code> tags so Telegram doesn't parse slashes as commands
+        assert "<code>" in call_text
+        assert "</code>" in call_text
+
+
 class TestRunUpdateCommand:
     @pytest.mark.asyncio
     async def test_runs_command(self):
