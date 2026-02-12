@@ -2308,3 +2308,120 @@ class TestPollOutputExceptionResilience:
                 await poll_output(bot, sm)
 
         self._cleanup_session(key)
+
+
+class TestPollOutputAuthRequired:
+    """Regression tests for issue 012: auth screen must notify user and kill session."""
+
+    def _cleanup_session(self, key):
+        _session_emulators.pop(key, None)
+        _session_streaming.pop(key, None)
+        _session_prev_state.pop(key, None)
+        _session_sent_lines.pop(key, None)
+        _session_thinking_snapshot.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_auth_screen_sends_notification_and_kills_session(self):
+        """Regression test for issue 012: when Claude Code shows an OAuth login
+        screen, the bot must send a notification to the user and kill the session
+        instead of silently hanging at 'Thinking...' forever.
+        """
+        key = (790, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"auth-screen-data", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {790: {1: session}}
+        sm.kill_session = AsyncMock()
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=790, edit_rate_limit=3)
+        _session_prev_state[key] = ScreenState.STARTUP
+        _session_sent_lines[key] = set()
+
+        auth_event = ScreenEvent(
+            state=ScreenState.AUTH_REQUIRED,
+            payload={"url": "https://claude.ai/oauth/authorize?code=true"},
+            raw_lines=[],
+        )
+        with (
+            patch(
+                "src.telegram.output.asyncio.sleep",
+                side_effect=[None, asyncio.CancelledError],
+            ),
+            patch(
+                "src.telegram.output.classify_screen_state",
+                return_value=auth_event,
+            ),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # Must notify user about auth requirement
+        bot.send_message.assert_called_once()
+        call_kwargs = bot.send_message.call_args.kwargs
+        assert "authentication" in call_kwargs["text"].lower()
+        assert "claude" in call_kwargs["text"].lower()
+
+        # Must kill the session
+        sm.kill_session.assert_awaited_once_with(790, 1)
+
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
+    async def test_auth_notification_sent_only_once(self):
+        """AUTH_REQUIRED notification must fire only on the first detection,
+        not on every poll cycle.
+        """
+        key = (791, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"data1", b"data2", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {791: {1: session}}
+        sm.kill_session = AsyncMock()
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=791, edit_rate_limit=3)
+        _session_prev_state[key] = ScreenState.STARTUP
+        _session_sent_lines[key] = set()
+
+        auth_event = ScreenEvent(
+            state=ScreenState.AUTH_REQUIRED,
+            payload={"url": "https://claude.ai/oauth/authorize?code=true"},
+            raw_lines=[],
+        )
+        with (
+            patch(
+                "src.telegram.output.asyncio.sleep",
+                side_effect=[None, None, asyncio.CancelledError],
+            ),
+            patch(
+                "src.telegram.output.classify_screen_state",
+                return_value=auth_event,
+            ),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # Session is killed on first detection, so the second cycle
+        # should not reach it (it's removed from sessions).
+        # The notification should be sent exactly once.
+        assert bot.send_message.call_count == 1
+        sm.kill_session.assert_awaited_once_with(791, 1)
+
+        self._cleanup_session(key)

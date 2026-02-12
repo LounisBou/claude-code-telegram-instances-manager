@@ -180,3 +180,30 @@ REAL_ERROR_SCREEN = [
     "────────────────────────────────────────────────────────────",
     "  claude-instance-manager │ ⎇ main │ Usage: 7% ▋░░░░░░░░░",
 ]
+
+# Real AUTH_REQUIRED screen (OAuth login prompt — captured from PTY)
+REAL_AUTH_SCREEN = [
+    "Welcome to Claude Code v2.1.39",
+    "…………………………………………………………………………………………………………………………………………………………",
+    "     *                                       █████▓▓░",
+    "                                 *         ███▓░     ░░",
+    "            ░░░░░░                        ███▓░",
+    "    ░░░   ░░░░░░░░░░                      ███▓░",
+    "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓",
+    "                                             ░▓▓███▓▓░",
+    " *                                 ░░░░",
+    "                                 ░░░░░░░░",
+    "                               ░░░░░░░░░░░░░░░░",
+    "       █████████                                        *",
+    "      ██▄█████▄██                        *",
+    "       █████████      *",
+    "…………………█ █   █ █………………………………………………………………………………………………………………",
+    " Browser didn't open? Use the url below to sign in (c to copy)",
+    "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-59",
+    "44d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Fo",
+    "auth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainferenc",
+    "e+user%3Asessions%3Aclaude_code+user%3Amcp_servers&code_challenge=RhdVCCckU39dk3",
+    "KQT4iXsBHHgRbBDWI9tXJb4NW2dVk&code_challenge_method=S256&state=8QGJojlAQLBWdoLUZ",
+    "o_k2lSWq2HuQGuISNnbsMcr8Oc",
+    " Paste code here if prompted >",
+]

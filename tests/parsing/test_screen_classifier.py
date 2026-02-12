@@ -1,6 +1,7 @@
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import ScreenEvent, ScreenState
 from tests.parsing.conftest import (
+    REAL_AUTH_SCREEN,
     REAL_BACKGROUND_SCREEN,
     REAL_ERROR_SCREEN,
     REAL_IDLE_SCREEN,
@@ -288,3 +289,50 @@ class TestClassifyScreenStateLogging:
             classify_screen_state(lines)
         trace_records = [r for r in caplog.records if r.levelno == TRACE]
         assert any("non_empty=5" in r.message for r in trace_records)
+
+
+class TestAuthScreenDetection:
+    """Regression tests for issue 012: auth/login screen must be detected."""
+
+    def test_oauth_login_screen_detected(self):
+        """Real OAuth login screen (captured from PTY) must be AUTH_REQUIRED."""
+        event = classify_screen_state(REAL_AUTH_SCREEN)
+        assert event.state == ScreenState.AUTH_REQUIRED
+        assert "url" in event.payload
+        assert "claude.ai/oauth/authorize" in event.payload["url"]
+
+    def test_minimal_auth_screen_with_sign_in_and_url(self):
+        """Minimal auth screen with 'sign in' text and OAuth URL."""
+        lines = [
+            "Use the url below to sign in",
+            "https://claude.ai/oauth/authorize?code=true&client_id=abc",
+        ]
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.AUTH_REQUIRED
+
+    def test_auth_screen_with_paste_code_prompt(self):
+        """Auth screen with 'Paste code here' prompt and OAuth URL."""
+        lines = [
+            "",
+            "https://claude.ai/oauth/authorize?client_id=xyz",
+            " Paste code here if prompted >",
+        ]
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.AUTH_REQUIRED
+
+    def test_no_auth_without_oauth_url(self):
+        """Sign-in text without an OAuth URL must NOT trigger AUTH_REQUIRED."""
+        lines = [
+            "Please sign in to continue",
+            "Some other content",
+        ]
+        event = classify_screen_state(lines)
+        assert event.state != ScreenState.AUTH_REQUIRED
+
+    def test_no_auth_without_sign_in_text(self):
+        """OAuth URL alone without sign-in/paste-code text is not AUTH_REQUIRED."""
+        lines = [
+            "Visit https://claude.ai/oauth/authorize?code=true",
+        ]
+        event = classify_screen_state(lines)
+        assert event.state != ScreenState.AUTH_REQUIRED
