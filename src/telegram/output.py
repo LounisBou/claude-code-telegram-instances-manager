@@ -59,6 +59,65 @@ def _strip_marker_from_spans(
     return result
 
 
+def _lstrip_n_chars(spans: list[CharSpan], n: int) -> list[CharSpan]:
+    """Strip *n* leading characters from the start of a span list.
+
+    Removes exactly *n* characters from the beginning of the combined
+    span text, splitting spans if necessary.  Used by
+    :func:`_dedent_attr_lines` to remove common terminal margin.
+
+    Args:
+        spans: Attributed spans for one line.
+        n: Number of leading characters to strip.
+
+    Returns:
+        New span list with *n* characters removed from the front.
+    """
+    remaining = n
+    result: list[CharSpan] = []
+    for span in spans:
+        if remaining <= 0:
+            result.append(span)
+            continue
+        if len(span.text) <= remaining:
+            remaining -= len(span.text)
+            continue
+        result.append(CharSpan(
+            text=span.text[remaining:],
+            fg=span.fg, bold=span.bold, italic=span.italic,
+        ))
+        remaining = 0
+    return result
+
+
+def _dedent_attr_lines(
+    lines: list[list[CharSpan]],
+) -> list[list[CharSpan]]:
+    """Remove common leading whitespace from attributed lines.
+
+    Computes the minimum indent (leading spaces) across all non-empty
+    lines, then strips that many characters from each line's spans.
+    This removes the 2-space terminal margin that Claude Code adds
+    to content below the ``⏺`` marker.
+
+    Args:
+        lines: Filtered attributed span lists (one per line).
+
+    Returns:
+        Dedented span lists with common leading whitespace removed.
+    """
+    min_indent = float("inf")
+    for spans in lines:
+        text = "".join(s.text for s in spans)
+        lstripped = text.lstrip()
+        if lstripped:
+            indent = len(text) - len(lstripped)
+            min_indent = min(min_indent, indent)
+    if min_indent in (0, float("inf")):
+        return lines
+    return [_lstrip_n_chars(spans, min_indent) for spans in lines]
+
+
 def _filter_response_attr(
     source: list[str],
     attr: list[list[CharSpan]],
@@ -70,6 +129,10 @@ def _filter_response_attr(
     separators, etc.) and returns only the attributed lines that correspond
     to Claude's actual response content.
 
+    After filtering, applies :func:`_dedent_attr_lines` to remove the
+    common terminal margin (typically 2 spaces from the ``⏺`` marker
+    column).
+
     Mirrors the filtering logic of
     :func:`~src.parsing.ui_patterns.extract_content` but operates on
     attributed spans instead of plain text.
@@ -79,7 +142,7 @@ def _filter_response_attr(
         attr: Attributed span lists (one per line, same length as *source*).
 
     Returns:
-        Filtered list of attributed span lists for response content only.
+        Filtered and dedented list of attributed span lists.
     """
     result: list[list[CharSpan]] = []
     in_prompt = False
@@ -104,7 +167,7 @@ def _filter_response_attr(
             result.append(_strip_marker_from_spans(spans, "⏺"))
         elif cls == "tool_connector":
             result.append(_strip_marker_from_spans(spans, "⎿"))
-    return result
+    return _dedent_attr_lines(result)
 
 
 # States that produce user-visible output sent to Telegram.

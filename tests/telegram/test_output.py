@@ -8,8 +8,10 @@ import pytest
 from src.telegram.output import (
     _CHROME_CATEGORIES,
     _CONTENT_STATES,
+    _dedent_attr_lines,
     _filter_response_attr,
     _find_last_prompt,
+    _lstrip_n_chars,
     _session_emulators,
     _session_prev_state,
     _session_sent_lines,
@@ -1766,3 +1768,133 @@ class TestFilterResponseAttr:
         filtered = _filter_response_attr(source, attr)
         assert len(filtered) == 1
         assert "Hello world" in "".join(s.text for s in filtered[0])
+
+    def test_dedents_terminal_margin(self):
+        """2-space terminal margin from ⏺ column is stripped from all lines.
+
+        Real Claude Code renders content with a 2-space left margin:
+        ``  ⏺ text`` for marker lines, ``  content`` for continuation.
+        After marker stripping both have a residual 2-space indent that
+        _filter_response_attr must remove via dedent.
+        """
+        source = [
+            "  ⏺ Here is the code:",
+            "      def hello():",
+            "          print('hi')",
+            "  How it works:",
+            "  - It prints hi",
+        ]
+        attr = [
+            [CharSpan(text="  ⏺ ", fg="default"), CharSpan(text="Here is the code:", fg="default")],
+            [CharSpan(text="      ", fg="default"), CharSpan(text="def", fg="blue"), CharSpan(text=" hello():", fg="default")],
+            [CharSpan(text="          ", fg="default"), CharSpan(text="print", fg="cyan"), CharSpan(text="('hi')", fg="default")],
+            [CharSpan(text="  How it works:", fg="default")],
+            [CharSpan(text="  - It prints hi", fg="default")],
+        ]
+        filtered = _filter_response_attr(source, attr)
+        texts = ["".join(s.text for s in line) for line in filtered]
+        # 2-space margin should be stripped from all lines
+        assert texts[0] == "Here is the code:"
+        assert texts[1] == "    def hello():"
+        assert texts[2] == "        print('hi')"
+        assert texts[3] == "How it works:"
+        assert texts[4] == "- It prints hi"
+
+
+class TestLstripNChars:
+    """Tests for _lstrip_n_chars: strip N leading chars from span list."""
+
+    def test_strip_full_span(self):
+        """Span shorter than N is entirely consumed."""
+        spans = [
+            CharSpan(text="  ", fg="default"),
+            CharSpan(text="hello", fg="blue"),
+        ]
+        result = _lstrip_n_chars(spans, 2)
+        assert len(result) == 1
+        assert result[0].text == "hello"
+
+    def test_strip_partial_span(self):
+        """Span longer than N loses first N characters."""
+        spans = [CharSpan(text="    code", fg="default")]
+        result = _lstrip_n_chars(spans, 2)
+        assert len(result) == 1
+        assert result[0].text == "  code"
+
+    def test_strip_zero(self):
+        """Stripping 0 characters returns all spans unchanged."""
+        spans = [CharSpan(text="text", fg="default")]
+        result = _lstrip_n_chars(spans, 0)
+        assert len(result) == 1
+        assert result[0].text == "text"
+
+    def test_strip_across_spans(self):
+        """Strip that spans multiple CharSpans."""
+        spans = [
+            CharSpan(text=" ", fg="default"),
+            CharSpan(text="  ", fg="dim"),
+            CharSpan(text="content", fg="blue"),
+        ]
+        # Strip 3 chars across two spans
+        result = _lstrip_n_chars(spans, 3)
+        assert len(result) == 1
+        assert result[0].text == "content"
+
+    def test_strip_preserves_attributes(self):
+        """Partially stripped span retains its ANSI attributes."""
+        spans = [CharSpan(text="  bold", fg="red", bold=True)]
+        result = _lstrip_n_chars(spans, 2)
+        assert result[0].text == "bold"
+        assert result[0].fg == "red"
+        assert result[0].bold is True
+
+
+class TestDedentAttrLines:
+    """Tests for _dedent_attr_lines: remove common leading whitespace from spans."""
+
+    def test_strips_common_indent(self):
+        """All lines with 2-space indent lose 2 leading chars."""
+        lines = [
+            [CharSpan(text="  hello", fg="default")],
+            [CharSpan(text="  world", fg="default")],
+        ]
+        result = _dedent_attr_lines(lines)
+        texts = ["".join(s.text for s in line) for line in result]
+        assert texts == ["hello", "world"]
+
+    def test_preserves_relative_indent(self):
+        """Lines with extra indent beyond the common minimum keep the excess."""
+        lines = [
+            [CharSpan(text="  code:", fg="default")],
+            [CharSpan(text="      indented", fg="default")],
+        ]
+        result = _dedent_attr_lines(lines)
+        texts = ["".join(s.text for s in line) for line in result]
+        assert texts[0] == "code:"
+        assert texts[1] == "    indented"
+
+    def test_no_common_indent(self):
+        """Lines with no common indent are returned unchanged."""
+        lines = [
+            [CharSpan(text="no indent", fg="default")],
+            [CharSpan(text="  has indent", fg="default")],
+        ]
+        result = _dedent_attr_lines(lines)
+        texts = ["".join(s.text for s in line) for line in result]
+        assert texts == ["no indent", "  has indent"]
+
+    def test_empty_lines_skipped(self):
+        """Empty lines do not affect min indent calculation."""
+        lines = [
+            [CharSpan(text="  text", fg="default")],
+            [],
+            [CharSpan(text="  more", fg="default")],
+        ]
+        result = _dedent_attr_lines(lines)
+        texts = ["".join(s.text for s in line) for line in result]
+        assert texts[0] == "text"
+        assert texts[2] == "more"
+
+    def test_empty_input(self):
+        """Empty list returns empty list."""
+        assert _dedent_attr_lines([]) == []
