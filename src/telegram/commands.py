@@ -124,8 +124,9 @@ async def handle_update_claude(
         )
         return
 
+    status_msg = await update.message.reply_text("Updating Claude CLI...")
     result = await _run_update_command(config.claude.update_command)
-    await update.message.reply_text(f"Update result:\n{result}")
+    await status_msg.edit_text(f"Update result:\n{result}")
 
 
 async def handle_context(

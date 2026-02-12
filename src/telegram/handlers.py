@@ -255,8 +255,9 @@ async def handle_callback_query(
     elif data.startswith("update:"):
         action = data[len("update:"):]
         if action == "confirm":
-            result = await _run_update_command(config.claude.update_command)
             await query.answer()
+            await query.edit_message_text("Updating Claude CLI...")
+            result = await _run_update_command(config.claude.update_command)
             await query.edit_message_text(f"Update result:\n{result}")
         else:
             await query.answer()
