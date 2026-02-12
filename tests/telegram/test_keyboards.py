@@ -118,6 +118,7 @@ class TestFormatMessages:
 
     def test_history_entry(self):
         entry = {
+            "id": 3,
             "project": "my-proj",
             "started_at": "2026-02-09T10:00:00",
             "ended_at": "2026-02-09T11:00:00",
@@ -125,11 +126,13 @@ class TestFormatMessages:
             "exit_code": 0,
         }
         msg = format_history_entry(entry)
-        assert "<b>my-proj</b>" in msg
+        assert "⚪" in msg
+        assert "<b>#3 my-proj</b>" in msg
         assert "ended" in msg.lower()
 
     def test_history_entry_no_end(self):
         entry = {
+            "id": 5,
             "project": "my-proj",
             "started_at": "2026-02-09T10:00:00",
             "ended_at": None,
@@ -137,12 +140,14 @@ class TestFormatMessages:
             "exit_code": None,
         }
         msg = format_history_entry(entry)
-        assert "<b>my-proj</b>" in msg
+        assert "🟢" in msg
+        assert "<b>#5 my-proj</b>" in msg
         assert "active" in msg.lower()
 
     def test_history_entry_uses_html_not_markdown(self):
         """Regression: history entry must use HTML bold, not Markdown asterisks."""
         entry = {
+            "id": 1,
             "project": "my-proj",
             "started_at": "2026-02-09T10:00:00.123456+00:00",
             "ended_at": None,
@@ -150,7 +155,7 @@ class TestFormatMessages:
             "exit_code": None,
         }
         msg = format_history_entry(entry)
-        assert "<b>my-proj</b>" in msg
+        assert "<b>#1 my-proj</b>" in msg
         assert "*my-proj*" not in msg
 
     def test_history_entry_short_timestamps(self):
@@ -171,6 +176,7 @@ class TestFormatMessages:
     def test_history_entry_escapes_html(self):
         """Project names with special chars must be HTML-escaped."""
         entry = {
+            "id": 2,
             "project": "my<proj>&test",
             "started_at": "2026-02-09T10:00:00",
             "ended_at": None,
@@ -178,7 +184,7 @@ class TestFormatMessages:
             "exit_code": None,
         }
         msg = format_history_entry(entry)
-        assert "<b>my&lt;proj&gt;&amp;test</b>" in msg
+        assert "<b>#2 my&lt;proj&gt;&amp;test</b>" in msg
 
 
 class TestFormatTimestamp:

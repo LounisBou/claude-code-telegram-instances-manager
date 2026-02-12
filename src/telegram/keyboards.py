@@ -167,31 +167,36 @@ def _format_timestamp(raw: str) -> str:
     return clean
 
 
+_STATUS_EMOJI = {"active": "🟢", "ended": "⚪", "lost": "🟡"}
+
+
 def format_history_entry(entry: dict) -> str:
     """Format a single session history record as an HTML text block.
 
-    Includes the project name, start time, optional end time, status, and
-    optional exit code.
+    Includes session ID, status emoji, project name, start/end times,
+    status, and optional exit code.
 
     Args:
-        entry: A dict with keys ``project``, ``started_at``, ``status``,
-            and optionally ``ended_at`` and ``exit_code``.
+        entry: A dict with keys ``id``, ``project``, ``started_at``,
+            ``status``, and optionally ``ended_at`` and ``exit_code``.
 
     Returns:
         A multi-line HTML-formatted string representing the history entry.
     """
     safe_name = html.escape(entry["project"])
     started = _format_timestamp(entry["started_at"])
+    emoji = _STATUS_EMOJI.get(entry["status"], "⚪")
+    sid = entry.get("id", "?")
     parts = [
-        f"<b>{safe_name}</b>",
-        f"Started: {html.escape(started)}",
+        f"{emoji} <b>#{sid} {safe_name}</b>",
+        f"  Started: {html.escape(started)}",
     ]
     if entry.get("ended_at"):
         ended = _format_timestamp(entry["ended_at"])
-        parts.append(f"Ended: {html.escape(ended)}")
-    parts.append(f"Status: {html.escape(entry['status'])}")
+        parts.append(f"  Ended: {html.escape(ended)}")
+    parts.append(f"  Status: {html.escape(entry['status'])}")
     if entry.get("exit_code") is not None:
-        parts.append(f"Exit code: {entry['exit_code']}")
+        parts.append(f"  Exit code: {entry['exit_code']}")
     return "\n".join(parts)
 
 

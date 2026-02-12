@@ -42,8 +42,11 @@ async def handle_history(
         await update.message.reply_text("No session history.")
         return
 
-    lines = [format_history_entry(s) for s in sessions[:20]]
-    await update.message.reply_text("\n\n".join(lines), parse_mode="HTML")
+    entries = [format_history_entry(s) for s in sessions[:10]]
+    header = f"<b>Session history</b> (last {len(entries)}):\n"
+    await update.message.reply_text(
+        header + "\n\n".join(entries), parse_mode="HTML"
+    )
 
 
 async def handle_git(
