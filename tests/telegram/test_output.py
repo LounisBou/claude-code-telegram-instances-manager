@@ -2628,3 +2628,20 @@ class TestIsToolRequestPending:
         key = (902, 99)
         _session_prev_state.pop(key, None)
         assert is_tool_request_pending(902, 99) is False
+
+    def test_returns_false_after_tool_acted(self):
+        """Regression for issue 017: after Allow/Deny, pending must be False even if prev_state still TOOL_REQUEST."""
+        key = (903, 1)
+        _session_prev_state[key] = ScreenState.TOOL_REQUEST
+        _session_tool_acted[key] = True
+        assert is_tool_request_pending(903, 1) is False
+        _session_prev_state.pop(key, None)
+        _session_tool_acted.pop(key, None)
+
+    def test_returns_true_when_tool_request_and_not_acted(self):
+        """TOOL_REQUEST with no tool_acted flag should still return True."""
+        key = (904, 1)
+        _session_prev_state[key] = ScreenState.TOOL_REQUEST
+        _session_tool_acted.pop(key, None)
+        assert is_tool_request_pending(904, 1) is True
+        _session_prev_state.pop(key, None)
