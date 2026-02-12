@@ -179,7 +179,9 @@ class TestContentDedup:
         new_lines = []
         for line in content.split("\n"):
             stripped = line.strip()
-            if stripped and stripped not in sent:
+            if not stripped:
+                new_lines.append(line)
+            elif stripped not in sent:
                 new_lines.append(line)
         for line in content.split("\n"):
             stripped = line.strip()
@@ -272,6 +274,23 @@ class TestContentDedup:
         assert "return True" not in result
         assert "def is_prime(n):" in result
         assert "if n < 2:" in result
+
+    def test_blank_lines_preserved_between_paragraphs(self):
+        """Regression: blank lines between paragraphs must survive dedup."""
+        content = "First paragraph\n\nSecond paragraph"
+        result, sent = self._run_dedup(content, set())
+        assert "First paragraph" in result
+        assert "Second paragraph" in result
+        # The blank line separator must be preserved
+        assert "\n\n" in result or result.count("\n") >= 2
+
+    def test_blank_lines_preserved_after_partial_dedup(self):
+        """Blank lines must survive even when some lines are deduped."""
+        sent = {"First paragraph"}
+        content = "First paragraph\n\nSecond paragraph"
+        result, sent = self._run_dedup(content, sent)
+        assert "First paragraph" not in result
+        assert "Second paragraph" in result
 
 
 class TestDedupSetClearing:

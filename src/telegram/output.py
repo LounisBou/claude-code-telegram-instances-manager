@@ -519,7 +519,9 @@ async def poll_output(
                         new_lines = []
                         for line in content.split("\n"):
                             stripped = line.strip()
-                            if stripped and stripped not in sent and stripped not in snap:
+                            if not stripped:
+                                new_lines.append(line)
+                            elif stripped not in sent and stripped not in snap:
                                 new_lines.append(line)
                         for line in content.split("\n"):
                             stripped = line.strip()
