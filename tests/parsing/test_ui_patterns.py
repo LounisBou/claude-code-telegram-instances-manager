@@ -156,6 +156,22 @@ class TestClassifyLine:
         assert classify_line("           Claude Code v2.1.37") == "startup"
         assert classify_line("╭─── Claude Code v2.1.37 ─────────╮") == "startup"
 
+    def test_extra_status_files(self):
+        """Regression for issue 003: extra status lines with file counts."""
+        assert classify_line("4 files +0 -0 · PR #5") == "status_bar"
+        assert classify_line("1 file +194 -192") == "status_bar"
+        assert classify_line("12 files +50 -30") == "status_bar"
+
+    def test_extra_status_bash_and_agents(self):
+        """Regression for issue 003: extra status lines with bash/agent counts."""
+        assert classify_line("1 bash · 1 file +194 -192") == "status_bar"
+        assert classify_line("4 local agents · 1 file +194 -192") == "status_bar"
+
+    def test_extra_status_not_prose(self):
+        """Extra status patterns must not false-positive on regular prose."""
+        assert classify_line("I changed 4 files in this PR") == "content"
+        assert classify_line("The bash command ran successfully") == "content"
+
     def test_content(self):
         assert classify_line("Hello, this is a response from Claude") == "content"
         assert classify_line("4") == "content"
@@ -276,6 +292,19 @@ class TestExtractContent:
         assert "my-project" not in result
         assert "⏺" not in result
         assert "⎿" not in result
+
+    def test_filters_extra_status_lines(self):
+        """Regression for issue 003: extra status bar lines must be filtered."""
+        lines = [
+            "⏺ Done. Created /tmp/test.txt with the content.",
+            "────────────────────────────────",
+            "  my-project │ ⎇ main │ Usage: 7%",
+            "4 files +0 -0 · PR #5",
+        ]
+        result = extract_content(lines)
+        assert "Done. Created /tmp/test.txt" in result
+        assert "4 files" not in result
+        assert "PR #5" not in result
 
     def test_preserves_code_indentation(self):
         """Regression: Python code indentation must be preserved, not stripped."""
