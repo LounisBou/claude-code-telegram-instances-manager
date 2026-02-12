@@ -743,6 +743,58 @@ class TestSpawnErrorReporting:
             mock_git.assert_not_called()
 
 
+class TestUnknownCommandBlockedDuringToolApproval:
+    """Regression tests for issue 016: unknown commands blocked during tool approval."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_command_blocked_when_tool_request_pending(self):
+        """Unknown /command must not forward to PTY when tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/status"
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.handlers.is_tool_request_pending", return_value=True
+        ):
+            await handle_unknown_command(update, context)
+        session.process.submit.assert_not_called()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "tool approval" in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_unknown_command_forwarded_when_no_tool_request(self):
+        """Unknown /command forwards normally when no tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/status"
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.handlers.is_tool_request_pending", return_value=False
+        ):
+            await handle_unknown_command(update, context)
+        session.process.submit.assert_called_once_with("/status")
+
+
 class TestHandleUnknownCommand:
     """Regression: unknown /commands must either forward to session or show help."""
 

@@ -547,6 +547,82 @@ class TestHandleFileUpload:
         update.message.reply_text.assert_not_called()
 
 
+class TestCommandsBlockedDuringToolApproval:
+    """Regression tests for issue 016: PTY-forwarding commands blocked during tool approval."""
+
+    @pytest.mark.asyncio
+    async def test_context_blocked_when_tool_request_pending(self):
+        """'/context' must not forward to PTY when tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.commands.is_tool_request_pending", return_value=True
+        ):
+            await handle_context(update, context)
+        session.process.submit.assert_not_called()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "tool approval" in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_context_forwarded_when_no_tool_request(self):
+        """'/context' forwards normally when no tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.commands.is_tool_request_pending", return_value=False
+        ):
+            await handle_context(update, context)
+        session.process.submit.assert_called_once_with("/context")
+
+    @pytest.mark.asyncio
+    async def test_file_upload_blocked_when_tool_request_pending(self):
+        """File upload must not forward to PTY when tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        update.message.document = MagicMock(file_id="abc", file_name="test.py")
+        update.message.photo = None
+        session = MagicMock()
+        session.session_id = 1
+        session.process.write = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.commands.is_tool_request_pending", return_value=True
+        ):
+            await handle_file_upload(update, context)
+        session.process.write.assert_not_called()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "tool approval" in reply.lower()
+
+
 class TestNoSessionMessagesIncludeStartHint:
     """Regression for issue 005: all no-session messages must include /start hint."""
 
