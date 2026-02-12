@@ -1364,15 +1364,20 @@ class TestFindLastPrompt:
     """Unit tests for _find_last_prompt helper."""
 
     def test_finds_prompt_with_text(self):
-        display = ["some content", "❯ Write a function", "more content"]
+        display = [
+            "some content",
+            "❯ Write a function",
+            "⏺ Here is the function:",
+            "more content",
+        ]
         assert _find_last_prompt(display) == 1
 
     def test_returns_last_prompt_when_multiple(self):
         display = [
             "❯ First prompt text",
-            "response",
+            "⏺ First response",
             "❯ Second prompt text",
-            "more response",
+            "⏺ Second response",
         ]
         assert _find_last_prompt(display) == 2
 
@@ -1383,8 +1388,26 @@ class TestFindLastPrompt:
 
     def test_finds_short_user_prompt(self):
         """Short user prompts like '❯ hi' (len 4) must be found."""
-        display = ["❯", "content", "❯ hi", "more"]
+        display = ["❯", "content", "❯ hi", "⏺ Hello!", "more"]
         assert _find_last_prompt(display) == 2
+
+    def test_skips_idle_hint_prompt(self):
+        """Idle hint prompt at screen bottom must be skipped.
+
+        Regression for issue 004: ❯ Try "how does <filepath> work?"
+        appears below the response and has no ⏺ below it.  Selecting
+        it would truncate the actual response content above.
+        """
+        display = [
+            "❯ /nonexistent",
+            "⏺ I don't recognize that command.",
+            "────────────────────────────────────",
+            '❯ Try "how does <filepath> work?"',
+            "────────────────────────────────────",
+            "  project │ ⎇ main │ Usage: 5%",
+        ]
+        # Must select the user prompt (index 0), NOT the idle hint (index 3)
+        assert _find_last_prompt(display) == 0
 
     def test_finds_emoji_only_prompt(self):
         """Regression: emoji-only prompt '❯ 🤖💬🔥' (len 5) was incorrectly

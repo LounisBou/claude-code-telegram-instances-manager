@@ -244,22 +244,36 @@ def _find_last_prompt(display: list[str]) -> int | None:
     """Find index of the last user prompt line on the display.
 
     Looks for ``❯`` lines with text longer than 2 chars (to skip bare
-    prompts that are just the cursor marker ``❯``).  The previous
-    threshold of 5 incorrectly skipped short user inputs like a
-    3-emoji message (``❯ 🤖💬🔥`` = 5 chars, which failed ``> 5``).
+    prompts that are just the cursor marker ``❯``), then validates that
+    response content (a ``⏺`` marker) exists below the prompt.  This
+    prevents selecting the idle hint prompt (e.g.
+    ``❯ Try "how does <filepath> work?"``) which appears below the
+    response at the bottom of the screen.
+
+    Without the ``⏺``-below check, the idle hint would be selected as
+    the source boundary for fast THINKING→IDLE extraction, truncating
+    the actual response content above it and leaving "Thinking..." stuck.
 
     Args:
         display: Terminal display lines from the emulator.
 
     Returns:
-        Line index of the last prompt, or ``None`` if no prompt is visible
-        (e.g. it scrolled off the 36-row pyte screen).
+        Line index of the last prompt with response content below it,
+        or ``None`` if no qualifying prompt is visible (e.g. it scrolled
+        off the 36-row pyte screen).
     """
     result = None
     for i, line in enumerate(display):
         s = line.strip()
         if s.startswith("❯") and len(s) > 2:
-            result = i
+            # Only accept if response content (⏺) appears below this
+            # prompt.  The idle hint prompt at the bottom of the screen
+            # has no ⏺ below it — selecting it would exclude the
+            # actual response content that sits above.
+            if any(
+                dl.strip().startswith("⏺") for dl in display[i + 1:]
+            ):
+                result = i
     return result
 
 
