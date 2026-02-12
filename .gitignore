@@ -1,7 +1,8 @@
 # Version documentation of this project
 !docs/
 !docs/**
-
+.claude/
+.claude/**
 config.yaml
 data/
 __pycache__/
