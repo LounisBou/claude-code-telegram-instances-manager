@@ -292,6 +292,60 @@ class TestUpdateClaudeImmediateFeedback:
             assert "OK: updated" in edited_text
 
 
+class TestUpdateClaudeResultFormatting:
+    """Regression test for issue 010: /update_claude result paths as command links."""
+
+    @pytest.mark.asyncio
+    async def test_update_result_wrapped_in_code_tags(self):
+        """Update result containing file paths must be wrapped in <code> tags."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = MagicMock()
+        config = MagicMock(
+            telegram=MagicMock(authorized_users=[111]),
+            claude=MagicMock(update_command="brew upgrade claude-code"),
+        )
+        sm = MagicMock(has_active_sessions=MagicMock(return_value=False))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch(
+            "src.telegram.commands._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = (
+                "FAILED (exit 1): Error: /opt/homebrew/Cellar is not writable"
+            )
+            await handle_update_claude(update, context)
+            call_kwargs = status_msg.edit_text.call_args
+            edited_text = call_kwargs[0][0]
+            assert "<code>" in edited_text
+            assert "parse_mode" in call_kwargs[1]
+            assert call_kwargs[1]["parse_mode"] == "HTML"
+
+    @pytest.mark.asyncio
+    async def test_update_result_html_escaped(self):
+        """HTML special chars in update output must be escaped."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = MagicMock()
+        config = MagicMock(
+            telegram=MagicMock(authorized_users=[111]),
+            claude=MagicMock(update_command="echo test"),
+        )
+        sm = MagicMock(has_active_sessions=MagicMock(return_value=False))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch(
+            "src.telegram.commands._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = "OK: version <2.0> & stuff"
+            await handle_update_claude(update, context)
+            edited_text = status_msg.edit_text.call_args[0][0]
+            assert "&lt;2.0&gt;" in edited_text
+            assert "&amp;" in edited_text
+
+
 class TestHandleContext:
     @pytest.mark.asyncio
     async def test_sends_context_command(self):

@@ -369,6 +369,32 @@ class TestHandleCallbackQuery:
             assert "OK: done" in calls[1][0][0]
 
     @pytest.mark.asyncio
+    async def test_update_confirm_result_wrapped_in_code_tags(self):
+        """Regression test for issue 010: callback update result paths as command links."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "update:confirm"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        config.claude.update_command = "brew upgrade claude-code"
+        context.bot_data = {"config": config, "session_manager": MagicMock()}
+        with patch(
+            "src.telegram.handlers._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = (
+                "FAILED (exit 1): Error: /opt/homebrew/Cellar not writable"
+            )
+            await handle_callback_query(update, context)
+            # The result edit (second call) should use HTML with <code> tags
+            result_call = update.callback_query.edit_message_text.call_args_list[-1]
+            edited_text = result_call[0][0]
+            assert "<code>" in edited_text
+            assert result_call[1]["parse_mode"] == "HTML"
+
+    @pytest.mark.asyncio
     async def test_page_navigation(self):
         update = MagicMock()
         update.effective_user.id = 111
