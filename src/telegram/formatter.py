@@ -355,6 +355,42 @@ def _escape_html(text: str) -> str:
     return _html_mod.escape(text, quote=False)
 
 
+# File path auto-link prevention.
+# Telegram auto-links text matching TLD patterns (.py = Paraguay, .js, .io,
+# etc.).  Wrapping file paths in backticks before code extraction lets the
+# existing inline-code pipeline render them as <code>, which suppresses
+# Telegram's auto-linking.
+_TLD_EXTS = (
+    r"py|js|ts|go|rs|sh|ai|me|so|do|cc|co|in|io|it|la|ph|to|am|fm|eu|pl|md"
+)
+_FILE_PATH_RE = re.compile(
+    r"(?<![`\w:/\\])"  # not preceded by backtick, word, colon, slash, backslash
+    r"("
+    r"(?:\w[\w.-]*/)+\w[\w.-]*\.\w+"  # path/to/file.ext (any extension)
+    r"|\w[\w.-]*\.(?:" + _TLD_EXTS + r")"  # bare file.ext (TLD extensions)
+    r")"
+    r"(?![`\w/])",  # not followed by backtick, word, or slash
+    re.IGNORECASE,
+)
+
+
+def _wrap_file_paths(text: str) -> str:
+    """Wrap file-path patterns in backticks to prevent Telegram auto-linking.
+
+    Telegram treats extensions like ``.py``, ``.js``, ``.io`` as domain
+    names and renders them as clickable links.  Wrapping in backticks
+    causes :func:`format_html` to emit ``<code>`` tags, which suppresses
+    the auto-linking behaviour.
+
+    Args:
+        text: Raw text before code extraction.
+
+    Returns:
+        Text with file paths wrapped in backticks.
+    """
+    return _FILE_PATH_RE.sub(r"`\1`", text)
+
+
 # Patterns for format_html
 _MD_CODE_BLOCK_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
 _MD_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
@@ -372,6 +408,7 @@ def format_html(text: str) -> str:
     with label--description, section headers, and HTML escaping.
 
     Processing order:
+      0. Wrap file paths in backticks (prevents Telegram auto-linking).
       1. Extract code blocks and inline code (protect from escaping).
       2. Extract bold and italic markers.
       3. Escape HTML in remaining text.
@@ -389,6 +426,9 @@ def format_html(text: str) -> str:
     """
     if not text:
         return ""
+
+    # 0. Wrap file paths in backticks to prevent Telegram auto-linking
+    text = _wrap_file_paths(text)
 
     # 1. Extract code blocks and inline code before escaping
     code_blocks: list[tuple[str, str]] = []
