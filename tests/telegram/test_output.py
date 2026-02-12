@@ -1801,6 +1801,40 @@ class TestFilterResponseAttr:
         assert texts[4] == "- It prints hi"
 
 
+    def test_dedents_when_marker_at_column_zero(self):
+        """Content lines are dedented even when ⏺ sits at column 0.
+
+        When Claude Code renders the ⏺ marker at the leftmost column,
+        marker stripping leaves the response line at 0 indent while
+        continuation lines retain their 2-space margin.  The dedent
+        must exclude marker-stripped lines from the minimum-indent
+        computation so continuation lines still get their margin removed.
+        """
+        source = [
+            "⏺ Here is the code:",
+            "  def hello():",
+            "      print('hi')",
+            "  How it works:",
+            "  - It prints hi",
+        ]
+        attr = [
+            [CharSpan(text="⏺ ", fg="default"), CharSpan(text="Here is the code:", fg="default")],
+            [CharSpan(text="  ", fg="default"), CharSpan(text="def", fg="blue"), CharSpan(text=" hello():", fg="default")],
+            [CharSpan(text="      ", fg="default"), CharSpan(text="print", fg="cyan"), CharSpan(text="('hi')", fg="default")],
+            [CharSpan(text="  How it works:", fg="default")],
+            [CharSpan(text="  - It prints hi", fg="default")],
+        ]
+        filtered = _filter_response_attr(source, attr)
+        texts = ["".join(s.text for s in line) for line in filtered]
+        # Marker-stripped line stays at 0 indent; content lines get
+        # their 2-space margin stripped.
+        assert texts[0] == "Here is the code:"
+        assert texts[1] == "def hello():"
+        assert texts[2] == "    print('hi')"
+        assert texts[3] == "How it works:"
+        assert texts[4] == "- It prints hi"
+
+
 class TestLstripNChars:
     """Tests for _lstrip_n_chars: strip N leading chars from span list."""
 
@@ -1894,6 +1928,32 @@ class TestDedentAttrLines:
         texts = ["".join(s.text for s in line) for line in result]
         assert texts[0] == "text"
         assert texts[2] == "more"
+
+    def test_skip_indices_excludes_from_min(self):
+        """Skipped lines don't affect min indent; others are still dedented."""
+        lines = [
+            [CharSpan(text="no indent", fg="default")],   # index 0 — skip
+            [CharSpan(text="  two spaces", fg="default")],  # index 1
+            [CharSpan(text="  also two", fg="default")],    # index 2
+        ]
+        result = _dedent_attr_lines(lines, skip_indices={0})
+        texts = ["".join(s.text for s in line) for line in result]
+        # Index 0 has 0 indent but is skipped → min computed from 1,2 → 2
+        assert texts[0] == "no indent"  # not enough indent → left as-is
+        assert texts[1] == "two spaces"
+        assert texts[2] == "also two"
+
+    def test_skip_indices_strips_skipped_if_enough_indent(self):
+        """Skipped lines ARE stripped when they have enough indent."""
+        lines = [
+            [CharSpan(text="  marker line", fg="default")],   # index 0 — skip
+            [CharSpan(text="  content", fg="default")],        # index 1
+        ]
+        result = _dedent_attr_lines(lines, skip_indices={0})
+        texts = ["".join(s.text for s in line) for line in result]
+        # Index 0 has indent 2, min from non-skipped = 2 → stripped
+        assert texts[0] == "marker line"
+        assert texts[1] == "content"
 
     def test_empty_input(self):
         """Empty list returns empty list."""

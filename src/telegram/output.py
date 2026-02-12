@@ -92,6 +92,7 @@ def _lstrip_n_chars(spans: list[CharSpan], n: int) -> list[CharSpan]:
 
 def _dedent_attr_lines(
     lines: list[list[CharSpan]],
+    skip_indices: set[int] | None = None,
 ) -> list[list[CharSpan]]:
     """Remove common leading whitespace from attributed lines.
 
@@ -100,14 +101,25 @@ def _dedent_attr_lines(
     This removes the 2-space terminal margin that Claude Code adds
     to content below the ``⏺`` marker.
 
+    Lines whose index is in *skip_indices* are excluded from the
+    minimum-indent computation **and** from stripping.  This is used
+    for marker-stripped lines whose margin was already consumed by
+    :func:`_strip_marker_from_spans` — including them would clamp the
+    minimum to 0 and prevent continuation lines from being dedented.
+
     Args:
         lines: Filtered attributed span lists (one per line).
+        skip_indices: Indices of lines to exclude from indent
+            computation and stripping (e.g. marker-stripped lines).
 
     Returns:
         Dedented span lists with common leading whitespace removed.
     """
+    _skip = skip_indices or set()
     min_indent = float("inf")
-    for spans in lines:
+    for i, spans in enumerate(lines):
+        if i in _skip:
+            continue
         text = "".join(s.text for s in spans)
         lstripped = text.lstrip()
         if lstripped:
@@ -115,7 +127,19 @@ def _dedent_attr_lines(
             min_indent = min(min_indent, indent)
     if min_indent in (0, float("inf")):
         return lines
-    return [_lstrip_n_chars(spans, min_indent) for spans in lines]
+    # Strip min_indent from every line that has at least that much
+    # leading whitespace.  Marker-stripped lines that ended up with
+    # less indent (e.g. 0 when ⏺ sat at column 0) are left as-is.
+    result: list[list[CharSpan]] = []
+    for spans in lines:
+        text = "".join(s.text for s in spans)
+        lstripped = text.lstrip()
+        indent = (len(text) - len(lstripped)) if lstripped else 0
+        if indent >= min_indent:
+            result.append(_lstrip_n_chars(spans, min_indent))
+        else:
+            result.append(spans)
+    return result
 
 
 def _filter_response_attr(
@@ -129,9 +153,12 @@ def _filter_response_attr(
     separators, etc.) and returns only the attributed lines that correspond
     to Claude's actual response content.
 
-    After filtering, applies :func:`_dedent_attr_lines` to remove the
-    common terminal margin (typically 2 spaces from the ``⏺`` marker
-    column).
+    Marker lines (``⏺``, ``⎿``) have their marker + trailing space
+    stripped.  Then :func:`_dedent_attr_lines` removes the common
+    terminal margin from non-marker lines.  Marker-stripped lines are
+    excluded from the minimum-indent computation because stripping
+    already removed their margin — including them would clamp min to 0
+    and prevent dedenting continuation lines.
 
     Mirrors the filtering logic of
     :func:`~src.parsing.ui_patterns.extract_content` but operates on
@@ -145,6 +172,7 @@ def _filter_response_attr(
         Filtered and dedented list of attributed span lists.
     """
     result: list[list[CharSpan]] = []
+    marker_indices: set[int] = set()
     in_prompt = False
     for plain, spans in zip(source, attr):
         cls = classify_line(plain)
@@ -164,10 +192,12 @@ def _filter_response_attr(
         if cls == "content":
             result.append(spans)
         elif cls == "response":
+            marker_indices.add(len(result))
             result.append(_strip_marker_from_spans(spans, "⏺"))
         elif cls == "tool_connector":
+            marker_indices.add(len(result))
             result.append(_strip_marker_from_spans(spans, "⎿"))
-    return _dedent_attr_lines(result)
+    return _dedent_attr_lines(result, skip_indices=marker_indices)
 
 
 # States that produce user-visible output sent to Telegram.
@@ -682,6 +712,10 @@ class StreamingMessage:
         except Exception as exc:
             exc_str = str(exc)
             if "parse entities" in exc_str.lower():
+                logger.warning(
+                    "HTML parse error — falling back to plain text. "
+                    "html=%r", self.accumulated[:300],
+                )
                 try:
                     await self.bot.edit_message_text(
                         chat_id=self.chat_id,
