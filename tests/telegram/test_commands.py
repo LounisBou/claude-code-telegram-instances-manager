@@ -460,6 +460,80 @@ class TestHandleFileUpload:
         update.message.reply_text.assert_not_called()
 
 
+class TestNoSessionMessagesIncludeStartHint:
+    """Regression for issue 005: all no-session messages must include /start hint."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler,bot_data_extras", [
+        (handle_git, {"session_manager": MagicMock(get_active_session=MagicMock(return_value=None))}),
+        (handle_context, {"session_manager": MagicMock(get_active_session=MagicMock(return_value=None))}),
+    ])
+    async def test_command_no_session_includes_start_hint(self, handler, bot_data_extras):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        context.bot_data = {"config": config, **bot_data_extras}
+        await handler(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"{handler.__name__} no-session message missing /start hint: {call_text!r}"
+
+    @pytest.mark.asyncio
+    async def test_file_upload_no_session_includes_start_hint(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        update.message.document = MagicMock(file_id="abc")
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_file_upload(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"file_upload no-session message missing /start hint: {call_text!r}"
+
+    @pytest.mark.asyncio
+    async def test_sessions_no_session_includes_start_hint(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(list_sessions=MagicMock(return_value=[]))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_sessions(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"sessions no-session message missing /start hint: {call_text!r}"
+
+    @pytest.mark.asyncio
+    async def test_exit_no_session_includes_start_hint(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_exit(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"exit no-session message missing /start hint: {call_text!r}"
+
+    @pytest.mark.asyncio
+    async def test_text_message_no_session_includes_start_hint(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "hello"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_text_message(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"text_message no-session message missing /start hint: {call_text!r}"
+
+
 class TestRunUpdateCommand:
     @pytest.mark.asyncio
     async def test_runs_command(self):
