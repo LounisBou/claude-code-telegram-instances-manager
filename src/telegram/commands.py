@@ -74,7 +74,7 @@ async def handle_git(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if not active:
-        await update.message.reply_text("No active session.")
+        await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
     git_info = await get_git_info(active.project_path)
@@ -153,7 +153,7 @@ async def handle_context(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if not active:
-        await update.message.reply_text("No active session.")
+        await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
     await active.process.submit("/context")
@@ -240,7 +240,7 @@ async def handle_file_upload(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if not active:
-        await update.message.reply_text("No active session. Upload ignored.")
+        await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
     file_handler = context.bot_data["file_handler"]

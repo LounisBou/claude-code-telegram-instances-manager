@@ -90,7 +90,7 @@ async def handle_sessions(
     session_manager = context.bot_data["session_manager"]
     sessions = session_manager.list_sessions(user_id)
     if not sessions:
-        await update.message.reply_text("No active sessions.")
+        await update.message.reply_text("No active sessions. Use /start to begin one.")
         return
 
     active = session_manager.get_active_session(user_id)
@@ -135,7 +135,7 @@ async def handle_exit(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if not active:
-        await update.message.reply_text("No active session to exit.")
+        await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
     await session_manager.kill_session(user_id, active.session_id)
