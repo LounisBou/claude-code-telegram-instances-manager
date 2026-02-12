@@ -17,6 +17,7 @@ from src.telegram.keyboards import (
 )
 from src.git_info import get_git_info
 from src.project_scanner import scan_projects
+from src.telegram.output import mark_tool_acted
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +310,7 @@ async def handle_callback_query(
                 # Press Escape to cancel the tool request
                 await session.process.write("\x1b")
                 label = "Denied"
+        mark_tool_acted(user_id, session_id)
         await query.answer(label)
         # Update the message to show the decision (remove keyboard)
         original_text = query.message.text or query.message.caption or ""

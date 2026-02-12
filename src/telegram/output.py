@@ -238,6 +238,15 @@ _session_sent_lines: dict[tuple[int, int], set[str]] = {}
 # pre-existing content (banner artifacts, user echo, status bar)
 # from the full display during fast THINKING→IDLE extraction.
 _session_thinking_snapshot: dict[tuple[int, int], set[str]] = {}
+# Set by the tool-approval callback handler to signal that a tool request
+# was acted upon (Allow/Deny/Pick).  While the flag is set, stale
+# TOOL_REQUEST detections from the pyte buffer are overridden to UNKNOWN.
+_session_tool_acted: dict[tuple[int, int], bool] = {}
+
+
+def mark_tool_acted(user_id: int, session_id: int) -> None:
+    """Signal that a tool approval callback was processed for this session."""
+    _session_tool_acted[(user_id, session_id)] = True
 
 
 def _find_last_prompt(display: list[str]) -> int | None:
@@ -370,6 +379,22 @@ async def poll_output(
                         payload=event.payload,
                         raw_lines=event.raw_lines,
                     )
+
+                # After a tool callback (Allow/Deny/Pick), stale selection
+                # menu lines linger in the pyte buffer and keep triggering
+                # detect_tool_request.  Override to UNKNOWN until the screen
+                # naturally moves to a different state.
+                if (
+                    event.state == ScreenState.TOOL_REQUEST
+                    and _session_tool_acted.get(key)
+                ):
+                    event = event.__class__(
+                        state=ScreenState.UNKNOWN,
+                        payload=event.payload,
+                        raw_lines=event.raw_lines,
+                    )
+                elif event.state != ScreenState.TOOL_REQUEST:
+                    _session_tool_acted.pop(key, None)
 
                 _session_prev_state[key] = event.state
 
