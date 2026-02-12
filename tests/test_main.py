@@ -12,8 +12,14 @@ class TestOnStartup:
     @staticmethod
     def _make_app(db):
         app = MagicMock()
-        app.bot_data = {"db": db}
+        app.bot_data = {
+            "db": db,
+            "config": MagicMock(
+                telegram=MagicMock(authorized_users=[111]),
+            ),
+        }
         app.bot.set_my_commands = AsyncMock()
+        app.bot.send_message = AsyncMock()
         return app
 
     @pytest.mark.asyncio
@@ -105,8 +111,14 @@ class TestBuildApp:
         db.initialize = AsyncMock()
         db.mark_active_sessions_lost = AsyncMock(return_value=[])
         app = MagicMock()
-        app.bot_data = {"db": db}
+        app.bot_data = {
+            "db": db,
+            "config": MagicMock(
+                telegram=MagicMock(authorized_users=[111]),
+            ),
+        }
         app.bot.set_my_commands = AsyncMock()
+        app.bot.send_message = AsyncMock()
 
         import asyncio
         asyncio.get_event_loop().run_until_complete(_on_startup(app))

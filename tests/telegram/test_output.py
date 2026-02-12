@@ -1979,6 +1979,41 @@ class TestDedentAttrLines:
         assert _dedent_attr_lines([]) == []
 
 
+class TestStartupMessage:
+    """Startup must send an informational message to all authorized users."""
+
+    @pytest.mark.asyncio
+    async def test_on_startup_sends_message_to_authorized_users(self):
+        """_on_startup must send a message to every authorized user."""
+        from src.main import _on_startup
+
+        app = MagicMock()
+        db = AsyncMock()
+        db.initialize = AsyncMock()
+        db.mark_active_sessions_lost = AsyncMock(return_value=[])
+        app.bot_data = {
+            "db": db,
+            "config": MagicMock(
+                telegram=MagicMock(authorized_users=[111, 222]),
+            ),
+        }
+        app.bot = AsyncMock()
+        app.bot.set_my_commands = AsyncMock()
+        app.bot.send_message = AsyncMock()
+
+        await _on_startup(app)
+
+        # Should have sent a message to each authorized user
+        send_calls = app.bot.send_message.call_args_list
+        chat_ids = {call.kwargs.get("chat_id") or call.args[0] for call in send_calls}
+        assert 111 in chat_ids
+        assert 222 in chat_ids
+        # Message should contain "started" or "online"
+        for call in send_calls:
+            text = call.kwargs.get("text", "")
+            assert "started" in text.lower() or "online" in text.lower()
+
+
 class TestAnsiReRenderOnCompletion:
     """STREAMING->IDLE must re-render final message with ANSI pipeline."""
 
