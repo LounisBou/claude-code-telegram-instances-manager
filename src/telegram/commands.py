@@ -186,7 +186,10 @@ async def handle_download(
     text = update.message.text
     parts = text.split(maxsplit=1)
     if len(parts) < 2:
-        await update.message.reply_text("Usage: /download /path/to/file")
+        await update.message.reply_text(
+            "Usage: /download <code>/path/to/file</code>",
+            parse_mode="HTML",
+        )
         return
 
     file_path = parts[1].strip()
