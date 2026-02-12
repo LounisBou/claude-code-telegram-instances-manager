@@ -564,6 +564,73 @@ class TestMultiChoiceToolCallback:
         )
 
 
+class TestToolCallbackMarksActed:
+    """Regression tests for issue 014: tool callbacks must signal poll_output."""
+
+    @pytest.mark.asyncio
+    async def test_tool_yes_calls_mark_tool_acted(self):
+        """Allow callback signals that the tool request was acted upon."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:yes:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Allow tool?"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+            await handle_callback_query(update, context)
+            mock_mark.assert_called_once_with(111, 1)
+
+    @pytest.mark.asyncio
+    async def test_tool_no_calls_mark_tool_acted(self):
+        """Deny callback signals that the tool request was acted upon."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:no:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Allow tool?"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+            await handle_callback_query(update, context)
+            mock_mark.assert_called_once_with(111, 1)
+
+    @pytest.mark.asyncio
+    async def test_tool_pick_calls_mark_tool_acted(self):
+        """Multi-choice pick callback signals that the tool request was acted upon."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:0:1:5"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Choose a theme"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {5: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+            await handle_callback_query(update, context)
+            mock_mark.assert_called_once_with(111, 5)
+
+
 class TestHandlerLogging:
     @pytest.mark.asyncio
     async def test_handle_start_logs_handler_entry(self, mock_update, mock_context, caplog):

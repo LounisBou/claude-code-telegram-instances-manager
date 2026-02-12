@@ -17,7 +17,9 @@ from src.telegram.output import (
     _session_sent_lines,
     _session_streaming,
     _session_thinking_snapshot,
+    _session_tool_acted,
     _strip_marker_from_spans,
+    mark_tool_acted,
     StreamingMessage,
     StreamingState,
     poll_output,
@@ -2423,5 +2425,181 @@ class TestPollOutputAuthRequired:
         # The notification should be sent exactly once.
         assert bot.send_message.call_count == 1
         sm.kill_session.assert_awaited_once_with(791, 1)
+
+        self._cleanup_session(key)
+
+
+class TestStaleToolRequestOverride:
+    """Regression tests for issue 014: stale TOOL_REQUEST after callback."""
+
+    def _cleanup_session(self, key):
+        _session_emulators.pop(key, None)
+        _session_streaming.pop(key, None)
+        _session_prev_state.pop(key, None)
+        _session_sent_lines.pop(key, None)
+        _session_thinking_snapshot.pop(key, None)
+        _session_tool_acted.pop(key, None)
+
+    def test_mark_tool_acted_sets_flag(self):
+        """mark_tool_acted sets the per-session flag."""
+        key = (800, 1)
+        _session_tool_acted.pop(key, None)
+        mark_tool_acted(800, 1)
+        assert _session_tool_acted.get(key) is True
+        _session_tool_acted.pop(key, None)
+
+    def test_stale_tool_request_overridden_to_unknown(self):
+        """Regression: after tool callback, stale TOOL_REQUEST becomes UNKNOWN.
+
+        When the user clicks Allow/Deny/Pick, the pyte buffer retains the
+        selection menu lines.  detect_tool_request keeps matching them.
+        The override must force the state to UNKNOWN so other detectors
+        can process the new screen content.
+        """
+        key = (801, 1)
+        _session_prev_state[key] = ScreenState.TOOL_REQUEST
+        _session_tool_acted[key] = True
+
+        event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
+        # Replicate the guard logic from poll_output
+        if event.state == ScreenState.TOOL_REQUEST and _session_tool_acted.get(key):
+            event = ScreenEvent(
+                state=ScreenState.UNKNOWN,
+                payload=event.payload,
+                raw_lines=event.raw_lines,
+            )
+        assert event.state == ScreenState.UNKNOWN
+
+        del _session_prev_state[key]
+        _session_tool_acted.pop(key, None)
+
+    def test_flag_cleared_when_screen_moves_to_different_state(self):
+        """Regression: tool_acted flag clears when screen naturally transitions."""
+        key = (802, 1)
+        _session_tool_acted[key] = True
+
+        event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
+        # Replicate the elif branch from poll_output
+        if event.state == ScreenState.TOOL_REQUEST and _session_tool_acted.get(key):
+            pass
+        elif event.state != ScreenState.TOOL_REQUEST:
+            _session_tool_acted.pop(key, None)
+
+        assert key not in _session_tool_acted
+
+    def test_flag_not_cleared_while_stale_content_persists(self):
+        """Regression: flag stays set while classifier keeps returning TOOL_REQUEST."""
+        key = (803, 1)
+        _session_tool_acted[key] = True
+
+        event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
+        if event.state == ScreenState.TOOL_REQUEST and _session_tool_acted.get(key):
+            event = ScreenEvent(
+                state=ScreenState.UNKNOWN,
+                payload=event.payload,
+                raw_lines=event.raw_lines,
+            )
+        elif event.state != ScreenState.TOOL_REQUEST:
+            _session_tool_acted.pop(key, None)
+
+        # Flag persists — UNKNOWN was due to override, not natural transition
+        assert _session_tool_acted.get(key) is True
+        _session_tool_acted.pop(key, None)
+
+    def test_legitimate_tool_request_not_suppressed_without_flag(self):
+        """A fresh TOOL_REQUEST without the flag must NOT be overridden."""
+        key = (804, 1)
+        _session_tool_acted.pop(key, None)
+
+        event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
+        if event.state == ScreenState.TOOL_REQUEST and _session_tool_acted.get(key):
+            event = ScreenEvent(
+                state=ScreenState.UNKNOWN,
+                payload=event.payload,
+                raw_lines=event.raw_lines,
+            )
+        assert event.state == ScreenState.TOOL_REQUEST
+
+    @pytest.mark.asyncio
+    async def test_poll_output_overrides_stale_tool_request(self):
+        """Regression: full poll_output integration — stale TOOL_REQUEST after
+        callback must not re-send keyboard and must allow next state through.
+
+        Simulates: TOOL_REQUEST (keyboard sent) → mark_tool_acted →
+        stale TOOL_REQUEST (overridden to UNKNOWN) → THINKING (detected).
+        """
+        key = (805, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"tool", b"stale", b"think", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {805: {1: session}}
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        streaming = StreamingMessage(bot=bot, chat_id=805, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.state = StreamingState.THINKING
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.THINKING
+        _session_sent_lines[key] = set()
+
+        tool_event = ScreenEvent(
+            state=ScreenState.TOOL_REQUEST,
+            payload={
+                "question": "Allow tool?",
+                "options": ["Yes", "No"],
+                "selected": 0,
+                "has_hint": True,
+            },
+            raw_lines=[],
+        )
+        thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
+
+        # Cycle 1: TOOL_REQUEST (keyboard sent)
+        # Cycle 2: mark_tool_acted, then stale TOOL_REQUEST (should be overridden)
+        # Cycle 3: THINKING (user sent new message, Claude responds)
+        cycle = [0]
+        def classify_side_effect(display, prev):
+            c = cycle[0]
+            cycle[0] += 1
+            if c == 0:
+                return tool_event
+            elif c == 1:
+                mark_tool_acted(805, 1)
+                return tool_event  # stale — should be overridden
+            else:
+                return thinking_event
+
+        with (
+            patch(
+                "src.telegram.output.asyncio.sleep",
+                side_effect=[None, None, None, asyncio.CancelledError],
+            ),
+            patch(
+                "src.telegram.output.classify_screen_state",
+                side_effect=classify_side_effect,
+            ),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # Keyboard sent only once (first TOOL_REQUEST), not on stale repeat.
+        # Cycle 3 also triggers start_thinking (UNKNOWN→THINKING), so count=2
+        # but only one call should have reply_markup (the keyboard).
+        keyboard_calls = [
+            c for c in bot.send_message.call_args_list
+            if c.kwargs.get("reply_markup") is not None
+        ]
+        assert len(keyboard_calls) == 1
+
+        # After cycle 3, prev_state should be THINKING (not stuck at TOOL_REQUEST)
+        assert _session_prev_state[key] == ScreenState.THINKING
 
         self._cleanup_session(key)
