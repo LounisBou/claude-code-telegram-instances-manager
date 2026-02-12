@@ -17,12 +17,94 @@ from src.telegram.formatter import (
     format_html, reflow_text, render_regions, wrap_code_blocks,
 )
 from src.telegram.keyboards import build_tool_approval_keyboard
-from src.parsing.terminal_emulator import TerminalEmulator
+from src.parsing.terminal_emulator import CharSpan, TerminalEmulator
 from src.parsing.ui_patterns import (
     ScreenEvent, ScreenState, classify_line, extract_content,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_marker_from_spans(
+    spans: list[CharSpan], marker: str,
+) -> list[CharSpan]:
+    """Remove a leading Unicode marker (⏺ or ⎿) from attributed spans.
+
+    Strips the marker character and any following space from the first
+    non-whitespace span.  Returns a new span list; original is not modified.
+
+    Args:
+        spans: Attributed spans for a terminal line.
+        marker: The marker character to strip (e.g. '⏺' or '⎿').
+
+    Returns:
+        Span list with the marker removed from the leading span.
+    """
+    result: list[CharSpan] = []
+    stripped = False
+    for span in spans:
+        if not stripped and marker in span.text:
+            # Remove the marker and optional trailing space
+            new_text = span.text.replace(marker, "", 1)
+            if new_text.startswith(" "):
+                new_text = new_text[1:]
+            stripped = True
+            if new_text:
+                result.append(CharSpan(
+                    text=new_text, fg=span.fg,
+                    bold=span.bold, italic=span.italic,
+                ))
+        else:
+            result.append(span)
+    return result
+
+
+def _filter_response_attr(
+    source: list[str],
+    attr: list[list[CharSpan]],
+) -> list[list[CharSpan]]:
+    """Filter attributed lines to response content only.
+
+    Uses :func:`~src.parsing.ui_patterns.classify_line` on the plain text
+    version of each line to identify terminal chrome (prompts, status bars,
+    separators, etc.) and returns only the attributed lines that correspond
+    to Claude's actual response content.
+
+    Mirrors the filtering logic of
+    :func:`~src.parsing.ui_patterns.extract_content` but operates on
+    attributed spans instead of plain text.
+
+    Args:
+        source: Plain text lines (parallel to *attr*).
+        attr: Attributed span lists (one per line, same length as *source*).
+
+    Returns:
+        Filtered list of attributed span lists for response content only.
+    """
+    result: list[list[CharSpan]] = []
+    in_prompt = False
+    for plain, spans in zip(source, attr):
+        cls = classify_line(plain)
+        # Start skipping after a ❯ prompt line
+        if cls == "prompt":
+            in_prompt = True
+            continue
+        # End prompt continuation on response marker / structured element
+        if in_prompt:
+            if cls in (
+                "response", "tool_connector", "tool_header",
+                "thinking", "separator",
+            ):
+                in_prompt = False
+            else:
+                continue
+        if cls == "content":
+            result.append(spans)
+        elif cls == "response":
+            result.append(_strip_marker_from_spans(spans, "⏺"))
+        elif cls == "tool_connector":
+            result.append(_strip_marker_from_spans(spans, "⎿"))
+    return result
 
 
 # States that produce user-visible output sent to Telegram.
@@ -360,9 +442,13 @@ async def poll_output(
                             # heuristic pipeline when no attributed data is
                             # available (e.g. streaming with only changed text).
                             if fast_idle_attr is not None:
-                                # Fast-IDLE: full attributed lines captured
-                                # before clear_history above
-                                regions = classify_regions(fast_idle_attr)
+                                # Fast-IDLE: filter attributed lines to
+                                # response content (strip prompt echo,
+                                # status bar, progress bar, ⏺ markers)
+                                filtered = _filter_response_attr(
+                                    source, fast_idle_attr,
+                                )
+                                regions = classify_regions(filtered)
                                 rendered = render_regions(regions)
                                 html = format_html(reflow_text(rendered))
                             else:

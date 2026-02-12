@@ -8,16 +8,19 @@ import pytest
 from src.telegram.output import (
     _CHROME_CATEGORIES,
     _CONTENT_STATES,
+    _filter_response_attr,
     _find_last_prompt,
     _session_emulators,
     _session_prev_state,
     _session_sent_lines,
     _session_streaming,
     _session_thinking_snapshot,
+    _strip_marker_from_spans,
     StreamingMessage,
     StreamingState,
     poll_output,
 )
+from src.parsing.terminal_emulator import CharSpan
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import (
     ScreenEvent, ScreenState, classify_line, extract_content,
@@ -1628,3 +1631,138 @@ class TestUserMessageResetsDedup:
         assert key not in _session_thinking_snapshot
         # Cleanup
         _session_sent_lines.pop(key, None)
+
+
+class TestStripMarkerFromSpans:
+    """Tests for _strip_marker_from_spans."""
+
+    def test_strip_response_marker(self):
+        """⏺ prefix is removed from first span."""
+        spans = [
+            CharSpan(text="⏺ ", fg="default"),
+            CharSpan(text="def", fg="blue"),
+            CharSpan(text=" foo():", fg="default"),
+        ]
+        result = _strip_marker_from_spans(spans, "⏺")
+        texts = [s.text for s in result]
+        assert "⏺" not in "".join(texts)
+        assert any("def" in t for t in texts)
+
+    def test_strip_tool_connector_marker(self):
+        """⎿ prefix is removed from first span."""
+        spans = [
+            CharSpan(text="⎿ ", fg="default"),
+            CharSpan(text="file.py", fg="default"),
+        ]
+        result = _strip_marker_from_spans(spans, "⎿")
+        texts = [s.text for s in result]
+        assert "⎿" not in "".join(texts)
+        assert "file.py" in "".join(texts)
+
+    def test_no_marker_unchanged(self):
+        """Spans without marker are returned unchanged."""
+        spans = [CharSpan(text="hello world", fg="default")]
+        result = _strip_marker_from_spans(spans, "⏺")
+        assert result == spans
+
+    def test_empty_after_strip(self):
+        """Span that becomes empty after stripping is dropped."""
+        spans = [
+            CharSpan(text="⏺ ", fg="default"),
+            CharSpan(text="text", fg="blue"),
+        ]
+        result = _strip_marker_from_spans(spans, "⏺")
+        # The first span was "⏺ " -> "" after strip -> dropped
+        assert len(result) == 1
+        assert result[0].text == "text"
+
+
+class TestFilterResponseAttr:
+    """Tests for _filter_response_attr: filters terminal chrome from attributed lines."""
+
+    def test_strips_prompt_and_status_bar(self):
+        """Prompt, status bar, and progress bar lines are removed."""
+        source = [
+            "❯ Write a Python function",
+            "  that checks primes.",
+            "⏺ Here is the function:",
+            "  def is_prime(n):",
+            "❯",
+            "  claude-instance-manager │ ⎇ feat/test │ Usage: 15%",
+            "  █▌░░░░░░░░ ↻ 1:59",
+        ]
+        attr = [
+            [CharSpan(text="❯ Write a Python function", fg="default")],
+            [CharSpan(text="  that checks primes.", fg="default")],
+            [CharSpan(text="⏺ ", fg="default"), CharSpan(text="Here is the function:", fg="default")],
+            [CharSpan(text="  ", fg="default"), CharSpan(text="def", fg="blue"), CharSpan(text=" is_prime(n):", fg="default")],
+            [CharSpan(text="❯", fg="default")],
+            [CharSpan(text="  claude-instance-manager │ ⎇ feat/test │ Usage: 15%", fg="default")],
+            [CharSpan(text="  █▌░░░░░░░░ ↻ 1:59", fg="default")],
+        ]
+        filtered = _filter_response_attr(source, attr)
+        # Should only keep response content (line 2: ⏺ stripped, line 3: code)
+        assert len(filtered) == 2
+        # ⏺ marker should be stripped
+        all_text = "".join(s.text for line in filtered for s in line)
+        assert "⏺" not in all_text
+        assert "❯" not in all_text
+        assert "Usage:" not in all_text
+        # Code content preserved
+        assert "def" in all_text
+
+    def test_prompt_continuation_skipped(self):
+        """Wrapped user input after ❯ is skipped until ⏺ response."""
+        source = [
+            "❯ This is a very long user prompt that wraps across",
+            "  multiple terminal lines because it is so long",
+            "⏺ Short answer.",
+        ]
+        attr = [
+            [CharSpan(text="❯ This is a very long user prompt that wraps across", fg="default")],
+            [CharSpan(text="  multiple terminal lines because it is so long", fg="default")],
+            [CharSpan(text="⏺ ", fg="default"), CharSpan(text="Short answer.", fg="default")],
+        ]
+        filtered = _filter_response_attr(source, attr)
+        assert len(filtered) == 1
+        all_text = "".join(s.text for line in filtered for s in line)
+        assert "Short answer." in all_text
+        assert "long user prompt" not in all_text
+
+    def test_content_lines_kept(self):
+        """Lines classified as 'content' (plain text) are kept."""
+        source = [
+            "⏺ Here is the code:",
+            "  def hello():",
+            "      print('hi')",
+        ]
+        attr = [
+            [CharSpan(text="⏺ ", fg="default"), CharSpan(text="Here is the code:", fg="default")],
+            [CharSpan(text="  ", fg="default"), CharSpan(text="def", fg="blue"), CharSpan(text=" hello():", fg="default")],
+            [CharSpan(text="      ", fg="default"), CharSpan(text="print", fg="cyan"), CharSpan(text="('hi')", fg="default")],
+        ]
+        filtered = _filter_response_attr(source, attr)
+        assert len(filtered) == 3
+        # First line should have ⏺ stripped
+        first_text = "".join(s.text for s in filtered[0])
+        assert "⏺" not in first_text
+
+    def test_empty_input(self):
+        """Empty input returns empty output."""
+        assert _filter_response_attr([], []) == []
+
+    def test_separator_lines_skipped(self):
+        """Separator lines (box drawing chars) are filtered out."""
+        source = [
+            "─" * 40,
+            "⏺ Hello world",
+            "─" * 40,
+        ]
+        attr = [
+            [CharSpan(text="─" * 40, fg="default")],
+            [CharSpan(text="⏺ ", fg="default"), CharSpan(text="Hello world", fg="default")],
+            [CharSpan(text="─" * 40, fg="default")],
+        ]
+        filtered = _filter_response_attr(source, attr)
+        assert len(filtered) == 1
+        assert "Hello world" in "".join(s.text for s in filtered[0])
