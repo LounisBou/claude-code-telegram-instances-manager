@@ -139,7 +139,8 @@ def classify_line(line: str) -> str:
         line: A single terminal screen line to classify.
 
     Returns:
-        One of: 'separator', 'diff_delimiter', 'status_bar', 'startup',
+        One of: 'separator', 'diff_delimiter', 'status_bar' (includes
+        extra status lines like file-change counters), 'startup',
         'thinking', 'tool_header', 'response', 'tool_connector',
         'todo_item', 'agent_tree', 'prompt', 'box', 'logo', 'empty',
         or 'content'.
@@ -170,6 +171,18 @@ def classify_line(line: str) -> str:
     if _CLAUDE_HINT_RE.search(stripped):
         return "status_bar"
     if _PR_INDICATOR_RE.match(stripped):
+        return "status_bar"
+    # Extra status line: "4 files +0 -0 · PR #5", "1 bash · 1 file +194 -192"
+    # These are Claude Code's bottom-row status counters.  _EXTRA_FILES_RE
+    # has a very specific format (N files? +N -N) that doesn't appear in prose.
+    # _EXTRA_BASH_RE / _EXTRA_AGENTS_RE require a · separator to avoid false
+    # positives on prose containing "bash" or "local agents".
+    if _EXTRA_FILES_RE.search(stripped):
+        return "status_bar"
+    if "\u00b7" in stripped and (
+        _EXTRA_BASH_RE.search(stripped)
+        or _EXTRA_AGENTS_RE.search(stripped)
+    ):
         return "status_bar"
     # Context window progress bar and/or timer (e.g. "▊░░░░░░░░░ ↻ 11:00")
     if _CONTEXT_TIMER_RE.search(stripped):
