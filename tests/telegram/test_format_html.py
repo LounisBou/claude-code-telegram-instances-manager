@@ -107,6 +107,23 @@ class TestFormatHtmlLists:
         result = format_html("1. first item")
         assert "1. first item" in result
 
+    def test_emdash_in_sentence_not_label(self):
+        """Regression: bullet with em-dash mid-sentence must not bold before dash."""
+        text = (
+            "- Square root bound: only checks up to √n "
+            "— if n has a factor larger than its square root"
+        )
+        result = format_html(text)
+        # Should become plain bullet, NOT bold the text before —
+        assert "<b>Square root bound" not in result
+        assert "• Square root bound" in result
+
+    def test_label_with_colon_not_matched(self):
+        """Labels containing colons are likely sentences, not label-value."""
+        result = format_html("- Time complexity: O(n) — slow for large inputs")
+        assert "<b>Time complexity" not in result
+        assert "• Time complexity" in result
+
 
 class TestFormatHtmlSectionHeaders:
     """Lines ending with : that look like headers get bolded."""

@@ -360,7 +360,7 @@ _MD_CODE_BLOCK_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
 _MD_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
-_LABEL_DASH_RE = re.compile(r"^- (.+?) — (.+)$", re.MULTILINE)
+_LABEL_DASH_RE = re.compile(r"^- ([^:\n]{2,30}) — (.+)$", re.MULTILINE)
 _PLAIN_DASH_RE = re.compile(r"^- (.+)$", re.MULTILINE)
 _SECTION_HEADER_RE = re.compile(r"^([A-Z][^:\n]{2,50}):$", re.MULTILINE)
 
