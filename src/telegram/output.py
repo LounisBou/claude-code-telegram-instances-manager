@@ -463,7 +463,11 @@ async def poll_output(
                     for i, opt in enumerate(options):
                         parts.append(f"  {i + 1}. {html_mod.escape(opt)}")
                     text = "\n".join(parts)
-                    kb_data = build_tool_approval_keyboard(sid)
+                    kb_data = build_tool_approval_keyboard(
+                        sid,
+                        options=options,
+                        selected=event.payload.get("selected", 0),
+                    )
                     keyboard = InlineKeyboardMarkup(
                         [
                             [

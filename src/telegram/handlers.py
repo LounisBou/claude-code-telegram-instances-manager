@@ -267,22 +267,48 @@ async def handle_callback_query(
             await query.edit_message_text("Update cancelled.")
 
     elif data.startswith("tool:"):
-        # Tool approval: "tool:yes:<session_id>" or "tool:no:<session_id>"
-        parts = data.split(":", 2)
-        action = parts[1]  # "yes" or "no"
-        session_id = int(parts[2])
-        session = session_manager._sessions.get(user_id, {}).get(session_id)
-        if not session:
-            await query.answer("Session no longer active")
-            return
-        if action == "yes":
-            # Press Enter to accept the default (Yes) option
-            await session.process.write("\r")
-            label = "Allowed"
+        # Tool approval/selection callbacks:
+        #   "tool:yes:<sid>"                    — Accept default (Enter)
+        #   "tool:no:<sid>"                     — Cancel (Escape)
+        #   "tool:pick:<selected>:<target>:<sid>" — Multi-choice selection
+        parts = data.split(":")
+        action = parts[1]
+        if action == "pick":
+            # Multi-choice: navigate from current selection to target
+            selected = int(parts[2])
+            target = int(parts[3])
+            session_id = int(parts[4])
+            session = session_manager._sessions.get(user_id, {}).get(session_id)
+            if not session:
+                await query.answer("Session no longer active")
+                return
+            delta = target - selected
+            # Send arrow keys to move cursor, then Enter to confirm
+            if delta > 0:
+                keys = "\x1b[B" * delta  # Down arrow
+            elif delta < 0:
+                keys = "\x1b[A" * abs(delta)  # Up arrow
+            else:
+                keys = ""
+            await session.process.write(keys + "\r")
+            # Extract the label from the button that was clicked
+            label = query.data.split(":", 1)[0] if not query.message else ""
+            # Use the button text from the inline keyboard
+            label = "Selected"
         else:
-            # Press Escape to cancel the tool request
-            await session.process.write("\x1b")
-            label = "Denied"
+            session_id = int(parts[2])
+            session = session_manager._sessions.get(user_id, {}).get(session_id)
+            if not session:
+                await query.answer("Session no longer active")
+                return
+            if action == "yes":
+                # Press Enter to accept the default (Yes) option
+                await session.process.write("\r")
+                label = "Allowed"
+            else:
+                # Press Escape to cancel the tool request
+                await session.process.write("\x1b")
+                label = "Denied"
         await query.answer(label)
         # Update the message to show the decision (remove keyboard)
         original_text = query.message.text or query.message.caption or ""

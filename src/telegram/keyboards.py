@@ -94,21 +94,50 @@ def build_sessions_keyboard(
 
 def build_tool_approval_keyboard(
     session_id: int,
+    options: list[str] | None = None,
+    selected: int = 0,
 ) -> list[list[dict]]:
-    """Build an inline keyboard for tool approval (Accept / Reject).
+    """Build an inline keyboard for tool approval or multi-choice selection.
+
+    For standard tool approvals (first option starts with "Yes"), returns
+    two buttons: Allow / Deny.  For multi-choice selections (e.g. a theme
+    picker), each option gets its own button plus a Cancel button.
 
     Args:
         session_id: Session whose PTY receives the approval response.
+        options: Option labels from the selection menu.  When *None* or
+            matching the standard yes/no pattern, the simple Allow/Deny
+            keyboard is returned.
+        selected: Zero-based index of the currently highlighted option
+            (the one with the ``❯`` cursor).
 
     Returns:
-        A list of rows with two buttons: Allow and Deny.
+        A list of rows suitable for ``InlineKeyboardMarkup``.
     """
-    return [
-        [
-            {"text": "Allow", "callback_data": f"tool:yes:{session_id}"},
-            {"text": "Deny", "callback_data": f"tool:no:{session_id}"},
+    # Standard tool approval — first option starts with "Yes"
+    if not options or options[0].startswith("Yes"):
+        return [
+            [
+                {"text": "Allow", "callback_data": f"tool:yes:{session_id}"},
+                {"text": "Deny", "callback_data": f"tool:no:{session_id}"},
+            ]
         ]
-    ]
+
+    # Multi-choice selection — one button per option + Cancel
+    rows: list[list[dict]] = []
+    for idx, label in enumerate(options):
+        rows.append(
+            [
+                {
+                    "text": label,
+                    "callback_data": f"tool:pick:{selected}:{idx}:{session_id}",
+                }
+            ]
+        )
+    rows.append(
+        [{"text": "Cancel", "callback_data": f"tool:no:{session_id}"}]
+    )
+    return rows
 
 
 # --- Message formatting ---
