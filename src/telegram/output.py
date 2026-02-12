@@ -300,6 +300,14 @@ async def poll_output(
     StreamingMessage safety net creates a new message since start_thinking
     was never called.
 
+    ANSI re-render on STREAMING→IDLE: when a response was streamed using the
+    heuristic pipeline (keyword-based code detection), the finalize block
+    re-renders the final message using the ANSI-aware pipeline (pyte buffer
+    color attributes → classify_regions). This gives accurate code block
+    detection via syntax highlighting, inline code markers, and bold headings
+    in the polished final message.  Skipped when the response was already
+    rendered via the fast-IDLE ANSI pipeline (THINKING→IDLE path).
+
     Args:
         bot: Telegram Bot instance for sending messages.
         session_manager: SessionManager with active sessions.
@@ -463,6 +471,7 @@ async def poll_output(
                     event.state == ScreenState.IDLE
                     and (_incomplete_cycle or _ultra_fast)
                 )
+                _fast_idle = False
                 if _should_extract:
                     # When streaming is still in THINKING, response content
                     # hasn't been extracted via get_changes() yet (THINKING
@@ -569,6 +578,34 @@ async def poll_output(
                         stripped = line.strip()
                         if stripped:
                             sent.add(stripped)
+
+                    # ANSI re-render: when the response was streamed with
+                    # the heuristic pipeline, re-render the final message
+                    # using the ANSI-aware pipeline for accurate code block
+                    # detection, inline code markers, and heading detection.
+                    if (
+                        streaming.state == StreamingState.STREAMING
+                        and streaming.accumulated
+                        and not _fast_idle
+                    ):
+                        full = emu.get_full_display()
+                        full_attr = emu.get_full_attributed_lines()
+                        prompt_idx = _find_last_prompt(full)
+                        if prompt_idx is not None:
+                            re_source = full[prompt_idx:]
+                            re_attr = full_attr[prompt_idx:]
+                        else:
+                            re_source = full
+                            re_attr = full_attr
+                        filtered = _filter_response_attr(re_source, re_attr)
+                        if filtered:
+                            regions = classify_regions(filtered)
+                            rendered = render_regions(regions)
+                            re_html = format_html(reflow_text(rendered))
+                            if re_html.strip():
+                                streaming.accumulated = re_html
+
+                    emu.clear_history()
                     await streaming.finalize()
 
 

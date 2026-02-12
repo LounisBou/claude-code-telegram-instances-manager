@@ -1977,3 +1977,65 @@ class TestDedentAttrLines:
     def test_empty_input(self):
         """Empty list returns empty list."""
         assert _dedent_attr_lines([]) == []
+
+
+class TestAnsiReRenderOnCompletion:
+    """STREAMING->IDLE must re-render final message with ANSI pipeline."""
+
+    def _cleanup_session(self, key):
+        _session_emulators.pop(key, None)
+        _session_streaming.pop(key, None)
+        _session_prev_state.pop(key, None)
+        _session_sent_lines.pop(key, None)
+        _session_thinking_snapshot.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_streaming_idle_uses_ansi_pipeline(self):
+        """STREAMING->IDLE must call classify_regions for final render."""
+        key = (750, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"data", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {750: {1: session}}
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        streaming = StreamingMessage(bot=bot, chat_id=750, edit_rate_limit=3)
+        streaming.message_id = 42
+        streaming.accumulated = "Heuristic content"
+        streaming.state = StreamingState.STREAMING
+        _session_streaming[key] = streaming
+        _session_prev_state[key] = ScreenState.STREAMING
+        _session_sent_lines[key] = set()
+
+        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+
+        classify_calls = []
+        def _capture_classify(lines):
+            classify_calls.append(lines)
+            from src.parsing.content_classifier import ContentRegion
+            return [ContentRegion(type="prose", text="ANSI-rendered content")]
+
+        with (
+            patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
+            patch("src.telegram.output.classify_screen_state", return_value=idle_event),
+            patch("src.telegram.output.classify_regions", side_effect=_capture_classify),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # classify_regions must have been called for re-render
+        assert len(classify_calls) >= 1
+        # The final message should contain the ANSI-rendered content
+        bot.edit_message_text.assert_called()
+        final_text = bot.edit_message_text.call_args[1]["text"]
+        assert "ANSI-rendered content" in final_text
+
+        self._cleanup_session(key)
