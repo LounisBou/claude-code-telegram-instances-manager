@@ -249,6 +249,14 @@ def mark_tool_acted(user_id: int, session_id: int) -> None:
     _session_tool_acted[(user_id, session_id)] = True
 
 
+def is_tool_request_pending(user_id: int, session_id: int) -> bool:
+    """Check whether the session is currently showing a tool approval menu."""
+    return (
+        _session_prev_state.get((user_id, session_id))
+        == ScreenState.TOOL_REQUEST
+    )
+
+
 def _find_last_prompt(display: list[str]) -> int | None:
     """Find index of the last user prompt line on the display.
 
