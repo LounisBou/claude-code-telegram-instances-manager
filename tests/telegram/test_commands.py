@@ -344,7 +344,9 @@ class TestHandleDownload:
         context = MagicMock()
         config = MagicMock(telegram=MagicMock(authorized_users=[111]))
         fh = MagicMock()
-        context.bot_data = {"config": config, "file_handler": fh}
+        session = MagicMock(project_path="/some/project")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "file_handler": fh, "session_manager": sm}
         await handle_download(update, context)
         call_text = update.message.reply_text.call_args[0][0]
         assert "usage" in call_text.lower()
@@ -547,7 +549,9 @@ class TestDownloadUsageFormatting:
         context = MagicMock()
         config = MagicMock(telegram=MagicMock(authorized_users=[111]))
         fh = MagicMock()
-        context.bot_data = {"config": config, "file_handler": fh}
+        session = MagicMock(project_path="/some/project")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "file_handler": fh, "session_manager": sm}
         await handle_download(update, context)
         call_text = update.message.reply_text.call_args[0][0]
         call_kwargs = update.message.reply_text.call_args[1]

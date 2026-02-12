@@ -182,6 +182,12 @@ async def handle_download(
         await update.message.reply_text("You are not authorized to use this bot.")
         return
 
+    session_manager = context.bot_data["session_manager"]
+    active = session_manager.get_active_session(user_id)
+    if not active:
+        await update.message.reply_text("No active session. Use /start to begin one.")
+        return
+
     file_handler = context.bot_data["file_handler"]
     text = update.message.text
     parts = text.split(maxsplit=1)
@@ -196,8 +202,6 @@ async def handle_download(
 
     # Path traversal protection: resolve symlinks and verify the path falls
     # within the active session's project or an upload directory
-    session_manager = context.bot_data["session_manager"]
-    active = session_manager.get_active_session(user_id)
     resolved = os.path.realpath(file_path)
     allowed_dirs = [file_handler._base_dir]
     if active:
