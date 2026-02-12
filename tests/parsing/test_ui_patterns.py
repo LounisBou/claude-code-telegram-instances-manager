@@ -18,7 +18,7 @@ class TestScreenState:
         assert ScreenState.UNKNOWN.value == "unknown"
 
     def test_enum_count(self):
-        assert len(ScreenState) == 13
+        assert len(ScreenState) == 14
 
 
 class TestScreenEvent:

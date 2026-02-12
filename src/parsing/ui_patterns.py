@@ -23,6 +23,7 @@ class ScreenState(Enum):
     BACKGROUND_TASK = "background_task"
     PARALLEL_AGENTS = "parallel_agents"
     TODO_LIST = "todo_list"
+    AUTH_REQUIRED = "auth_required"
     ERROR = "error"
     UNKNOWN = "unknown"
 
@@ -61,6 +62,11 @@ _THINKING_STAR_RE = re.compile(r"^[✶✳✻✽✢·]\s+(.+…(?:\s*\(.+\))?)$")
 
 # Claude response marker
 _RESPONSE_MARKER_RE = re.compile(r"^⏺\s+(.*)")
+
+# Auth/login screen indicators
+_AUTH_SIGN_IN_RE = re.compile(r"sign in|log in", re.IGNORECASE)
+_AUTH_PASTE_CODE_RE = re.compile(r"Paste code here", re.IGNORECASE)
+_AUTH_OAUTH_URL_RE = re.compile(r"claude\.ai/oauth/authorize")
 
 # Tool connector
 _TOOL_CONNECTOR_RE = re.compile(r"^\s*⎿")

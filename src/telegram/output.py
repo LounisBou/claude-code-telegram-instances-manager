@@ -407,6 +407,28 @@ async def poll_output(
                     for i, line in enumerate(non_empty[-10:]):
                         logger.log(TRACE, "  screen[%d]: %s", i, line)
 
+                # Auth screen: notify user and kill session
+                if (
+                    event.state == ScreenState.AUTH_REQUIRED
+                    and prev != ScreenState.AUTH_REQUIRED
+                ):
+                    await streaming.finalize()
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=(
+                            "Claude Code requires authentication.\n"
+                            "Run <code>claude</code> in a terminal on the "
+                            "host to complete the login flow, then try again."
+                        ),
+                        parse_mode="HTML",
+                    )
+                    logger.warning(
+                        "Auth required for user=%d sid=%d — killing session",
+                        user_id, sid,
+                    )
+                    await session_manager.kill_session(user_id, sid)
+                    break
+
                 # Notify on state transitions to THINKING
                 if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
                     # Snapshot UI chrome visible on the display so fast

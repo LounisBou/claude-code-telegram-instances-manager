@@ -14,6 +14,9 @@ from src.core.log_setup import TRACE
 from src.parsing.ui_patterns import (
     ScreenEvent,
     ScreenState,
+    _AUTH_OAUTH_URL_RE,
+    _AUTH_PASTE_CODE_RE,
+    _AUTH_SIGN_IN_RE,
     _BARE_TIME_RE,
     _CLAUDE_HINT_RE,
     _ERROR_RE,
@@ -104,6 +107,23 @@ def classify_screen_state(
     payload = detect_tool_request(lines)
     if payload:
         return _return(ScreenEvent(state=ScreenState.TOOL_REQUEST, payload=payload, raw_lines=lines))
+
+    # 1b. Auth/login screen (OAuth prompt — session cannot proceed)
+    has_auth_indicator = False
+    auth_url = ""
+    for line in non_empty:
+        stripped = line.strip()
+        if _AUTH_PASTE_CODE_RE.search(stripped) or _AUTH_SIGN_IN_RE.search(stripped):
+            has_auth_indicator = True
+        m = _AUTH_OAUTH_URL_RE.search(stripped)
+        if m:
+            auth_url = stripped
+    if has_auth_indicator and auth_url:
+        return _return(ScreenEvent(
+            state=ScreenState.AUTH_REQUIRED,
+            payload={"url": auth_url},
+            raw_lines=lines,
+        ))
 
     # 2. TODO list
     payload = detect_todo_list(lines)
