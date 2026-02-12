@@ -139,6 +139,28 @@ async def _on_startup(app: Application) -> None:
             logger.warning("Failed to send startup message to %d: %s", user_id, exc)
 
 
+async def _send_shutdown_message(bot, config, session_manager) -> None:
+    """Send shutdown notification to all authorized users.
+
+    Args:
+        bot: Telegram Bot instance.
+        config: Application configuration with authorized user list.
+        session_manager: Session manager to count active sessions.
+    """
+    active_count = sum(
+        len(sessions) for sessions in session_manager._sessions.values()
+    )
+    active_info = f"\nActive sessions: {active_count} (ending)" if active_count else ""
+    text = f"<b>Bot shutting down</b>{active_info}"
+    for user_id in config.telegram.authorized_users:
+        try:
+            await bot.send_message(
+                chat_id=user_id, text=text, parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Failed to send shutdown message to %d: %s", user_id, exc)
+
+
 def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Claude Instance Manager Bot")
@@ -193,9 +215,12 @@ async def main() -> None:
         loop.remove_signal_handler(sig)
 
     logger.info("Shutting down...")
+    # Notify users before stopping
+    config = app.bot_data["config"]
+    session_manager = app.bot_data["session_manager"]
+    await _send_shutdown_message(app.bot, config, session_manager)
     await app.updater.stop()
     await app.stop()
-    session_manager = app.bot_data["session_manager"]
     await session_manager.shutdown()
     db = app.bot_data["db"]
     await db.close()

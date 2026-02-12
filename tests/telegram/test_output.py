@@ -2014,6 +2014,33 @@ class TestStartupMessage:
             assert "started" in text.lower() or "online" in text.lower()
 
 
+class TestShutdownMessage:
+    """Shutdown must send a message to all authorized users."""
+
+    @pytest.mark.asyncio
+    async def test_send_shutdown_message(self):
+        """_send_shutdown_message notifies all authorized users."""
+        from src.main import _send_shutdown_message
+
+        bot = AsyncMock()
+        bot.send_message = AsyncMock()
+        config = MagicMock(
+            telegram=MagicMock(authorized_users=[111, 222]),
+        )
+        sm = MagicMock()
+        sm._sessions = {111: {1: "sess1"}, 222: {1: "sess2", 2: "sess3"}}
+
+        await _send_shutdown_message(bot, config, sm)
+
+        send_calls = bot.send_message.call_args_list
+        chat_ids = {call.kwargs.get("chat_id") or call.args[0] for call in send_calls}
+        assert 111 in chat_ids
+        assert 222 in chat_ids
+        for call in send_calls:
+            text = call.kwargs.get("text", "")
+            assert "shutting down" in text.lower() or "stopping" in text.lower()
+
+
 class TestAnsiReRenderOnCompletion:
     """STREAMING->IDLE must re-render final message with ANSI pipeline."""
 
