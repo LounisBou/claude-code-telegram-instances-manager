@@ -12,7 +12,10 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.core.log_setup import TRACE
 from src.parsing.screen_classifier import classify_screen_state
-from src.telegram.formatter import format_html, reflow_text, wrap_code_blocks
+from src.parsing.content_classifier import classify_regions
+from src.telegram.formatter import (
+    format_html, reflow_text, render_regions, wrap_code_blocks,
+)
 from src.telegram.keyboards import build_tool_approval_keyboard
 from src.parsing.terminal_emulator import TerminalEmulator
 from src.parsing.ui_patterns import (
@@ -300,17 +303,23 @@ async def poll_output(
                         event.state == ScreenState.IDLE
                         and streaming.state == StreamingState.THINKING
                     )
+                    # Attributed lines for ANSI-aware pipeline (must be
+                    # captured BEFORE clear_history so scrollback is intact)
+                    fast_idle_attr = None
                     if _fast_idle:
                         # Use full display including scrollback history so
                         # that long responses aren't truncated to the last
                         # screen-full.  The pyte HistoryScreen preserves
                         # lines that scrolled off the visible area.
                         full = emu.get_full_display()
+                        full_attr = emu.get_full_attributed_lines()
                         prompt_idx = _find_last_prompt(full)
                         if prompt_idx is not None:
                             source = full[prompt_idx:]
+                            fast_idle_attr = full_attr[prompt_idx:]
                         else:
                             source = full
+                            fast_idle_attr = full_attr
                         # Clear history after extraction to avoid re-reading
                         # the same scrollback on subsequent poll cycles.
                         emu.clear_history()
@@ -345,7 +354,23 @@ async def poll_output(
                             deduped = textwrap.dedent(
                                 "\n".join(new_lines)
                             ).strip()
-                            html = format_html(reflow_text(wrap_code_blocks(deduped)))
+                            # ANSI-aware pipeline: use attributed lines from
+                            # pyte buffer to classify code vs prose via syntax
+                            # highlighting colors.  Falls back to the old
+                            # heuristic pipeline when no attributed data is
+                            # available (e.g. streaming with only changed text).
+                            if fast_idle_attr is not None:
+                                # Fast-IDLE: full attributed lines captured
+                                # before clear_history above
+                                regions = classify_regions(fast_idle_attr)
+                                rendered = render_regions(regions)
+                                html = format_html(reflow_text(rendered))
+                            else:
+                                # Streaming / ultra-fast: use old pipeline
+                                # with heuristic code block detection
+                                html = format_html(
+                                    reflow_text(wrap_code_blocks(deduped))
+                                )
                             await streaming.append_content(html)
 
                 # Finalize on transition to idle (response complete)

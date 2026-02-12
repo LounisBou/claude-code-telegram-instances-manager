@@ -1,4 +1,12 @@
-from src.telegram.formatter import TELEGRAM_MAX_LENGTH, format_telegram, reflow_text, split_message
+from src.parsing.content_classifier import ContentRegion
+from src.telegram.formatter import (
+    TELEGRAM_MAX_LENGTH,
+    format_html,
+    format_telegram,
+    reflow_text,
+    render_regions,
+    split_message,
+)
 
 
 class TestFormatTelegram:
@@ -150,3 +158,87 @@ class TestSplitMessage:
         text = "A" * TELEGRAM_MAX_LENGTH
         result = split_message(text)
         assert len(result) == 1
+
+
+class TestRenderRegions:
+    """Tests for render_regions: ContentRegion list → markdown text."""
+
+    def test_empty_regions(self):
+        assert render_regions([]) == ""
+
+    def test_prose_region(self):
+        regions = [ContentRegion(type="prose", text="Hello world")]
+        assert render_regions(regions) == "Hello world"
+
+    def test_code_block_region(self):
+        regions = [ContentRegion(type="code_block", text="def foo():\n    pass")]
+        result = render_regions(regions)
+        assert result.startswith("```")
+        assert "def foo():" in result
+        assert result.endswith("```")
+
+    def test_code_block_with_language(self):
+        regions = [ContentRegion(
+            type="code_block", text="print('hi')", language="python"
+        )]
+        result = render_regions(regions)
+        assert "```python" in result
+
+    def test_heading_region(self):
+        regions = [ContentRegion(type="heading", text="Summary")]
+        assert render_regions(regions) == "**Summary**"
+
+    def test_separator_suppressed(self):
+        regions = [ContentRegion(type="separator", text="────────")]
+        assert render_regions(regions) == ""
+
+    def test_blank_region(self):
+        regions = [ContentRegion(type="blank", text="")]
+        assert render_regions(regions) == ""
+
+    def test_list_region(self):
+        regions = [ContentRegion(type="list", text="- Item 1\n- Item 2")]
+        assert render_regions(regions) == "- Item 1\n- Item 2"
+
+    def test_mixed_regions(self):
+        regions = [
+            ContentRegion(type="prose", text="Introduction:"),
+            ContentRegion(type="blank", text=""),
+            ContentRegion(type="code_block", text="x = 1"),
+            ContentRegion(type="blank", text=""),
+            ContentRegion(type="prose", text="The variable `x` is set."),
+        ]
+        result = render_regions(regions)
+        assert "Introduction:" in result
+        assert "```\nx = 1\n```" in result
+        assert "`x`" in result
+
+    def test_full_pipeline_code_becomes_pre(self):
+        """End-to-end: render_regions → reflow_text → format_html."""
+        regions = [
+            ContentRegion(type="prose", text="Example:"),
+            ContentRegion(type="code_block", text="def hello():\n    print('hi')"),
+            ContentRegion(type="prose", text="Uses the `print` builtin."),
+        ]
+        rendered = render_regions(regions)
+        html = format_html(reflow_text(rendered))
+        assert "<pre><code>" in html
+        assert "def hello():" in html
+        assert "<code>print</code>" in html
+
+    def test_full_pipeline_heading_becomes_bold(self):
+        regions = [
+            ContentRegion(type="heading", text="Important"),
+            ContentRegion(type="prose", text="This matters."),
+        ]
+        rendered = render_regions(regions)
+        html = format_html(reflow_text(rendered))
+        assert "<b>Important</b>" in html
+
+    def test_full_pipeline_list_becomes_bullets(self):
+        regions = [
+            ContentRegion(type="list", text="- First\n- Second"),
+        ]
+        rendered = render_regions(regions)
+        html = format_html(reflow_text(rendered))
+        assert "•" in html

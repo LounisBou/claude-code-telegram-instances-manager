@@ -3,6 +3,8 @@ from __future__ import annotations
 import html as _html_mod
 import re
 
+from src.parsing.content_classifier import ContentRegion
+
 
 # --- Telegram formatting ---
 
@@ -149,6 +151,52 @@ def wrap_code_blocks(text: str) -> str:
     if _CODE_FIRST_LINE_RE.match(first):
         return f"```\n{text}\n```"
     return text
+
+
+def render_regions(regions: list[ContentRegion]) -> str:
+    """Convert classified content regions to markdown-annotated text.
+
+    Produces text with standard markdown markers that :func:`format_html`
+    can consume:
+
+    - ``code_block`` → triple-backtick fenced code
+    - ``prose`` → plain text (may contain backtick-wrapped inline code)
+    - ``heading`` → ``**text**`` bold markers
+    - ``list`` → preserved as-is (may contain backtick inline code)
+    - ``separator`` → empty string (suppressed)
+    - ``blank`` → empty line
+
+    Code block regions preserve original indentation verbatim — no dedent
+    and no reflow.
+
+    Args:
+        regions: Ordered list of :class:`ContentRegion` from
+            :func:`~src.parsing.content_classifier.classify_regions`.
+
+    Returns:
+        Markdown-annotated text ready for :func:`reflow_text` and
+        :func:`format_html`.
+    """
+    parts: list[str] = []
+
+    for region in regions:
+        if region.type == "code_block":
+            lang = region.language or ""
+            parts.append(f"```{lang}")
+            parts.append(region.text)
+            parts.append("```")
+        elif region.type == "heading":
+            parts.append(f"**{region.text}**")
+        elif region.type == "separator":
+            # Suppress visual separators — they're UI chrome
+            continue
+        elif region.type == "blank":
+            parts.append("")
+        else:
+            # prose and list: text already has inline code backticks
+            parts.append(region.text)
+
+    return "\n".join(parts)
 
 
 # Patterns that indicate a line starts a new block (should NOT be joined to previous)

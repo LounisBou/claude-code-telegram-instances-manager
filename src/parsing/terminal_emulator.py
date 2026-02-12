@@ -1,8 +1,42 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import pyte
+
+# Colors that indicate syntax-highlighted code in Claude Code's TUI.
+CODE_FG_COLORS: frozenset[str] = frozenset({
+    "blue",       # keywords: def, import, class, return, ...
+    "red",        # string literals: "hello", '''docstring'''
+    "cyan",       # builtins: print, len, range, ...
+    "brown",      # identifiers / function names
+    "green",      # some literals, boolean True/False
+    "lightblue",  # alternate keyword highlighting
+    "lightred",   # alternate string highlighting
+    "lightcyan",  # alternate builtin highlighting
+    "lightgreen", # alternate literal highlighting
+})
+
+
+@dataclass(frozen=True, slots=True)
+class CharSpan:
+    """A contiguous run of characters sharing the same terminal attributes.
+
+    Used by :meth:`TerminalEmulator.get_attributed_lines` to expose pyte's
+    per-character styling as coarser, easier-to-process spans.
+
+    Attributes:
+        text: The character data for this span.
+        fg: Normalized foreground color name (e.g. ``"default"``, ``"blue"``).
+        bold: Whether the span is rendered in bold.
+        italic: Whether the span is rendered in italic.
+    """
+
+    text: str
+    fg: str = "default"
+    bold: bool = False
+    italic: bool = False
 
 
 class TerminalEmulator:
@@ -76,6 +110,143 @@ class TerminalEmulator:
         to prevent the same history lines from being re-read.
         """
         self.screen.history.top.clear()
+
+    # --- Attributed display methods ---
+
+    @staticmethod
+    def _row_to_spans(row: dict, cols: int) -> list[CharSpan]:
+        """Convert a pyte buffer row (dict of col→Char) into CharSpan list.
+
+        Adjacent characters with identical ``(fg, bold, italics)`` attributes
+        are merged into a single span.  Trailing whitespace-only spans are
+        dropped to mirror :meth:`get_display` behaviour.
+
+        Args:
+            row: A pyte screen buffer row (``screen.buffer[y]``) or a
+                history row (``screen.history.top[i]``).
+            cols: Number of columns in the terminal.
+
+        Returns:
+            List of :class:`CharSpan` objects, with trailing blank spans
+            removed.
+        """
+        spans: list[CharSpan] = []
+        cur_text: list[str] = []
+        cur_fg: str = "default"
+        cur_bold: bool = False
+        cur_italic: bool = False
+
+        for col in range(cols):
+            char = row[col]
+            fg = char.fg if char.fg else "default"
+            bold = bool(char.bold)
+            italic = bool(char.italics)
+
+            if fg == cur_fg and bold == cur_bold and italic == cur_italic:
+                cur_text.append(char.data)
+            else:
+                if cur_text:
+                    spans.append(CharSpan(
+                        text="".join(cur_text),
+                        fg=cur_fg,
+                        bold=cur_bold,
+                        italic=cur_italic,
+                    ))
+                cur_text = [char.data]
+                cur_fg = fg
+                cur_bold = bold
+                cur_italic = italic
+
+        if cur_text:
+            spans.append(CharSpan(
+                text="".join(cur_text),
+                fg=cur_fg,
+                bold=cur_bold,
+                italic=cur_italic,
+            ))
+
+        # Strip trailing whitespace-only spans (equivalent to rstrip)
+        while spans and not spans[-1].text.strip():
+            spans.pop()
+        # Rstrip the last remaining span
+        if spans:
+            last = spans[-1]
+            rstripped = last.text.rstrip()
+            if rstripped != last.text:
+                if rstripped:
+                    spans[-1] = CharSpan(
+                        text=rstripped,
+                        fg=last.fg,
+                        bold=last.bold,
+                        italic=last.italic,
+                    )
+                else:
+                    spans.pop()
+
+        return spans
+
+    def get_attributed_lines(self) -> list[list[CharSpan]]:
+        """Return current screen lines as lists of attributed character spans.
+
+        Each line is a list of :class:`CharSpan` objects representing
+        contiguous runs of identically-styled characters.  Trailing
+        whitespace spans are removed, matching :meth:`get_display`.
+
+        Returns:
+            List of lists of :class:`CharSpan`, one inner list per terminal
+            row.
+        """
+        result: list[list[CharSpan]] = []
+        for y in range(self.rows):
+            result.append(self._row_to_spans(self.screen.buffer[y], self.cols))
+        return result
+
+    def get_full_attributed_lines(self) -> list[list[CharSpan]]:
+        """Return scrollback history + current screen as attributed spans.
+
+        Like :meth:`get_full_display` but preserving per-character styling
+        information.  History rows in pyte store full ``Char`` objects, so
+        attributes are not lost when lines scroll off the visible area.
+
+        Returns:
+            List of lists of :class:`CharSpan`: history lines first, then
+            current screen lines.
+        """
+        result: list[list[CharSpan]] = []
+        for row in self.screen.history.top:
+            result.append(self._row_to_spans(row, self.cols))
+        result.extend(self.get_attributed_lines())
+        return result
+
+    def get_attributed_changes(self) -> list[list[CharSpan]]:
+        """Return attributed spans for lines that changed since last check.
+
+        Combines the change-detection logic of :meth:`get_changes` with the
+        attribute extraction of :meth:`get_attributed_lines`.  Only lines
+        whose text content differs from the previous snapshot and is
+        non-blank are returned.
+
+        .. note::
+            This also updates the internal previous-display snapshot, so
+            :meth:`get_changes` and this method share state.
+
+        Returns:
+            List of lists of :class:`CharSpan` for changed, non-empty lines.
+        """
+        current_text = self.get_display()
+        changed_indices: list[int] = []
+        for i, (cur, prev) in enumerate(zip(current_text, self._prev_display)):
+            if cur != prev and cur.strip():
+                changed_indices.append(i)
+        self._prev_display = list(current_text)
+
+        if not changed_indices:
+            return []
+
+        result: list[list[CharSpan]] = []
+        for i in changed_indices:
+            result.append(self._row_to_spans(self.screen.buffer[i], self.cols))
+        return result
 
     def get_text(self) -> str:
         """Return full screen content as text with blank lines collapsed.

@@ -685,6 +685,9 @@ class TestPollOutputStateTransitions:
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output.classify_screen_state", return_value=idle_event),
             patch("src.telegram.output.extract_content", side_effect=_capture_extract),
+            # Fast-IDLE now uses ANSI-aware pipeline; mock render_regions
+            # to produce known output from the attributed lines
+            patch("src.telegram.output.render_regions", return_value="Four"),
         ):
             try:
                 await poll_output(bot, sm)
@@ -829,6 +832,8 @@ class TestPollOutputStateTransitions:
                 side_effect=_classify_side_effect,
             ),
             patch("src.telegram.output.extract_content", side_effect=_capture_extract),
+            # Fast-IDLE now uses ANSI-aware pipeline; mock render_regions
+            patch("src.telegram.output.render_regions", return_value="Four."),
         ):
             try:
                 await poll_output(bot, sm)
