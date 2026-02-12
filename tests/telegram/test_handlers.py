@@ -631,6 +631,64 @@ class TestToolCallbackMarksActed:
             mock_mark.assert_called_once_with(111, 5)
 
 
+class TestTextBlockedDuringToolApproval:
+    """Regression tests for issue 015: text during tool approval blocked."""
+
+    @pytest.mark.asyncio
+    async def test_text_blocked_when_tool_request_pending(self):
+        """Text message is blocked with a helpful reply when tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "some text during tool approval"
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.handlers.is_tool_request_pending", return_value=True
+        ):
+            await handle_text_message(update, context)
+        # Text must NOT be forwarded to PTY
+        session.process.submit.assert_not_called()
+        # User must get a helpful reply
+        update.message.reply_text.assert_called_once()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "tool approval" in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_text_forwarded_when_no_tool_request(self):
+        """Text message is forwarded normally when no tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "normal message"
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.handlers.is_tool_request_pending", return_value=False
+        ):
+            await handle_text_message(update, context)
+        # Text IS forwarded to PTY
+        session.process.submit.assert_called_once_with("normal message")
+        # No error reply sent
+        update.message.reply_text.assert_not_called()
+
+
 class TestHandlerLogging:
     @pytest.mark.asyncio
     async def test_handle_start_logs_handler_entry(self, mock_update, mock_context, caplog):

@@ -19,6 +19,7 @@ from src.telegram.output import (
     _session_thinking_snapshot,
     _session_tool_acted,
     _strip_marker_from_spans,
+    is_tool_request_pending,
     mark_tool_acted,
     StreamingMessage,
     StreamingState,
@@ -2603,3 +2604,27 @@ class TestStaleToolRequestOverride:
         assert _session_prev_state[key] == ScreenState.THINKING
 
         self._cleanup_session(key)
+
+
+class TestIsToolRequestPending:
+    """Regression tests for issue 015: is_tool_request_pending guard."""
+
+    def test_returns_true_when_tool_request(self):
+        """is_tool_request_pending returns True when session is in TOOL_REQUEST."""
+        key = (900, 1)
+        _session_prev_state[key] = ScreenState.TOOL_REQUEST
+        assert is_tool_request_pending(900, 1) is True
+        _session_prev_state.pop(key, None)
+
+    def test_returns_false_when_idle(self):
+        """is_tool_request_pending returns False for non-TOOL_REQUEST states."""
+        key = (901, 1)
+        _session_prev_state[key] = ScreenState.IDLE
+        assert is_tool_request_pending(901, 1) is False
+        _session_prev_state.pop(key, None)
+
+    def test_returns_false_when_no_state(self):
+        """is_tool_request_pending returns False for unknown sessions."""
+        key = (902, 99)
+        _session_prev_state.pop(key, None)
+        assert is_tool_request_pending(902, 99) is False
