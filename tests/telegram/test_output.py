@@ -2158,3 +2158,153 @@ class TestAnsiReRenderOnCompletion:
         assert "ANSI-rendered content" in final_text
 
         self._cleanup_session(key)
+
+
+class TestPollOutputExceptionResilience:
+    """Regression tests for issue 011: poll_output must survive per-session exceptions."""
+
+    def _cleanup_session(self, key):
+        _session_emulators.pop(key, None)
+        _session_streaming.pop(key, None)
+        _session_prev_state.pop(key, None)
+        _session_sent_lines.pop(key, None)
+        _session_thinking_snapshot.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_survives_per_session_exception(self):
+        """Regression test for issue 011: exception in one session must not kill the poll loop.
+
+        Before the fix, any unhandled exception in the per-session processing
+        (e.g. html.escape(None), Telegram API error, parser crash) would propagate
+        up and kill the background poll_output task silently, permanently stopping
+        all output delivery.
+        """
+        key = (780, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"data", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {780: {1: session}}
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=780, edit_rate_limit=3)
+        _session_prev_state[key] = ScreenState.STARTUP
+        _session_sent_lines[key] = set()
+
+        # classify_screen_state raises to simulate a crash mid-processing
+        with (
+            patch(
+                "src.telegram.output.asyncio.sleep",
+                side_effect=[None, None, asyncio.CancelledError],
+            ),
+            patch(
+                "src.telegram.output.classify_screen_state",
+                side_effect=RuntimeError("simulated crash"),
+            ),
+        ):
+            # Before the fix, this would raise RuntimeError.
+            # After the fix, the exception is caught and the loop continues.
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # The key assertion: we reach here (no RuntimeError propagated).
+        # The loop survived the exception and ran a second cycle before CancelledError.
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
+    async def test_tool_request_with_none_question(self):
+        """Regression test for issue 011: TOOL_REQUEST with question=None must not crash.
+
+        The detector can set question=None when no line ending with '?' is found.
+        payload.get("question", default) returns None (key exists with None value),
+        and html.escape(None) raises AttributeError.
+        """
+        key = (781, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"tool", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {781: {1: session}}
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=781, edit_rate_limit=3)
+        _session_prev_state[key] = ScreenState.STARTUP
+        _session_sent_lines[key] = set()
+
+        # TOOL_REQUEST with question=None (key exists but value is None)
+        tool_event = ScreenEvent(
+            state=ScreenState.TOOL_REQUEST,
+            payload={
+                "question": None,
+                "options": ["Yes", "No"],
+                "selected": 0,
+                "has_hint": True,
+            },
+            raw_lines=[],
+        )
+        with (
+            patch(
+                "src.telegram.output.asyncio.sleep",
+                side_effect=[None, asyncio.CancelledError],
+            ),
+            patch(
+                "src.telegram.output.classify_screen_state",
+                return_value=tool_event,
+            ),
+        ):
+            try:
+                await poll_output(bot, sm)
+            except asyncio.CancelledError:
+                pass
+
+        # Should have sent a message with the fallback question text
+        bot.send_message.assert_called_once()
+        call_kwargs = bot.send_message.call_args.kwargs
+        assert "Tool approval requested" in call_kwargs["text"]
+
+        self._cleanup_session(key)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_propagates_through_exception_handler(self):
+        """CancelledError must not be swallowed by the per-session exception handler."""
+        key = (782, 1)
+        self._cleanup_session(key)
+
+        process = MagicMock()
+        process.read_available.side_effect = [b"data", None]
+        session = MagicMock()
+        session.process = process
+        sm = MagicMock()
+        sm._sessions = {782: {1: session}}
+        bot = AsyncMock()
+
+        from src.parsing.terminal_emulator import TerminalEmulator
+        _session_emulators[key] = TerminalEmulator()
+        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=782, edit_rate_limit=3)
+        _session_prev_state[key] = ScreenState.STARTUP
+        _session_sent_lines[key] = set()
+
+        # classify_screen_state raises CancelledError (simulating task cancellation)
+        with patch(
+            "src.telegram.output.asyncio.sleep",
+            side_effect=[None],
+        ), patch(
+            "src.telegram.output.classify_screen_state",
+            side_effect=asyncio.CancelledError,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await poll_output(bot, sm)
+
+        self._cleanup_session(key)
