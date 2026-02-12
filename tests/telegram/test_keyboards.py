@@ -220,3 +220,45 @@ class TestBuildToolApprovalKeyboard:
         keyboard = build_tool_approval_keyboard(session_id=42)
         assert keyboard[0][0]["callback_data"] == "tool:yes:42"
         assert keyboard[0][1]["callback_data"] == "tool:no:42"
+
+    def test_standard_yes_no_options_returns_allow_deny(self):
+        """Regression for issue 013: standard Yes/No menu keeps Allow/Deny."""
+        options = ["Yes", "Yes, allow all edits during this session (shift+tab)", "No"]
+        keyboard = build_tool_approval_keyboard(session_id=1, options=options)
+        assert len(keyboard) == 1
+        assert keyboard[0][0]["text"] == "Allow"
+        assert keyboard[0][1]["text"] == "Deny"
+
+    def test_multi_choice_options_returns_individual_buttons(self):
+        """Regression for issue 013: multi-choice menu shows each option as a button."""
+        options = ["Dark mode", "Light mode", "Dark (colorblind)", "Light (colorblind)"]
+        keyboard = build_tool_approval_keyboard(session_id=1, options=options, selected=0)
+        # One row per option + one Cancel row
+        assert len(keyboard) == 5
+        assert keyboard[0][0]["text"] == "Dark mode"
+        assert keyboard[1][0]["text"] == "Light mode"
+        assert keyboard[3][0]["text"] == "Light (colorblind)"
+        assert keyboard[4][0]["text"] == "Cancel"
+
+    def test_multi_choice_callback_data_encodes_selection(self):
+        """Regression for issue 013: callback data includes selected and target indices."""
+        options = ["Option A", "Option B", "Option C"]
+        keyboard = build_tool_approval_keyboard(session_id=5, options=options, selected=0)
+        assert keyboard[0][0]["callback_data"] == "tool:pick:0:0:5"
+        assert keyboard[1][0]["callback_data"] == "tool:pick:0:1:5"
+        assert keyboard[2][0]["callback_data"] == "tool:pick:0:2:5"
+        # Cancel uses tool:no
+        assert keyboard[3][0]["callback_data"] == "tool:no:5"
+
+    def test_multi_choice_preserves_selected_index(self):
+        """Regression for issue 013: selected index is passed through to callback data."""
+        options = ["Option A", "Option B"]
+        keyboard = build_tool_approval_keyboard(session_id=1, options=options, selected=1)
+        assert keyboard[0][0]["callback_data"] == "tool:pick:1:0:1"
+        assert keyboard[1][0]["callback_data"] == "tool:pick:1:1:1"
+
+    def test_none_options_returns_allow_deny(self):
+        """No options (backward compat) falls back to Allow/Deny."""
+        keyboard = build_tool_approval_keyboard(session_id=1, options=None)
+        assert len(keyboard) == 1
+        assert keyboard[0][0]["text"] == "Allow"

@@ -479,6 +479,91 @@ class TestToolApprovalCallback:
         )
 
 
+class TestMultiChoiceToolCallback:
+    """Regression tests for issue 013: multi-choice tool selection callbacks."""
+
+    @pytest.mark.asyncio
+    async def test_pick_sends_arrow_keys_and_enter(self):
+        """Selecting option 2 from selected=0 sends 2 down arrows + Enter."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:0:2:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Choose a theme"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        # 2 down arrows + Enter
+        session.process.write.assert_called_once_with("\x1b[B\x1b[B\r")
+        update.callback_query.answer.assert_called_once_with("Selected")
+
+    @pytest.mark.asyncio
+    async def test_pick_sends_up_arrows_for_negative_delta(self):
+        """Selecting option 0 from selected=2 sends 2 up arrows + Enter."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:2:0:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Choose a theme"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        # 2 up arrows + Enter
+        session.process.write.assert_called_once_with("\x1b[A\x1b[A\r")
+
+    @pytest.mark.asyncio
+    async def test_pick_same_as_selected_sends_only_enter(self):
+        """Selecting already-highlighted option sends just Enter."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:0:0:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Choose a theme"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        session.process.write.assert_called_once_with("\r")
+
+    @pytest.mark.asyncio
+    async def test_pick_no_session_returns_error(self):
+        """Multi-choice callback with dead session returns error."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:0:1:99"
+        update.callback_query.answer = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        sm._sessions = {111: {}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        update.callback_query.answer.assert_called_once_with(
+            "Session no longer active"
+        )
+
+
 class TestHandlerLogging:
     @pytest.mark.asyncio
     async def test_handle_start_logs_handler_entry(self, mock_update, mock_context, caplog):
