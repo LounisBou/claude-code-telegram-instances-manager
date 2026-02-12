@@ -1,6 +1,7 @@
 from src.parsing.content_classifier import ContentRegion
 from src.telegram.formatter import (
     TELEGRAM_MAX_LENGTH,
+    _wrap_file_paths,
     format_html,
     format_telegram,
     reflow_text,
@@ -242,3 +243,47 @@ class TestRenderRegions:
         rendered = render_regions(regions)
         html = format_html(reflow_text(rendered))
         assert "•" in html
+
+
+class TestFilePathAutoLinkPrevention:
+    """Regression tests for issue 002: Telegram auto-links .py/.js/etc as URLs."""
+
+    def test_bare_filename_wrapped_in_code(self):
+        """Bare filenames with TLD extensions must be wrapped in <code>."""
+        result = format_html("Here is main.py for you")
+        assert "<code>main.py</code>" in result
+        # Should not be plain text that Telegram can auto-link
+        assert "main.py</code>" in result
+
+    def test_path_wrapped_in_code(self):
+        """File paths with slashes must be wrapped in <code>."""
+        result = format_html("Look at src/main.py please")
+        assert "<code>src/main.py</code>" in result
+
+    def test_url_not_wrapped(self):
+        """URLs must NOT be wrapped — only file paths."""
+        result = _wrap_file_paths("Visit https://main.py/path")
+        assert "`" not in result
+
+    def test_already_in_backticks_not_double_wrapped(self):
+        """File paths already in backticks must not get double-wrapped."""
+        result = format_html("See `main.py` here")
+        assert "<code>main.py</code>" in result
+        # No double <code> tags
+        assert "<code><code>" not in result
+
+    def test_non_tld_extension_not_wrapped_bare(self):
+        """Bare filenames with non-TLD extensions should not be wrapped."""
+        result = _wrap_file_paths("See readme.txt")
+        assert "`" not in result
+
+    def test_various_tld_extensions(self):
+        """Common code extensions that are also TLDs must be wrapped."""
+        for ext in ["py", "js", "ts", "go", "rs", "sh", "io", "md"]:
+            result = _wrap_file_paths(f"file.{ext}")
+            assert f"`file.{ext}`" in result, f".{ext} not wrapped"
+
+    def test_init_py_wrapped(self):
+        """__init__.py must be wrapped (common Python pattern)."""
+        result = format_html("The __init__.py file")
+        assert "<code>__init__.py</code>" in result
