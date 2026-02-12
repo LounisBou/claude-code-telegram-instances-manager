@@ -332,6 +332,7 @@ async def poll_output(
         await asyncio.sleep(0.3)
         for user_id, sessions in list(session_manager._sessions.items()):
             for sid, session in list(sessions.items()):
+              try:
                 key = (user_id, sid)
 
                 # Lazy-init emulator and streaming message per session
@@ -433,7 +434,7 @@ async def poll_output(
                     # Finalize any in-progress streaming message first
                     await streaming.finalize()
                     # Build the approval message from the classifier payload
-                    question = event.payload.get("question", "Tool approval requested")
+                    question = event.payload.get("question") or "Tool approval requested"
                     options = event.payload.get("options", [])
                     safe_q = html_mod.escape(question)
                     parts = [f"<b>{safe_q}</b>"]
@@ -621,6 +622,13 @@ async def poll_output(
 
                     emu.clear_history()
                     await streaming.finalize()
+              except asyncio.CancelledError:
+                raise
+              except Exception:
+                logger.exception(
+                    "poll_output crash for user=%d sid=%d — will retry next cycle",
+                    user_id, sid,
+                )
 
 
 class StreamingState(Enum):
