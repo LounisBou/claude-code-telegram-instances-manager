@@ -363,6 +363,11 @@ async def handle_unknown_command(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if active:
+        if is_tool_request_pending(user_id, active.session_id):
+            await update.message.reply_text(
+                "A tool approval is pending. Please respond to it first."
+            )
+            return
         await active.process.submit(update.message.text)
         return
 
