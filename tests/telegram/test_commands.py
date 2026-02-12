@@ -261,6 +261,37 @@ class TestHandleUpdateClaude:
         assert "2" in call_text
 
 
+class TestUpdateClaudeImmediateFeedback:
+    """Regression test for issue 009: /update_claude immediate feedback."""
+
+    @pytest.mark.asyncio
+    async def test_sends_updating_message_before_running_command(self):
+        """The handler must send a status message before awaiting the update."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = MagicMock()
+        config = MagicMock(
+            telegram=MagicMock(authorized_users=[111]),
+            claude=MagicMock(update_command="echo updated"),
+        )
+        sm = MagicMock(has_active_sessions=MagicMock(return_value=False))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch(
+            "src.telegram.commands._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = "OK: updated"
+            await handle_update_claude(update, context)
+            # First call to reply_text is the immediate "Updating..." feedback
+            first_reply = update.message.reply_text.call_args_list[0][0][0]
+            assert "Updating" in first_reply
+            # Then the status message is edited with the result
+            status_msg.edit_text.assert_called_once()
+            edited_text = status_msg.edit_text.call_args[0][0]
+            assert "OK: updated" in edited_text
+
+
 class TestHandleContext:
     @pytest.mark.asyncio
     async def test_sends_context_command(self):

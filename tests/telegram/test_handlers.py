@@ -345,6 +345,30 @@ class TestHandleCallbackQuery:
         assert "cancelled" in msg.lower()
 
     @pytest.mark.asyncio
+    async def test_update_confirm_shows_immediate_feedback(self):
+        """Regression test for issue 009: update callback sends immediate feedback."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "update:confirm"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        config.claude.update_command = "echo done"
+        context.bot_data = {"config": config, "session_manager": MagicMock()}
+        with patch(
+            "src.telegram.handlers._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = "OK: done"
+            await handle_callback_query(update, context)
+            # First edit shows "Updating..." feedback, second edit shows result
+            calls = update.callback_query.edit_message_text.call_args_list
+            assert len(calls) == 2
+            assert "Updating" in calls[0][0][0]
+            assert "OK: done" in calls[1][0][0]
+
+    @pytest.mark.asyncio
     async def test_page_navigation(self):
         update = MagicMock()
         update.effective_user.id = 111
