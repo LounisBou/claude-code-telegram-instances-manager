@@ -42,3 +42,20 @@ class PipelineState:
         self.streaming = streaming
         self.phase: PipelinePhase = PipelinePhase.DORMANT
         self.prev_view: TerminalView | None = None
+        self.tool_acted: bool = False
+
+
+
+def mark_tool_acted(pipeline: PipelineState | None) -> None:
+    """Signal that a tool approval callback was processed."""
+    if pipeline is not None:
+        pipeline.tool_acted = True
+
+
+def is_tool_request_pending(pipeline: PipelineState | None) -> bool:
+    """Check whether the session is currently showing a tool approval menu."""
+    if pipeline is None:
+        return False
+    if pipeline.tool_acted:
+        return False
+    return pipeline.phase == PipelinePhase.TOOL_PENDING

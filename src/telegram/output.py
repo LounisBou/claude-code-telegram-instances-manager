@@ -14,7 +14,6 @@ from telegram import Bot
 
 from src.parsing.screen_classifier import classify_screen_state
 from src.telegram.pipeline_runner import PipelineRunner
-from src.telegram.pipeline_state import PipelineState
 
 logger = logging.getLogger(__name__)
 
@@ -29,19 +28,7 @@ async def poll_output(
             for sid, session in list(sessions.items()):
               try:
                 pipeline = getattr(session, 'pipeline', None)
-                if not isinstance(pipeline, PipelineState):
-                    # Fallback: use old SessionProcessor path
-                    from src.telegram.output_processor import SessionProcessor
-                    from src.telegram.output_state import get_or_create
-                    state = get_or_create(user_id, sid, bot, edit_rate_limit)
-                    raw = session.process.read_available()
-                    if not raw:
-                        continue
-                    processor = SessionProcessor(
-                        state=state, user_id=user_id, session_id=sid,
-                        bot=bot, session_manager=session_manager,
-                    )
-                    await processor.process_cycle(raw)
+                if pipeline is None:
                     continue
 
                 raw = session.process.read_available()

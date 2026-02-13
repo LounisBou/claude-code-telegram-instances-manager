@@ -586,7 +586,7 @@ class TestToolCallbackMarksActed:
         context.bot_data = {"config": config, "session_manager": sm}
         with patch("src.telegram.callbacks.mark_tool_acted") as mock_mark:
             await handle_callback_query(update, context)
-            mock_mark.assert_called_once_with(111, 1)
+            mock_mark.assert_called_once_with(session.pipeline)
 
     @pytest.mark.asyncio
     async def test_tool_no_calls_mark_tool_acted(self):
@@ -607,7 +607,7 @@ class TestToolCallbackMarksActed:
         context.bot_data = {"config": config, "session_manager": sm}
         with patch("src.telegram.callbacks.mark_tool_acted") as mock_mark:
             await handle_callback_query(update, context)
-            mock_mark.assert_called_once_with(111, 1)
+            mock_mark.assert_called_once_with(session.pipeline)
 
     @pytest.mark.asyncio
     async def test_tool_pick_calls_mark_tool_acted(self):
@@ -628,7 +628,7 @@ class TestToolCallbackMarksActed:
         context.bot_data = {"config": config, "session_manager": sm}
         with patch("src.telegram.callbacks.mark_tool_acted") as mock_mark:
             await handle_callback_query(update, context)
-            mock_mark.assert_called_once_with(111, 5)
+            mock_mark.assert_called_once_with(session.pipeline)
 
 
 class TestTextBlockedDuringToolApproval:

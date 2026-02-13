@@ -173,6 +173,7 @@ class PipelineRunner:
 
     async def _send_keyboard(self, event: ScreenEvent) -> None:
         """Send tool approval inline keyboard."""
+        self.state.tool_acted = False
         question = event.payload.get("question") or "Tool approval requested"
         options = event.payload.get("options", [])
         safe_q = html_mod.escape(question)

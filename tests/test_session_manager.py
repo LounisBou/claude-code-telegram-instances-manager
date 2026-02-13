@@ -118,16 +118,6 @@ class TestSessionManager:
             assert len(manager.list_sessions(111)) == 0
             mock_db.end_session.assert_called_once()
             mock_file_handler.cleanup_session.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_kill_session_cleans_output_state(self, manager):
-        with patch("src.session_manager.ClaudeProcess") as MockProc, \
-             patch("src.session_manager._cleanup_output_state") as mock_cleanup:
-            MockProc.return_value = _mock_process()
-            session = await manager.create_session(111, "proj", "/a/proj")
-            await manager.kill_session(111, session.session_id)
-            mock_cleanup.assert_called_once_with(111, session.session_id)
-
     @pytest.mark.asyncio
     async def test_kill_session_not_found(self, manager):
         with pytest.raises(SessionError, match="not found"):

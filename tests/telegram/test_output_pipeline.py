@@ -9,7 +9,6 @@ from src.telegram.output_pipeline import (
     find_last_prompt,
     lstrip_n_chars,
     render_ansi,
-    render_heuristic,
     strip_marker_from_spans,
     strip_response_markers,
 )
@@ -179,20 +178,6 @@ class TestFindLastPrompt:
             "⏺ Second response",
         ]
         assert find_last_prompt(display) == 2
-
-
-class TestRenderHeuristic:
-    """render_heuristic produces HTML from plain text."""
-
-    def test_wraps_code_blocks(self):
-        content = "Hello\n```python\nprint('hi')\n```"
-        result = render_heuristic(content)
-        assert "<pre>" in result or "<code>" in result
-
-    def test_plain_text_passes_through(self):
-        result = render_heuristic("Hello world")
-        assert "Hello world" in result
-
 
 class TestFilterResponseAttrToolConnector:
     """filter_response_attr handles tool_connector lines (⎿ prefix)."""

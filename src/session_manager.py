@@ -9,7 +9,6 @@ from src.claude_process import ClaudeProcess
 from src.core.database import Database
 from src.file_handler import FileHandler
 from src.core.log_setup import TRACE
-from src.telegram.output_state import cleanup as _cleanup_output_state
 from src.telegram.pipeline_state import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -213,7 +212,6 @@ class SessionManager:
             session.db_session_id, exit_code=exit_code, status="ended"
         )
         self._file_handler.cleanup_session(session.project_name, session_id)
-        _cleanup_output_state(user_id, session_id)
         del self._sessions[user_id][session_id]
 
         # Auto-promote another session to active so user isn't left with no active session

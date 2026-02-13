@@ -10,7 +10,6 @@ Functions:
     - :func:`filter_response_attr` — filter attributed lines to response content
     - :func:`find_last_prompt` — locate user prompt boundary on display
     - :func:`strip_response_markers` — filter chrome and strip markers from delta lines
-    - :func:`render_heuristic` — keyword-based code block detection pipeline
     - :func:`render_ansi` — ANSI-aware region classification pipeline
 """
 
@@ -20,7 +19,7 @@ from src.parsing.content_classifier import classify_regions
 from src.parsing.terminal_emulator import CharSpan
 from src.parsing.ui_patterns import classify_text_line
 from src.telegram.formatter import (
-    format_html, reflow_text, render_regions, wrap_code_blocks,
+    format_html, reflow_text, render_regions,
 )
 
 
@@ -253,21 +252,6 @@ def strip_response_markers(
 # ---------------------------------------------------------------------------
 # Rendering pipelines
 # ---------------------------------------------------------------------------
-
-
-def render_heuristic(content: str) -> str:
-    """Render content using the keyword-based heuristic pipeline.
-
-    Applies code block wrapping based on keyword detection, then reflowing
-    and HTML formatting.
-
-    Args:
-        content: Plain text content extracted from terminal.
-
-    Returns:
-        Telegram HTML string.
-    """
-    return format_html(reflow_text(wrap_code_blocks(content)))
 
 
 def render_ansi(

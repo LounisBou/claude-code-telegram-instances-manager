@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 
 from src.telegram.keyboards import format_history_entry, is_authorized
 from src.git_info import get_git_info
-from src.telegram.output_state import is_tool_request_pending
+from src.telegram.pipeline_state import is_tool_request_pending
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,7 @@ async def handle_context(
         await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
-    if is_tool_request_pending(user_id, active.session_id):
+    if is_tool_request_pending(active.pipeline):
         await update.message.reply_text(
             "A tool approval is pending. Please respond to it first."
         )
@@ -262,7 +262,7 @@ async def handle_file_upload(
         await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
-    if is_tool_request_pending(user_id, active.session_id):
+    if is_tool_request_pending(active.pipeline):
         await update.message.reply_text(
             "A tool approval is pending. Please respond to it first."
         )
