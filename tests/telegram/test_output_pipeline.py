@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from src.parsing.terminal_emulator import CharSpan
 from src.telegram.output_pipeline import (
-    CONTENT_STATES,
     dedent_attr_lines,
     filter_response_attr,
     find_last_prompt,
@@ -179,19 +178,6 @@ class TestFindLastPrompt:
             "⏺ Second response",
         ]
         assert find_last_prompt(display) == 2
-
-
-class TestContentStates:
-    """CONTENT_STATES includes the right state values."""
-
-    def test_streaming_in_content_states(self):
-        assert "streaming" in CONTENT_STATES
-
-    def test_startup_not_in_content_states(self):
-        assert "startup" not in CONTENT_STATES
-
-    def test_idle_not_in_content_states(self):
-        assert "idle" not in CONTENT_STATES
 
 
 class TestRenderHeuristic:

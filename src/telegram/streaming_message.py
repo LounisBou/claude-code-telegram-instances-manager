@@ -8,6 +8,7 @@ import time
 from enum import Enum
 
 from telegram import Bot
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +152,9 @@ class StreamingMessage:
                 parse_mode="HTML",
             )
             self.last_edit_time = time.monotonic()
-        except Exception as exc:
-            exc_str = str(exc)
-            if "parse entities" in exc_str.lower():
+        except BadRequest as exc:
+            exc_str = str(exc).lower()
+            if "parse entities" in exc_str:
                 logger.warning(
                     "HTML parse error — falling back to plain text. "
                     "html=%r", self.accumulated[:300],
@@ -166,15 +167,25 @@ class StreamingMessage:
                         parse_mode=None,
                     )
                     self.last_edit_time = time.monotonic()
-                except Exception as inner_exc:
+                except BadRequest as inner_exc:
                     logger.warning(
                         "edit_message plain-text fallback failed: %s", inner_exc
                     )
-            elif "message is not modified" in exc_str.lower():
+            elif "message is not modified" in exc_str:
                 # Harmless: finalize() re-editing with same content
                 pass
             else:
-                logger.warning("edit_message failed: %s", exc)
+                logger.warning("edit_message BadRequest: %s", exc)
+        except RetryAfter as exc:
+            logger.warning(
+                "Rate limited by Telegram, backing off %ss", exc.retry_after
+            )
+            # Push last_edit_time forward so the throttle respects the backoff
+            self.last_edit_time = time.monotonic() + exc.retry_after
+        except Forbidden:
+            raise  # User blocked bot — let poll_output handle
+        except NetworkError as exc:
+            logger.warning("edit_message network error: %s", exc)
 
     async def _overflow(self) -> None:
         """Content exceeds 4096: finalize current message, start new one."""
@@ -186,23 +197,46 @@ class StreamingMessage:
         self.accumulated = current
         await self._edit()
         if remainder:
-            msg = await self.bot.send_message(
-                chat_id=self.chat_id, text=remainder, parse_mode="HTML"
-            )
-            self.message_id = msg.message_id
-            self.accumulated = remainder
-            self.last_edit_time = time.monotonic()
+            try:
+                msg = await self.bot.send_message(
+                    chat_id=self.chat_id, text=remainder, parse_mode="HTML"
+                )
+                self.message_id = msg.message_id
+                self.accumulated = remainder
+                self.last_edit_time = time.monotonic()
+            except Forbidden:
+                raise  # User blocked bot — let poll_output handle
+            except Exception as exc:
+                logger.error(
+                    "Failed to send overflow message, "
+                    "content will retry next cycle: %s", exc,
+                )
+                # Keep remainder so next append_content retries
+                self.accumulated = remainder
 
     async def _typing_loop(self) -> None:
         """Resend typing action every 4 seconds."""
         try:
             while True:
                 await asyncio.sleep(4)
-                await self.bot.send_chat_action(
-                    chat_id=self.chat_id, action="typing"
-                )
+                try:
+                    await self.bot.send_chat_action(
+                        chat_id=self.chat_id, action="typing"
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("typing indicator failed: %s", exc)
         except asyncio.CancelledError:
             pass
+
+    def replace_content(self, html: str) -> None:
+        """Replace accumulated content (e.g. for ANSI re-render on finalization).
+
+        Args:
+            html: New HTML content to replace the current accumulated text.
+        """
+        self.accumulated = html
 
     def reset(self) -> None:
         """Reset to IDLE for next response."""

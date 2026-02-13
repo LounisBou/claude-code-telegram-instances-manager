@@ -66,6 +66,11 @@ async def handle_callback_query(
         await _handle_tool(query, user_id, data, session_manager)
     elif data.startswith("page:"):
         await _handle_page(query, data, config)
+    else:
+        logger.warning(
+            "Unknown callback_data from user=%d: %r", user_id, data
+        )
+        await query.answer("Unknown action")
 
 
 async def _handle_project(query, user_id, data, session_manager) -> None:

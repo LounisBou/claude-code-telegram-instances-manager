@@ -33,7 +33,8 @@ def strip_marker_from_spans(
     """Remove a leading Unicode marker (⏺ or ⎿) from attributed spans.
 
     Strips the marker character and any following space from the first
-    non-whitespace span.  Returns a new span list; original is not modified.
+    span that contains the marker.  Returns a new span list; original
+    is not modified.
 
     Args:
         spans: Attributed spans for a terminal line.
@@ -100,7 +101,8 @@ def dedent_attr_lines(
     lines, then strips that many characters from each line's spans.
 
     Lines whose index is in *skip_indices* are excluded from the
-    minimum-indent computation **and** from stripping.
+    minimum-indent computation (but still stripped if their indent
+    exceeds the minimum).
 
     Args:
         lines: Filtered attributed span lists (one per line).
@@ -209,17 +211,6 @@ def find_last_prompt(display: list[str]) -> int | None:
 # ---------------------------------------------------------------------------
 # Rendering pipelines
 # ---------------------------------------------------------------------------
-
-# States that produce user-visible output sent to Telegram.
-CONTENT_STATES = {
-    "streaming",
-    "tool_running",
-    "tool_result",
-    "error",
-    "todo_list",
-    "parallel_agents",
-    "background_task",
-}
 
 
 def render_heuristic(content: str) -> str:

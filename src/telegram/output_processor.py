@@ -1,7 +1,7 @@
 """SessionProcessor: 3-phase event processing for Claude output.
 
-Replaces the monolithic ``poll_output`` body with a structured processor
-that separates concerns into three phases per poll cycle:
+Structured processor that separates output event handling into three
+phases per poll cycle:
 
 1. **Pre-extraction** — state entry side effects (start typing, snapshot
    chrome, clear dedup, send tool approval keyboard, handle auth).
@@ -132,7 +132,7 @@ class SessionProcessor:
         was_fast_idle = mode == ExtractionMode.FAST_IDLE
         if mode != ExtractionMode.NONE:
             await self._extract_and_send(
-                mode, changed, display, emu, streaming,
+                mode, changed, emu, streaming,
             )
 
         # === Phase 3: Finalization (IDLE only, after extraction) ===
@@ -312,7 +312,6 @@ class SessionProcessor:
         self,
         mode: ExtractionMode,
         changed: list[str],
-        display: list[str],
         emu,
         streaming,
     ) -> None:
@@ -387,7 +386,7 @@ class SessionProcessor:
                 re_attr = full_attr
             re_html = render_ansi(re_source, re_attr)
             if re_html.strip():
-                streaming.accumulated = re_html
+                streaming.replace_content(re_html)
 
         emu.clear_history()
         await streaming.finalize()

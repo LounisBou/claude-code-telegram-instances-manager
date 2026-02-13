@@ -27,14 +27,12 @@ class TestScreenEvent:
         assert event.state == ScreenState.UNKNOWN
         assert event.payload == {}
         assert event.raw_lines == []
-        assert event.timestamp == 0.0
 
     def test_with_payload(self):
         event = ScreenEvent(
             state=ScreenState.THINKING,
             payload={"text": "Deploying robot army…"},
             raw_lines=["✶ Deploying robot army…"],
-            timestamp=1234.5,
         )
         assert event.state == ScreenState.THINKING
         assert event.payload["text"] == "Deploying robot army…"

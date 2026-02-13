@@ -1,7 +1,5 @@
 """Per-session output state and content deduplication.
 
-Replaces the module-level dicts in ``output.py`` with cohesive classes:
-
 - :class:`ContentDeduplicator` — dedup/snapshot logic for filtering already-sent
   lines and subtracting pre-existing chrome from fast THINKING→IDLE extraction.
 - :class:`SessionOutputState` — all per-session state (emulator, streaming
