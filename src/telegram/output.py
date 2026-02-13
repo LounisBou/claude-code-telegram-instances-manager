@@ -1,211 +1,46 @@
+"""Background loop that reads Claude output and streams it to Telegram.
+
+Thin orchestration loop using :class:`~src.telegram.output_processor.SessionProcessor`
+for the actual event processing.  Each poll cycle (300ms) reads raw PTY bytes
+from all active sessions and delegates to the processor's 3-phase pipeline:
+
+1. Pre-extraction — state entry side effects (typing indicator, dedup, auth)
+2. Extraction — content dedup, render, send to Telegram
+3. Finalization — ANSI re-render, clear history, finalize message (IDLE only)
+"""
+
 from __future__ import annotations
 
 import asyncio
 import logging
-import textwrap
 
-import html as html_mod
+from telegram import Bot
 
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-
-from src.core.log_setup import TRACE
-from src.parsing.screen_classifier import classify_screen_state
-from src.parsing.content_classifier import classify_regions
-from src.telegram.formatter import (
-    format_html, reflow_text, render_regions, wrap_code_blocks,
+from src.telegram.output_processor import SessionProcessor
+from src.telegram.output_state import (
+    cleanup,  # noqa: F401 — re-exported for session cleanup
+    get_or_create,
+    is_tool_request_pending as _is_pending_impl,
+    mark_tool_acted as _mark_tool_acted_impl,
 )
-from src.telegram.keyboards import build_tool_approval_keyboard
-from src.telegram.streaming_message import StreamingMessage, StreamingState
-from src.parsing.terminal_emulator import CharSpan, TerminalEmulator
-from src.parsing.ui_patterns import (
-    CHROME_CATEGORIES,
-    ScreenEvent, ScreenState, classify_text_line, extract_content,
+
+# Backward-compat re-exports consumed by existing code.
+# These will be removed once callers import from the new modules directly.
+from src.parsing.models import ScreenEvent, ScreenState  # noqa: F401
+from src.parsing.ui_patterns import CHROME_CATEGORIES as _CHROME_CATEGORIES  # noqa: F401
+from src.telegram.output_pipeline import (  # noqa: F401
+    CONTENT_STATES as _CONTENT_STATES_STRINGS,
+    dedent_attr_lines as _dedent_attr_lines,
+    filter_response_attr as _filter_response_attr,
+    find_last_prompt as _find_last_prompt,
+    lstrip_n_chars as _lstrip_n_chars,
+    strip_marker_from_spans as _strip_marker_from_spans,
 )
+from src.telegram.streaming_message import StreamingMessage, StreamingState  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-
-def _strip_marker_from_spans(
-    spans: list[CharSpan], marker: str,
-) -> list[CharSpan]:
-    """Remove a leading Unicode marker (⏺ or ⎿) from attributed spans.
-
-    Strips the marker character and any following space from the first
-    non-whitespace span.  Returns a new span list; original is not modified.
-
-    Args:
-        spans: Attributed spans for a terminal line.
-        marker: The marker character to strip (e.g. '⏺' or '⎿').
-
-    Returns:
-        Span list with the marker removed from the leading span.
-    """
-    result: list[CharSpan] = []
-    stripped = False
-    for span in spans:
-        if not stripped and marker in span.text:
-            # Remove the marker and optional trailing space
-            new_text = span.text.replace(marker, "", 1)
-            if new_text.startswith(" "):
-                new_text = new_text[1:]
-            stripped = True
-            if new_text:
-                result.append(CharSpan(
-                    text=new_text, fg=span.fg,
-                    bold=span.bold, italic=span.italic,
-                ))
-        else:
-            result.append(span)
-    return result
-
-
-def _lstrip_n_chars(spans: list[CharSpan], n: int) -> list[CharSpan]:
-    """Strip *n* leading characters from the start of a span list.
-
-    Removes exactly *n* characters from the beginning of the combined
-    span text, splitting spans if necessary.  Used by
-    :func:`_dedent_attr_lines` to remove common terminal margin.
-
-    Args:
-        spans: Attributed spans for one line.
-        n: Number of leading characters to strip.
-
-    Returns:
-        New span list with *n* characters removed from the front.
-    """
-    remaining = n
-    result: list[CharSpan] = []
-    for span in spans:
-        if remaining <= 0:
-            result.append(span)
-            continue
-        if len(span.text) <= remaining:
-            remaining -= len(span.text)
-            continue
-        result.append(CharSpan(
-            text=span.text[remaining:],
-            fg=span.fg, bold=span.bold, italic=span.italic,
-        ))
-        remaining = 0
-    return result
-
-
-def _dedent_attr_lines(
-    lines: list[list[CharSpan]],
-    skip_indices: set[int] | None = None,
-) -> list[list[CharSpan]]:
-    """Remove common leading whitespace from attributed lines.
-
-    Computes the minimum indent (leading spaces) across all non-empty
-    lines, then strips that many characters from each line's spans.
-    This removes the 2-space terminal margin that Claude Code adds
-    to content below the ``⏺`` marker.
-
-    Lines whose index is in *skip_indices* are excluded from the
-    minimum-indent computation **and** from stripping.  This is used
-    for marker-stripped lines whose margin was already consumed by
-    :func:`_strip_marker_from_spans` — including them would clamp the
-    minimum to 0 and prevent continuation lines from being dedented.
-
-    Args:
-        lines: Filtered attributed span lists (one per line).
-        skip_indices: Indices of lines to exclude from indent
-            computation and stripping (e.g. marker-stripped lines).
-
-    Returns:
-        Dedented span lists with common leading whitespace removed.
-    """
-    _skip = skip_indices or set()
-    min_indent = float("inf")
-    for i, spans in enumerate(lines):
-        if i in _skip:
-            continue
-        text = "".join(s.text for s in spans)
-        lstripped = text.lstrip()
-        if lstripped:
-            indent = len(text) - len(lstripped)
-            min_indent = min(min_indent, indent)
-    if min_indent in (0, float("inf")):
-        return lines
-    # Strip min_indent from every line that has at least that much
-    # leading whitespace.  Marker-stripped lines that ended up with
-    # less indent (e.g. 0 when ⏺ sat at column 0) are left as-is.
-    result: list[list[CharSpan]] = []
-    for spans in lines:
-        text = "".join(s.text for s in spans)
-        lstripped = text.lstrip()
-        indent = (len(text) - len(lstripped)) if lstripped else 0
-        if indent >= min_indent:
-            result.append(_lstrip_n_chars(spans, min_indent))
-        else:
-            result.append(spans)
-    return result
-
-
-def _filter_response_attr(
-    source: list[str],
-    attr: list[list[CharSpan]],
-) -> list[list[CharSpan]]:
-    """Filter attributed lines to response content only.
-
-    Uses :func:`~src.parsing.ui_patterns.classify_text_line` on the plain text
-    version of each line to identify terminal chrome (prompts, status bars,
-    separators, etc.) and returns only the attributed lines that correspond
-    to Claude's actual response content.
-
-    Marker lines (``⏺``, ``⎿``) have their marker + trailing space
-    stripped.  Then :func:`_dedent_attr_lines` removes the common
-    terminal margin from non-marker lines.  Marker-stripped lines are
-    excluded from the minimum-indent computation because stripping
-    already removed their margin — including them would clamp min to 0
-    and prevent dedenting continuation lines.
-
-    Mirrors the filtering logic of
-    :func:`~src.parsing.ui_patterns.extract_content` but operates on
-    attributed spans instead of plain text.
-
-    Args:
-        source: Plain text lines (parallel to *attr*).
-        attr: Attributed span lists (one per line, same length as *source*).
-
-    Returns:
-        Filtered and dedented list of attributed span lists.
-    """
-    result: list[list[CharSpan]] = []
-    marker_indices: set[int] = set()
-    in_prompt = False
-    for plain, spans in zip(source, attr):
-        cls = classify_text_line(plain)
-        # Start skipping after a ❯ prompt line
-        if cls == "prompt":
-            in_prompt = True
-            continue
-        # End prompt continuation on response marker / structured element
-        if in_prompt:
-            if cls in (
-                "response", "tool_connector", "tool_header",
-                "thinking", "separator",
-            ):
-                in_prompt = False
-            else:
-                continue
-        if cls == "content":
-            result.append(spans)
-        elif cls == "response":
-            marker_indices.add(len(result))
-            result.append(_strip_marker_from_spans(spans, "⏺"))
-        elif cls == "tool_connector":
-            marker_indices.add(len(result))
-            result.append(_strip_marker_from_spans(spans, "⎿"))
-    return _dedent_attr_lines(result, skip_indices=marker_indices)
-
-
-# States that produce user-visible output sent to Telegram.
-# STARTUP, IDLE, USER_MESSAGE, UNKNOWN, and THINKING are suppressed:
-# they are UI chrome or transient states with no extractable content.
-# THINKING gets a one-time "_Thinking..._" notification instead.
-# TOOL_REQUEST is handled separately with an inline keyboard (not
-# extracted as plain content), so it is excluded from _CONTENT_STATES.
+# Backward-compat: _CONTENT_STATES used by test_output.py as ScreenState set
 _CONTENT_STATES = {
     ScreenState.STREAMING,
     ScreenState.TOOL_RUNNING,
@@ -216,468 +51,127 @@ _CONTENT_STATES = {
     ScreenState.BACKGROUND_TASK,
 }
 
-# Line categories that are pure UI chrome — never part of Claude's actual
-# response content.  Used when building the THINKING snapshot so that
-# content from a *previous* response (still visible on the pyte screen)
-# doesn't accidentally dedup identical patterns from a *new* response.
-_CHROME_CATEGORIES = CHROME_CATEGORIES
-
-# Per-session state for the output loop (keyed by (user_id, session_id))
+# Backward-compat: module-level dicts for test_output.py direct manipulation.
+# The real state lives in output_state._states; these dicts are populated
+# from SessionOutputState on each poll cycle for test compatibility.
+from src.parsing.terminal_emulator import TerminalEmulator  # noqa: F401, E402
 _session_emulators: dict[tuple[int, int], TerminalEmulator] = {}
 _session_streaming: dict[tuple[int, int], StreamingMessage] = {}
 _session_prev_state: dict[tuple[int, int], ScreenState] = {}
-# Content dedup: tracks lines already sent to avoid re-sending when
-# pyte redraws the screen (e.g. terminal scroll shifts all line positions,
-# making get_changes() report previously-sent content as "changed").
-# Cleared on IDLE transitions (response boundary).
 _session_sent_lines: dict[tuple[int, int], set[str]] = {}
-# Display snapshot captured on THINKING entry.  Used to subtract
-# pre-existing content (banner artifacts, user echo, status bar)
-# from the full display during fast THINKING→IDLE extraction.
 _session_thinking_snapshot: dict[tuple[int, int], set[str]] = {}
-# Set by the tool-approval callback handler to signal that a tool request
-# was acted upon (Allow/Deny/Pick).  While the flag is set, stale
-# TOOL_REQUEST detections from the pyte buffer are overridden to UNKNOWN.
 _session_tool_acted: dict[tuple[int, int], bool] = {}
 
 
-def mark_tool_acted(user_id: int, session_id: int) -> None:
-    """Signal that a tool approval callback was processed for this session."""
-    _session_tool_acted[(user_id, session_id)] = True
-
-
 def is_tool_request_pending(user_id: int, session_id: int) -> bool:
-    """Check whether the session is currently showing a tool approval menu."""
+    """Check whether the session is currently showing a tool approval menu.
+
+    Wrapper that checks both the real SessionOutputState and the
+    backward-compat module-level dict (for tests that set state directly).
+    """
+    result = _is_pending_impl(user_id, session_id)
+    if result:
+        return True
+    # Fallback: check compat dicts (tests may set _session_prev_state directly)
     key = (user_id, session_id)
     if _session_tool_acted.get(key):
         return False
     return _session_prev_state.get(key) == ScreenState.TOOL_REQUEST
 
 
-def _find_last_prompt(display: list[str]) -> int | None:
-    """Find index of the last user prompt line on the display.
+def mark_tool_acted(user_id: int, session_id: int) -> None:
+    """Signal that a tool approval callback was processed.
 
-    Looks for ``❯`` lines with text longer than 2 chars (to skip bare
-    prompts that are just the cursor marker ``❯``), then validates that
-    response content (a ``⏺`` marker) exists below the prompt.  This
-    prevents selecting the idle hint prompt (e.g.
-    ``❯ Try "how does <filepath> work?"``) which appears below the
-    response at the bottom of the screen.
-
-    Without the ``⏺``-below check, the idle hint would be selected as
-    the source boundary for fast THINKING→IDLE extraction, truncating
-    the actual response content above it and leaving "Thinking..." stuck.
-
-    Args:
-        display: Terminal display lines from the emulator.
-
-    Returns:
-        Line index of the last prompt with response content below it,
-        or ``None`` if no qualifying prompt is visible (e.g. it scrolled
-        off the 36-row pyte screen).
+    Wrapper that updates both the real SessionOutputState and the
+    backward-compat module-level dict.
     """
-    result = None
-    for i, line in enumerate(display):
-        s = line.strip()
-        if s.startswith("❯") and len(s) > 2:
-            # Only accept if response content (⏺) appears below this
-            # prompt.  The idle hint prompt at the bottom of the screen
-            # has no ⏺ below it — selecting it would exclude the
-            # actual response content that sits above.
-            if any(
-                dl.strip().startswith("⏺") for dl in display[i + 1:]
-            ):
-                result = i
-    return result
+    _mark_tool_acted_impl(user_id, session_id)
+    _session_tool_acted[(user_id, session_id)] = True
+
+
+def _sync_compat_dicts(
+    user_id: int, session_id: int, state,
+) -> None:
+    """Sync backward-compat module-level dicts from SessionOutputState.
+
+    This allows test_output.py to manipulate session state directly
+    via the module-level dicts while the real state lives in output_state.
+    Will be removed after test migration (Phase 7b).
+    """
+    key = (user_id, session_id)
+    _session_emulators[key] = state.emulator
+    _session_streaming[key] = state.streaming
+    _session_prev_state[key] = state.prev_state
+    _session_sent_lines[key] = state.dedup.sent_lines
+    _session_thinking_snapshot[key] = state.dedup.thinking_snapshot
+    _session_tool_acted[key] = state.tool_acted
+
+
+def _read_compat_dicts(
+    user_id: int, session_id: int, state,
+) -> None:
+    """Read backward-compat dicts back into SessionOutputState.
+
+    Tests may mutate the module-level dicts; propagate changes back.
+    """
+    key = (user_id, session_id)
+    if key in _session_emulators:
+        state.emulator = _session_emulators[key]
+    if key in _session_streaming:
+        state.streaming = _session_streaming[key]
+    if key in _session_prev_state:
+        state.prev_state = _session_prev_state[key]
+    if key in _session_sent_lines:
+        state.dedup.sent_lines = _session_sent_lines[key]
+    if key in _session_thinking_snapshot:
+        state.dedup.thinking_snapshot = _session_thinking_snapshot[key]
+    if key in _session_tool_acted:
+        state.tool_acted = _session_tool_acted[key]
 
 
 async def poll_output(
-    bot: Bot, session_manager, *, edit_rate_limit: int = 3
+    bot: Bot, session_manager, *, edit_rate_limit: int = 3,
 ) -> None:
     """Background loop that reads Claude output and streams it to Telegram.
 
-    Uses StreamingMessage for edit-in-place streaming: a single Telegram
-    message is created on THINKING, edited in-place as content arrives,
-    and finalized when the response completes (IDLE transition).
-
-    Pipeline per cycle (300ms):
-      1. read_available() drains raw PTY bytes
-      2. TerminalEmulator.feed() updates the pyte virtual screen
-      3. get_display() returns full screen -> classify_screen_state()
-      4. get_changes() returns only changed lines -> extract_content()
-      5. format_html() converts to Telegram HTML
-      6. StreamingMessage.append_content() edits message in-place
-
-    Two separate reads from the emulator: get_display() gives the classifier
-    full context (screen-wide patterns like tool menus), while get_changes()
-    gives content extraction only the delta (avoids re-sending all visible
-    text every cycle).
-
-    Special case: THINKING→IDLE fast responses. When Claude responds within
-    one poll cycle, response content arrives with the thinking indicator and
-    is consumed by get_changes() during THINKING (not a content state). By
-    the IDLE cycle, get_changes() only has UI chrome. The fix: use the full
-    display for content extraction on THINKING→IDLE, with the dedup set
-    preventing old content from leaking.
-
-    Ultra-fast case: UNKNOWN→IDLE (no THINKING detected). When the entire
-    response cycle completes within a single poll interval (<300ms), the
-    classifier never sees THINKING — it jumps from UNKNOWN/USER_MESSAGE
-    straight to IDLE. We detect this via non-empty changed lines on a
-    non-trivial IDLE transition, and extract from ``changed``. The
-    StreamingMessage safety net creates a new message since start_thinking
-    was never called.
-
-    ANSI re-render on STREAMING→IDLE: when a response was streamed using the
-    heuristic pipeline (keyword-based code detection), the finalize block
-    re-renders the final message using the ANSI-aware pipeline (pyte buffer
-    color attributes → classify_regions). This gives accurate code block
-    detection via syntax highlighting, inline code markers, and bold headings
-    in the polished final message.  Skipped when the response was already
-    rendered via the fast-IDLE ANSI pipeline (THINKING→IDLE path).
+    Creates a :class:`SessionProcessor` per session and delegates each
+    poll cycle to its ``process_cycle`` method.
 
     Args:
         bot: Telegram Bot instance for sending messages.
         session_manager: SessionManager with active sessions.
         edit_rate_limit: Maximum Telegram edit_message calls per second.
-            Passed to StreamingMessage on creation.
     """
     while True:
         await asyncio.sleep(0.3)
         for user_id, sessions in list(session_manager._sessions.items()):
             for sid, session in list(sessions.items()):
               try:
-                key = (user_id, sid)
+                state = get_or_create(
+                    user_id, sid, bot, edit_rate_limit,
+                )
 
-                # Lazy-init emulator and streaming message per session
-                if key not in _session_emulators:
-                    _session_emulators[key] = TerminalEmulator()
-                    _session_streaming[key] = StreamingMessage(
-                        bot=bot, chat_id=user_id,
-                        edit_rate_limit=edit_rate_limit,
-                    )
-                    _session_prev_state[key] = ScreenState.STARTUP
-                    _session_sent_lines[key] = set()
+                # Sync compat dicts so tests that mutate them are respected
+                _read_compat_dicts(user_id, sid, state)
 
                 raw = session.process.read_available()
                 if not raw:
+                    # Still sync state for tests even with no data
+                    _sync_compat_dicts(user_id, sid, state)
                     continue
 
-                emu = _session_emulators[key]
-                streaming = _session_streaming[key]
-
-                emu.feed(raw)
-                # Full display for classification (needs screen-wide context)
-                display = emu.get_display()
-                # Changed lines only for content extraction (incremental delta)
-                changed = emu.get_changes()
-                event = classify_screen_state(display, _session_prev_state.get(key))
-                prev = _session_prev_state.get(key)
-
-                # Once we've left STARTUP, never go back — the banner
-                # persists in pyte's screen buffer and tricks the classifier
-                if event.state == ScreenState.STARTUP and prev not in (
-                    ScreenState.STARTUP, None,
-                ):
-                    event = event.__class__(
-                        state=ScreenState.UNKNOWN,
-                        payload=event.payload,
-                        raw_lines=event.raw_lines,
-                    )
-
-                # After a tool callback (Allow/Deny/Pick), stale selection
-                # menu lines linger in the pyte buffer and keep triggering
-                # detect_tool_request.  Override to UNKNOWN until the screen
-                # naturally moves to a different state.
-                if (
-                    event.state == ScreenState.TOOL_REQUEST
-                    and _session_tool_acted.get(key)
-                ):
-                    event = event.__class__(
-                        state=ScreenState.UNKNOWN,
-                        payload=event.payload,
-                        raw_lines=event.raw_lines,
-                    )
-                elif event.state != ScreenState.TOOL_REQUEST:
-                    _session_tool_acted.pop(key, None)
-
-                _session_prev_state[key] = event.state
-
-                # Pre-seed dedup set during STARTUP: add all visible content
-                # lines so they don't leak into the first response when pyte
-                # redraws the screen (the banner persists in the buffer).
-                if event.state == ScreenState.STARTUP:
-                    sent = _session_sent_lines.get(key, set())
-                    for line in display:
-                        stripped = line.strip()
-                        if stripped:
-                            sent.add(stripped)
-
-                # Reset dedup state on new user interaction so stale
-                # data from a previous response cycle never bleeds in.
-                if event.state == ScreenState.USER_MESSAGE:
-                    _session_sent_lines[key] = set()
-                    _session_thinking_snapshot.pop(key, None)
-
-                if event.state != prev:
-                    logger.debug(
-                        "poll_output user=%d sid=%d state=%s prev=%s",
-                        user_id, sid, event.state.name, prev.name if prev else "None",
-                    )
-                else:
-                    logger.log(
-                        TRACE,
-                        "poll_output user=%d sid=%d state=%s (unchanged)",
-                        user_id, sid, event.state.name,
-                    )
-
-                # Dump screen on state transitions for debugging
-                if event.state != prev:
-                    non_empty = [l for l in display if l.strip()]
-                    for i, line in enumerate(non_empty[-10:]):
-                        logger.log(TRACE, "  screen[%d]: %s", i, line)
-
-                # Auth screen: notify user and kill session
-                if (
-                    event.state == ScreenState.AUTH_REQUIRED
-                    and prev != ScreenState.AUTH_REQUIRED
-                ):
-                    await streaming.finalize()
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=(
-                            "Claude Code requires authentication.\n"
-                            "Run <code>claude</code> in a terminal on the "
-                            "host to complete the login flow, then try again."
-                        ),
-                        parse_mode="HTML",
-                    )
-                    logger.warning(
-                        "Auth required for user=%d sid=%d — killing session",
-                        user_id, sid,
-                    )
-                    await session_manager.kill_session(user_id, sid)
-                    break
-
-                # Notify on state transitions to THINKING
-                if event.state == ScreenState.THINKING and prev != ScreenState.THINKING:
-                    # Snapshot UI chrome visible on the display so fast
-                    # THINKING→IDLE can subtract non-content artifacts
-                    # (separators, status bar, prompt echo, thinking stars).
-                    #
-                    # ONLY chrome lines are captured (via classify_text_line).
-                    # Content/response/tool lines are excluded because a
-                    # previous response may still be visible on the pyte
-                    # screen and common patterns like "Args:", "Returns:"
-                    # would incorrectly dedup from the *new* response.
-                    snap: set[str] = set()
-                    for line in display:
-                        stripped = line.strip()
-                        if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
-                            snap.add(stripped)
-                    _session_thinking_snapshot[key] = snap
-                    await streaming.start_thinking()
-
-                # --- Tool approval: send inline keyboard instead of text ---
-                if (
-                    event.state == ScreenState.TOOL_REQUEST
-                    and prev != ScreenState.TOOL_REQUEST
-                ):
-                    # Finalize any in-progress streaming message first
-                    await streaming.finalize()
-                    # Build the approval message from the classifier payload
-                    question = event.payload.get("question") or "Tool approval requested"
-                    options = event.payload.get("options", [])
-                    safe_q = html_mod.escape(question)
-                    parts = [f"<b>{safe_q}</b>"]
-                    for i, opt in enumerate(options):
-                        parts.append(f"  {i + 1}. {html_mod.escape(opt)}")
-                    text = "\n".join(parts)
-                    kb_data = build_tool_approval_keyboard(
-                        sid,
-                        options=options,
-                        selected=event.payload.get("selected", 0),
-                    )
-                    keyboard = InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text=btn["text"],
-                                    callback_data=btn["callback_data"],
-                                )
-                                for btn in row
-                            ]
-                            for row in kb_data
-                        ]
-                    )
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=text,
-                        parse_mode="HTML",
-                        reply_markup=keyboard,
-                    )
-
-                # Extract content for states that produce output.
-                # Also extract on IDLE when a response cycle is incomplete
-                # (streaming is THINKING or STREAMING but not yet finalized).
-                # This handles both direct (THINKING→IDLE) and indirect
-                # (THINKING→UNKNOWN→IDLE) fast-response transitions where
-                # intermediate states don't trigger extraction.
-                #
-                # Ultra-fast path: when Claude responds within a single poll
-                # cycle (<300ms), THINKING is never detected — the classifier
-                # jumps from UNKNOWN/USER_MESSAGE straight to IDLE. In this
-                # case streaming.state is still IDLE (start_thinking never
-                # called). We detect this by checking for non-empty changed
-                # lines on a non-trivial IDLE transition (prev != IDLE/STARTUP).
-                _incomplete_cycle = streaming.state in (
-                    StreamingState.THINKING, StreamingState.STREAMING,
+                processor = SessionProcessor(
+                    state=state,
+                    user_id=user_id,
+                    session_id=sid,
+                    bot=bot,
+                    session_manager=session_manager,
                 )
-                _ultra_fast = (
-                    not _incomplete_cycle
-                    and changed
-                    and prev not in (ScreenState.IDLE, ScreenState.STARTUP, None)
-                )
-                _should_extract = event.state in _CONTENT_STATES or (
-                    event.state == ScreenState.IDLE
-                    and (_incomplete_cycle or _ultra_fast)
-                )
-                _fast_idle = False
-                if _should_extract:
-                    # When streaming is still in THINKING, response content
-                    # hasn't been extracted via get_changes() yet (THINKING
-                    # and UNKNOWN don't extract). Use the display trimmed
-                    # to the last user prompt — this excludes old responses
-                    # that would otherwise need aggressive snapshot dedup
-                    # (which incorrectly eats common patterns like "Args:").
-                    # When no prompt is found (scrolled off), use the full
-                    # display — the empty snapshot ensures no content dedup.
-                    # For ultra-fast responses (no THINKING detected), use
-                    # changed lines — they contain the fresh response delta.
-                    _fast_idle = (
-                        event.state == ScreenState.IDLE
-                        and streaming.state == StreamingState.THINKING
-                    )
-                    # Attributed lines for ANSI-aware pipeline (must be
-                    # captured BEFORE clear_history so scrollback is intact)
-                    fast_idle_attr = None
-                    if _fast_idle:
-                        # Use full display including scrollback history so
-                        # that long responses aren't truncated to the last
-                        # screen-full.  The pyte HistoryScreen preserves
-                        # lines that scrolled off the visible area.
-                        full = emu.get_full_display()
-                        full_attr = emu.get_full_attributed_lines()
-                        prompt_idx = _find_last_prompt(full)
-                        if prompt_idx is not None:
-                            source = full[prompt_idx:]
-                            fast_idle_attr = full_attr[prompt_idx:]
-                        else:
-                            source = full
-                            fast_idle_attr = full_attr
-                        # Clear history after extraction to avoid re-reading
-                        # the same scrollback on subsequent poll cycles.
-                        emu.clear_history()
-                    else:
-                        source = changed
-                    content = extract_content(source)
-                    if content:
-                        # Dedup: filter out lines already sent (screen scroll
-                        # causes get_changes() to re-report shifted lines)
-                        sent = _session_sent_lines.get(key, set())
-                        # For fast-IDLE, also subtract lines that existed
-                        # before THINKING (banner artifacts, user echo, etc.)
-                        snap = (
-                            _session_thinking_snapshot.get(key, set())
-                            if _fast_idle else set()
-                        )
-                        # Check against pre-existing sent set, but do NOT
-                        # add to sent during iteration — repeated lines
-                        # within the same response (e.g. multiple "return
-                        # False" in code) must be preserved.  Only record
-                        # lines as sent AFTER the full batch is extracted.
-                        new_lines = []
-                        for line in content.split("\n"):
-                            stripped = line.strip()
-                            if not stripped:
-                                new_lines.append(line)
-                            elif stripped not in sent and stripped not in snap:
-                                new_lines.append(line)
-                        for line in content.split("\n"):
-                            stripped = line.strip()
-                            if stripped:
-                                sent.add(stripped)
-                        if new_lines:
-                            deduped = textwrap.dedent(
-                                "\n".join(new_lines)
-                            ).strip()
-                            # ANSI-aware pipeline: use attributed lines from
-                            # pyte buffer to classify code vs prose via syntax
-                            # highlighting colors.  Falls back to the old
-                            # heuristic pipeline when no attributed data is
-                            # available (e.g. streaming with only changed text).
-                            if fast_idle_attr is not None:
-                                # Fast-IDLE: filter attributed lines to
-                                # response content (strip prompt echo,
-                                # status bar, progress bar, ⏺ markers)
-                                filtered = _filter_response_attr(
-                                    source, fast_idle_attr,
-                                )
-                                regions = classify_regions(filtered)
-                                rendered = render_regions(regions)
-                                html = format_html(reflow_text(rendered))
-                            else:
-                                # Streaming / ultra-fast: use old pipeline
-                                # with heuristic code block detection
-                                html = format_html(
-                                    reflow_text(wrap_code_blocks(deduped))
-                                )
-                            await streaming.append_content(html)
+                await processor.process_cycle(raw)
 
-                # Finalize on transition to idle (response complete)
-                if event.state == ScreenState.IDLE and prev != ScreenState.IDLE:
-                    # Re-seed dedup with all visible content instead of
-                    # clearing.  When pyte scrolls, get_changes() re-reports
-                    # shifted lines from a *previous* response.  Keeping
-                    # those lines in the dedup set prevents them from leaking
-                    # into the next extraction (e.g. TOOL_REQUEST right after
-                    # a text response).  The dedup set is properly cleared on
-                    # USER_MESSAGE (line ~184) for a fresh start when the
-                    # user sends a new message.
-                    sent = _session_sent_lines.setdefault(key, set())
-                    for line in display:
-                        stripped = line.strip()
-                        if stripped:
-                            sent.add(stripped)
+                # Sync back to compat dicts after processing
+                _sync_compat_dicts(user_id, sid, state)
 
-                    # ANSI re-render: when the response was streamed with
-                    # the heuristic pipeline, re-render the final message
-                    # using the ANSI-aware pipeline for accurate code block
-                    # detection, inline code markers, and heading detection.
-                    if (
-                        streaming.state == StreamingState.STREAMING
-                        and streaming.accumulated
-                        and not _fast_idle
-                    ):
-                        full = emu.get_full_display()
-                        full_attr = emu.get_full_attributed_lines()
-                        prompt_idx = _find_last_prompt(full)
-                        if prompt_idx is not None:
-                            re_source = full[prompt_idx:]
-                            re_attr = full_attr[prompt_idx:]
-                        else:
-                            re_source = full
-                            re_attr = full_attr
-                        filtered = _filter_response_attr(re_source, re_attr)
-                        if filtered:
-                            regions = classify_regions(filtered)
-                            rendered = render_regions(regions)
-                            re_html = format_html(reflow_text(rendered))
-                            if re_html.strip():
-                                streaming.accumulated = re_html
-
-                    emu.clear_history()
-                    await streaming.finalize()
               except asyncio.CancelledError:
                 raise
               except Exception:
@@ -685,5 +179,3 @@ async def poll_output(
                     "poll_output crash for user=%d sid=%d — will retry next cycle",
                     user_id, sid,
                 )
-
-

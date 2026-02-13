@@ -446,7 +446,7 @@ class TestPollOutputStateTransitions:
         thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=thinking_event),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=thinking_event),
         ):
             try:
                 await poll_output(bot, sm)
@@ -491,8 +491,8 @@ class TestPollOutputStateTransitions:
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=streaming_event),
-            patch("src.telegram.output.extract_content", return_value="Hello world\nNew line"),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=streaming_event),
+            patch("src.telegram.output_processor.extract_content", return_value="Hello world\nNew line"),
         ):
             try:
                 await poll_output(bot, sm)
@@ -537,8 +537,8 @@ class TestPollOutputStateTransitions:
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=streaming_event),
-            patch("src.telegram.output.extract_content", return_value="Already sent\nFresh content"),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=streaming_event),
+            patch("src.telegram.output_processor.extract_content", return_value="Already sent\nFresh content"),
         ):
             try:
                 await poll_output(bot, sm)
@@ -587,7 +587,7 @@ class TestPollOutputStateTransitions:
         idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=idle_event),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=idle_event),
         ):
             try:
                 await poll_output(bot, sm)
@@ -650,7 +650,7 @@ class TestPollOutputStateTransitions:
                 side_effect=[None, None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 side_effect=[idle_event, tool_event],
             ),
         ):
@@ -710,11 +710,11 @@ class TestPollOutputStateTransitions:
 
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=idle_event),
-            patch("src.telegram.output.extract_content", side_effect=_capture_extract),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=idle_event),
+            patch("src.telegram.output_processor.extract_content", side_effect=_capture_extract),
             # Fast-IDLE now uses ANSI-aware pipeline; mock render_regions
             # to produce known output from the attributed lines
-            patch("src.telegram.output.render_regions", return_value="Four"),
+            patch("src.telegram.output_pipeline.render_regions", return_value="Four"),
         ):
             try:
                 await poll_output(bot, sm)
@@ -784,10 +784,10 @@ class TestPollOutputStateTransitions:
                 side_effect=[None, None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 side_effect=_classify_side_effect,
             ),
-            patch("src.telegram.output.extract_content", side_effect=_capture_extract),
+            patch("src.telegram.output_processor.extract_content", side_effect=_capture_extract),
         ):
             try:
                 await poll_output(bot, sm)
@@ -855,12 +855,12 @@ class TestPollOutputStateTransitions:
                 side_effect=[None, None, None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 side_effect=_classify_side_effect,
             ),
-            patch("src.telegram.output.extract_content", side_effect=_capture_extract),
+            patch("src.telegram.output_processor.extract_content", side_effect=_capture_extract),
             # Fast-IDLE now uses ANSI-aware pipeline; mock render_regions
-            patch("src.telegram.output.render_regions", return_value="Four."),
+            patch("src.telegram.output_pipeline.render_regions", return_value="Four."),
         ):
             try:
                 await poll_output(bot, sm)
@@ -927,10 +927,10 @@ class TestPollOutputStateTransitions:
                 side_effect=[None, None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 side_effect=_classify_side_effect,
             ),
-            patch("src.telegram.output.extract_content", side_effect=_capture_extract),
+            patch("src.telegram.output_processor.extract_content", side_effect=_capture_extract),
         ):
             try:
                 await poll_output(bot, sm)
@@ -970,8 +970,8 @@ class TestPollOutputStateTransitions:
         unknown_event = ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=unknown_event),
-            patch("src.telegram.output.logger") as mock_logger,
+            patch("src.telegram.output_processor.classify_screen_state", return_value=unknown_event),
+            patch("src.telegram.output_processor.logger") as mock_logger,
         ):
             try:
                 await poll_output(bot, sm)
@@ -1013,8 +1013,8 @@ class TestPollOutputStateTransitions:
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=streaming_event),
-            patch("src.telegram.output.extract_content", return_value=""),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=streaming_event),
+            patch("src.telegram.output_processor.extract_content", return_value=""),
         ):
             try:
                 await poll_output(bot, sm)
@@ -1070,7 +1070,7 @@ class TestPollOutputStateTransitions:
                 side_effect=[None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 return_value=tool_event,
             ),
         ):
@@ -1123,7 +1123,7 @@ class TestPollOutputStreaming:
         thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=thinking_event),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=thinking_event),
         ):
             try:
                 await poll_output(bot, sm)
@@ -1168,8 +1168,8 @@ class TestPollOutputStreaming:
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=streaming_event),
-            patch("src.telegram.output.extract_content", return_value="**bold** text"),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=streaming_event),
+            patch("src.telegram.output_processor.extract_content", return_value="**bold** text"),
         ):
             try:
                 await poll_output(bot, sm)
@@ -1210,7 +1210,7 @@ class TestPollOutputStreaming:
         idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=idle_event),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=idle_event),
         ):
             try:
                 await poll_output(bot, sm)
@@ -2145,8 +2145,8 @@ class TestAnsiReRenderOnCompletion:
 
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-            patch("src.telegram.output.classify_screen_state", return_value=idle_event),
-            patch("src.telegram.output.classify_regions", side_effect=_capture_classify),
+            patch("src.telegram.output_processor.classify_screen_state", return_value=idle_event),
+            patch("src.telegram.output_pipeline.classify_regions", side_effect=_capture_classify),
         ):
             try:
                 await poll_output(bot, sm)
@@ -2206,7 +2206,7 @@ class TestPollOutputExceptionResilience:
                 side_effect=[None, None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 side_effect=RuntimeError("simulated crash"),
             ),
         ):
@@ -2263,7 +2263,7 @@ class TestPollOutputExceptionResilience:
                 side_effect=[None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 return_value=tool_event,
             ),
         ):
@@ -2304,7 +2304,7 @@ class TestPollOutputExceptionResilience:
             "src.telegram.output.asyncio.sleep",
             side_effect=[None],
         ), patch(
-            "src.telegram.output.classify_screen_state",
+            "src.telegram.output_processor.classify_screen_state",
             side_effect=asyncio.CancelledError,
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -2358,7 +2358,7 @@ class TestPollOutputAuthRequired:
                 side_effect=[None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 return_value=auth_event,
             ),
         ):
@@ -2412,7 +2412,7 @@ class TestPollOutputAuthRequired:
                 side_effect=[None, None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 return_value=auth_event,
             ),
         ):
@@ -2582,7 +2582,7 @@ class TestStaleToolRequestOverride:
                 side_effect=[None, None, None, asyncio.CancelledError],
             ),
             patch(
-                "src.telegram.output.classify_screen_state",
+                "src.telegram.output_processor.classify_screen_state",
                 side_effect=classify_side_effect,
             ),
         ):
