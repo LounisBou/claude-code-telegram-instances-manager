@@ -10,6 +10,8 @@ A Telegram bot that proxies Claude Code CLI sessions over PTY. Users interact wi
 
 ### Run the bot
 ```bash
+python run.py config.yaml --debug
+# or equivalently:
 python -m src.main config.yaml --debug
 ```
 
@@ -49,7 +51,7 @@ The system has three layers connected by an async pipeline:
 
 **Telegram layer** (`src/telegram/`) — Handlers receive user messages, forward them to sessions, and stream output back to Telegram via edit-in-place HTML messages.
 
-**Session layer** (`src/session_manager.py`, `src/claude_process.py`) — Manages per-user session lifecycles. `ClaudeProcess` wraps a pexpect-managed PTY subprocess. Text is sent via `submit()` which separates text and Enter with a 150ms delay to avoid triggering Claude Code's paste detection.
+**Session layer** (`src/session_manager.py`, `src/claude_process.py`) — Manages per-user session lifecycles. `ClaudeProcess` wraps a pexpect-managed PTY subprocess. Text is sent via `submit()` which separates text and Enter with a **150ms delay** to avoid triggering Claude Code's paste detection — this is fragile but necessary; do not remove or reduce the delay.
 
 **Parsing layer** (`src/parsing/`) — A pyte virtual terminal (`terminal_emulator.py`) feeds a 3-pass priority screen classifier (`screen_classifier.py`) that returns a `TerminalView` observation. Content is classified into semantic regions via `content_classifier.py` using ANSI color attributes from pyte.
 
@@ -62,6 +64,8 @@ The system has three layers connected by an async pipeline:
 4. Classifies screen → `ScreenEvent(state=TerminalView.XXX)`
 5. Dispatches to `PipelineRunner.process(event)` which looks up `(current_phase, observation) → (next_phase, actions)` in a transition table
 
+**Dual-read pattern (non-obvious):** Each cycle reads the terminal twice — `get_display()` returns the full 40x120 grid because the screen classifier needs spatial context (e.g., detecting a tool approval menu requires seeing the selection cursor AND numbered options). But `get_attributed_changes()` returns only delta lines to avoid sending duplicate content to Telegram every 300ms. Misunderstanding this dual-read is a common source of bugs when modifying the output pipeline.
+
 **Key types:**
 - `TerminalView` (14 values, `parsing/models.py`) — pure observation of what the terminal looks like
 - `PipelinePhase` (4 values: DORMANT, THINKING, STREAMING, TOOL_PENDING) — behavioral state of the bot
@@ -73,6 +77,8 @@ The output module is decomposed into:
 - `pipeline_state.py` — `PipelinePhase` enum, `PipelineState` class, tool-pending helpers
 - `output_pipeline.py` — span manipulation and ANSI rendering helpers
 - `streaming_message.py` — edit-in-place Telegram message with rate limiting
+
+The transition table in `pipeline_runner.py` has **import-time validation** — every action string in the table is verified against `PipelineRunner` methods at import time. If you add a transition with a typo in the action name, the module fails to import immediately.
 
 ### Screen state classifier
 
@@ -96,3 +102,5 @@ The 14 observations are defined in `TerminalView` enum (`src/parsing/models.py`)
 - **Authorization:** Every handler checks `is_authorized(user_id, config.telegram.authorized_users)` from `keyboards.py` before proceeding.
 - **Logging:** Custom TRACE level (5) defined in `src/core/log_setup.py`, used for high-frequency PTY I/O logs.
 - **Python:** Requires 3.11+. Uses `from __future__ import annotations` throughout.
+- **Classifier validation:** `scripts/validate_classifier.py` runs the screen classifier against captured terminal snapshots. Zero UNKNOWN classifications across the corpus is the baseline expectation.
+- **Transition table completeness:** When adding a new `TerminalView` value, add transitions for all 4 phases in `_TRANSITIONS` dict, or they will fall through to the fallback path and log warnings during normal operation.
