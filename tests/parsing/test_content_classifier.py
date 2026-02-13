@@ -2,7 +2,7 @@
 
 from src.parsing.content_classifier import (
     ContentRegion,
-    classify_line,
+    classify_attr_line,
     classify_regions,
     _insert_inline_code_markers,
     _has_code_colors,
@@ -29,18 +29,18 @@ def _multi_spans(*specs: tuple) -> list[CharSpan]:
 
 
 # ---------------------------------------------------------------------------
-# classify_line
+# classify_attr_line
 # ---------------------------------------------------------------------------
 
 class TestClassifyLine:
     def test_empty_spans(self):
-        assert classify_line([]) == "blank"
+        assert classify_attr_line([]) == "blank"
 
     def test_whitespace_only(self):
-        assert classify_line(_spans("    ")) == "blank"
+        assert classify_attr_line(_spans("    ")) == "blank"
 
     def test_prose_default_fg(self):
-        assert classify_line(_spans("This is plain text.")) == "prose"
+        assert classify_attr_line(_spans("This is plain text.")) == "prose"
 
     def test_code_blue_keyword(self):
         spans = [
@@ -49,14 +49,14 @@ class TestClassifyLine:
             CharSpan(text="foo", fg="brown"),
             CharSpan(text="():", fg="default"),
         ]
-        assert classify_line(spans) == "code"
+        assert classify_attr_line(spans) == "code"
 
     def test_code_red_string(self):
         spans = [
             CharSpan(text='    ', fg="default"),
             CharSpan(text='"hello"', fg="red"),
         ]
-        assert classify_line(spans) == "code"
+        assert classify_attr_line(spans) == "code"
 
     def test_code_cyan_builtin(self):
         spans = [
@@ -64,7 +64,7 @@ class TestClassifyLine:
             CharSpan(text="print", fg="cyan"),
             CharSpan(text="(x)", fg="default"),
         ]
-        assert classify_line(spans) == "code"
+        assert classify_attr_line(spans) == "code"
 
     def test_code_brown_identifier(self):
         spans = [
@@ -72,42 +72,42 @@ class TestClassifyLine:
             CharSpan(text="my_var", fg="brown"),
             CharSpan(text=" = 42", fg="default"),
         ]
-        assert classify_line(spans) == "code"
+        assert classify_attr_line(spans) == "code"
 
     def test_code_green_literal(self):
         spans = [
             CharSpan(text="    ", fg="default"),
             CharSpan(text="True", fg="green"),
         ]
-        assert classify_line(spans) == "code"
+        assert classify_attr_line(spans) == "code"
 
     def test_heading_bold_default_fg(self):
-        assert classify_line(_spans("Important Note", bold=True)) == "heading"
+        assert classify_attr_line(_spans("Important Note", bold=True)) == "heading"
 
     def test_heading_not_if_colored(self):
         """Bold + colored = code, not heading."""
         spans = [CharSpan(text="def", fg="blue", bold=True)]
-        assert classify_line(spans) == "code"
+        assert classify_attr_line(spans) == "code"
 
     def test_list_item_dash(self):
-        assert classify_line(_spans("- Item one")) == "list_item"
+        assert classify_attr_line(_spans("- Item one")) == "list_item"
 
     def test_list_item_asterisk(self):
-        assert classify_line(_spans("* Another item")) == "list_item"
+        assert classify_attr_line(_spans("* Another item")) == "list_item"
 
     def test_list_item_numbered(self):
-        assert classify_line(_spans("1. First item")) == "list_item"
-        assert classify_line(_spans("42) Last item")) == "list_item"
+        assert classify_attr_line(_spans("1. First item")) == "list_item"
+        assert classify_attr_line(_spans("42) Last item")) == "list_item"
 
     def test_list_item_bullet(self):
-        assert classify_line(_spans("• Bullet item")) == "list_item"
+        assert classify_attr_line(_spans("• Bullet item")) == "list_item"
 
     def test_separator_box_drawing(self):
-        assert classify_line(_spans("─" * 40)) == "separator"
+        assert classify_attr_line(_spans("─" * 40)) == "separator"
 
     def test_separator_with_fffd(self):
         """pyte produces trailing U+FFFD artifacts on separator lines."""
-        assert classify_line(_spans("─" * 30 + "\ufffd\ufffd")) == "separator"
+        assert classify_attr_line(_spans("─" * 30 + "\ufffd\ufffd")) == "separator"
 
 
 # ---------------------------------------------------------------------------

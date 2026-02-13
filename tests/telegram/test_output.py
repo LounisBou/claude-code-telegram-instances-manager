@@ -28,7 +28,7 @@ from src.telegram.output import (
 from src.parsing.terminal_emulator import CharSpan
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import (
-    ScreenEvent, ScreenState, classify_line, extract_content,
+    ScreenEvent, ScreenState, classify_text_line, extract_content,
 )
 
 
@@ -867,7 +867,7 @@ class TestPollOutputStateTransitions:
             except asyncio.CancelledError:
                 pass
 
-        # extract_content called for extraction (snapshot uses classify_line
+        # extract_content called for extraction (snapshot uses classify_text_line
         # on the mock display, not extract_content — so only 1 call expected
         # from the IDLE fast-path extraction)
         assert len(extract_calls) >= 1
@@ -1571,7 +1571,7 @@ class TestThinkingSnapshotChromeOnly:
     code) from a previous response still visible on the pyte screen.  When
     the next response used the same patterns, they were incorrectly deduped.
 
-    Fix: snapshot only captures UI chrome lines (classify_line result in
+    Fix: snapshot only captures UI chrome lines (classify_text_line result in
     _CHROME_CATEGORIES).  Content, response, and tool lines are excluded.
     """
 
@@ -1592,7 +1592,7 @@ class TestThinkingSnapshotChromeOnly:
         snap = set()
         for line in display_at_thinking:
             stripped = line.strip()
-            if stripped and classify_line(line) in _CHROME_CATEGORIES:
+            if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
                 snap.add(stripped)
         assert "Args:" not in snap
         assert "Returns:" not in snap
@@ -1611,7 +1611,7 @@ class TestThinkingSnapshotChromeOnly:
         snap = set()
         for line in display_at_thinking:
             stripped = line.strip()
-            if stripped and classify_line(line) in _CHROME_CATEGORIES:
+            if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
                 snap.add(stripped)
         assert any("palindrome" in s for s in snap)  # prompt
         assert any("────" in s for s in snap)  # separator
@@ -1629,7 +1629,7 @@ class TestThinkingSnapshotChromeOnly:
         snap = set()
         for line in display_at_thinking:
             stripped = line.strip()
-            if stripped and classify_line(line) in _CHROME_CATEGORIES:
+            if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
                 snap.add(stripped)
         assert not any("⏺" in s for s in snap)
         assert not any("⎿" in s for s in snap)
@@ -1668,7 +1668,7 @@ class TestThinkingSnapshotChromeOnly:
         snap = set()
         for line in display_at_thinking:
             stripped = line.strip()
-            if stripped and classify_line(line) in _CHROME_CATEGORIES:
+            if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
                 snap.add(stripped)
         # These MUST NOT be in the snap
         assert "Args:" not in snap

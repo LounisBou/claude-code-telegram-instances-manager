@@ -102,7 +102,13 @@ _EXTRA_BASH_RE = re.compile(r"(\d+) bash")
 _EXTRA_AGENTS_RE = re.compile(r"(\d+) local agents?")
 _EXTRA_FILES_RE = re.compile(r"(\d+) files? \+(\d+) -(\d+)")
 
-def classify_line(line: str) -> str:
+CHROME_CATEGORIES = frozenset({
+    "separator", "diff_delimiter", "status_bar", "prompt",
+    "thinking", "startup", "logo", "box", "empty",
+})
+
+
+def classify_text_line(line: str) -> str:
     """Classify a screen line as a UI element or content.
 
     Checks the line against known Claude Code UI patterns (separators,
@@ -200,7 +206,7 @@ def extract_content(lines: list[str]) -> str:
     """Extract meaningful content from screen lines, filtering UI chrome.
 
     Keeps lines classified as 'content', 'response' (⏺ prefix replaced),
-    and 'tool_connector' (⎿ prefix replaced) by classify_line.
+    and 'tool_connector' (⎿ prefix replaced) by classify_text_line.
 
     Preserves relative indentation by replacing Unicode markers (⏺, ⎿)
     with spaces of equal width instead of stripping them. After collection,
@@ -221,7 +227,7 @@ def extract_content(lines: list[str]) -> str:
     content_lines = []
     in_prompt = False
     for line in lines:
-        cls = classify_line(line)
+        cls = classify_text_line(line)
         # Start skipping after a ❯ prompt line — continuation lines
         # (wrapped user input) are classified as 'content' but belong
         # to the prompt, not to Claude's response.

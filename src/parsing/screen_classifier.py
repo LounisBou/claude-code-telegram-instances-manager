@@ -138,7 +138,7 @@ def classify_screen_state(
     # --- Second pass: bottom-up scan for current activity ---
 
     # Find last meaningful line (skip status bar, separators, empty lines).
-    # Must skip ALL patterns that classify_line() considers non-content UI:
+    # Must skip ALL patterns that classify_text_line() considers non-content UI:
     # tips, bare times, claude hints, timer lines, and separators with
     # trailing text overlay (_SEPARATOR_PREFIX_RE).  Missing any of these
     # makes the scan stop on a UI chrome line, which breaks IDLE detection

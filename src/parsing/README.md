@@ -7,7 +7,8 @@ Raw PTY bytes flow through this pipeline to produce a structured screen state th
 | Module | Purpose |
 |---|---|
 | `terminal_emulator.py` | pyte-based virtual terminal; feeds raw bytes, exposes `get_display()` (full screen) and `get_changes()` (incremental delta) |
-| `ui_patterns.py` | Compiled regex patterns, `ScreenState` enum (13 states), `ScreenEvent` dataclass, `classify_line()` for 14 line types |
+| `ui_patterns.py` | Compiled regex patterns, `classify_text_line()` for 14 line types, `CHROME_CATEGORIES` constant |
+| `models.py` | Shared data types: `ScreenState` enum (13 states), `ScreenEvent` dataclass |
 | `detectors.py` | Structured detectors for complex UI elements: tool requests, TODO lists, parallel agents, thinking indicators, background tasks |
 | `screen_classifier.py` | `classify_screen_state()` -- 3-pass priority classifier that returns a single `ScreenState` from a full screen grid |
 

@@ -18,7 +18,8 @@ from src.telegram.keyboards import build_tool_approval_keyboard
 from src.telegram.streaming_message import StreamingMessage, StreamingState
 from src.parsing.terminal_emulator import CharSpan, TerminalEmulator
 from src.parsing.ui_patterns import (
-    ScreenEvent, ScreenState, classify_line, extract_content,
+    CHROME_CATEGORIES,
+    ScreenEvent, ScreenState, classify_text_line, extract_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,7 +148,7 @@ def _filter_response_attr(
 ) -> list[list[CharSpan]]:
     """Filter attributed lines to response content only.
 
-    Uses :func:`~src.parsing.ui_patterns.classify_line` on the plain text
+    Uses :func:`~src.parsing.ui_patterns.classify_text_line` on the plain text
     version of each line to identify terminal chrome (prompts, status bars,
     separators, etc.) and returns only the attributed lines that correspond
     to Claude's actual response content.
@@ -174,7 +175,7 @@ def _filter_response_attr(
     marker_indices: set[int] = set()
     in_prompt = False
     for plain, spans in zip(source, attr):
-        cls = classify_line(plain)
+        cls = classify_text_line(plain)
         # Start skipping after a ❯ prompt line
         if cls == "prompt":
             in_prompt = True
@@ -219,10 +220,7 @@ _CONTENT_STATES = {
 # response content.  Used when building the THINKING snapshot so that
 # content from a *previous* response (still visible on the pyte screen)
 # doesn't accidentally dedup identical patterns from a *new* response.
-_CHROME_CATEGORIES = frozenset({
-    "separator", "diff_delimiter", "status_bar", "prompt",
-    "thinking", "startup", "logo", "box", "empty",
-})
+_CHROME_CATEGORIES = CHROME_CATEGORIES
 
 # Per-session state for the output loop (keyed by (user_id, session_id))
 _session_emulators: dict[tuple[int, int], TerminalEmulator] = {}
@@ -467,7 +465,7 @@ async def poll_output(
                     # THINKING→IDLE can subtract non-content artifacts
                     # (separators, status bar, prompt echo, thinking stars).
                     #
-                    # ONLY chrome lines are captured (via classify_line).
+                    # ONLY chrome lines are captured (via classify_text_line).
                     # Content/response/tool lines are excluded because a
                     # previous response may still be visible on the pyte
                     # screen and common patterns like "Args:", "Returns:"
@@ -475,7 +473,7 @@ async def poll_output(
                     snap: set[str] = set()
                     for line in display:
                         stripped = line.strip()
-                        if stripped and classify_line(line) in _CHROME_CATEGORIES:
+                        if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
                             snap.add(stripped)
                     _session_thinking_snapshot[key] = snap
                     await streaming.start_thinking()
