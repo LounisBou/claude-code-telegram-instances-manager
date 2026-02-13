@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html as html_mod
 import logging
+import platform
 import signal
 
 from telegram import BotCommand
@@ -102,7 +104,12 @@ def build_app(config_path: str, debug: bool = False, trace: bool = False, verbos
 
 
 async def _on_startup(app: Application) -> None:
-    """Run one-time initialization tasks after the application starts."""
+    """Run one-time initialization tasks after the application starts.
+
+    Initializes the database, marks stale sessions as lost, sets bot
+    commands, and sends a startup notification message to all authorized
+    Telegram users with the hostname and recovered session count.
+    """
     logger = logging.getLogger(__name__)
     db = app.bot_data["db"]
     await db.initialize()
@@ -113,6 +120,45 @@ async def _on_startup(app: Application) -> None:
     await app.bot.set_my_commands(
         [BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
     )
+
+    # Send startup notification to all authorized users
+    config = app.bot_data["config"]
+    hostname = platform.node() or "unknown"
+    stale_info = f"\nRecovered sessions: {len(lost)}" if lost else ""
+    text = (
+        "<b>Bot started</b>\n"
+        f"Host: <code>{html_mod.escape(hostname)}</code>"
+        f"{stale_info}"
+    )
+    for user_id in config.telegram.authorized_users:
+        try:
+            await app.bot.send_message(
+                chat_id=user_id, text=text, parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Failed to send startup message to %d: %s", user_id, exc)
+
+
+async def _send_shutdown_message(bot, config, session_manager) -> None:
+    """Send shutdown notification to all authorized users.
+
+    Args:
+        bot: Telegram Bot instance.
+        config: Application configuration with authorized user list.
+        session_manager: Session manager to count active sessions.
+    """
+    active_count = sum(
+        len(sessions) for sessions in session_manager._sessions.values()
+    )
+    active_info = f"\nActive sessions: {active_count} (ending)" if active_count else ""
+    text = f"<b>Bot shutting down</b>{active_info}"
+    for user_id in config.telegram.authorized_users:
+        try:
+            await bot.send_message(
+                chat_id=user_id, text=text, parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Failed to send shutdown message to %d: %s", user_id, exc)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -153,7 +199,10 @@ async def main() -> None:
 
     # Start background output polling loop
     session_manager = app.bot_data["session_manager"]
-    poll_task = asyncio.create_task(poll_output(app.bot, session_manager))
+    config = app.bot_data["config"]
+    poll_task = asyncio.create_task(
+        poll_output(app.bot, session_manager, edit_rate_limit=config.telegram.edit_rate_limit)
+    )
 
     logger.info("Bot is running. Press Ctrl+C to stop.")
     await stop_event.wait()
@@ -166,9 +215,12 @@ async def main() -> None:
         loop.remove_signal_handler(sig)
 
     logger.info("Shutting down...")
+    # Notify users before stopping
+    config = app.bot_data["config"]
+    session_manager = app.bot_data["session_manager"]
+    await _send_shutdown_message(app.bot, config, session_manager)
     await app.updater.stop()
     await app.stop()
-    session_manager = app.bot_data["session_manager"]
     await session_manager.shutdown()
     db = app.bot_data["db"]
     await db.close()

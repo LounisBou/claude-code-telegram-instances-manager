@@ -13,7 +13,7 @@
 **What:** A comprehensive capture tool that spawns Claude Code, runs an automated scenario triggering all major UI states, then drops into manual interactive mode. Saves raw PTY bytes, pyte screen snapshots, and event timelines.
 
 **Automated scenario steps:**
-1. Spawn with `CLAUDE_CONFIG_DIR=~/.claude-work`
+1. Spawn with `CLAUDE_CONFIG_DIR=~/.claude`
 2. Wait for startup → snapshot startup screen (logo, welcome box, model info)
 3. Handle trust prompt if present → snapshot before/after
 4. Snapshot idle state (prompt `❯`, status bar)

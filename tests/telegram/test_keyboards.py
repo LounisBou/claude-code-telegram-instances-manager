@@ -1,8 +1,10 @@
 from unittest.mock import MagicMock
 
 from src.telegram.keyboards import (
+    _format_timestamp,
     build_project_keyboard,
     build_sessions_keyboard,
+    build_tool_approval_keyboard,
     format_history_entry,
     format_session_ended,
     format_session_started,
@@ -91,13 +93,32 @@ class TestFormatMessages:
         assert "my-project" in msg
         assert "1" in msg
 
+    def test_session_started_uses_html_not_markdown(self):
+        """Regression: session start must use HTML bold, not Markdown asterisks."""
+        msg = format_session_started("my-project", 1)
+        assert "<b>my-project</b>" in msg
+        assert "*my-project*" not in msg
+
+    def test_session_started_escapes_html(self):
+        """Ensure HTML special chars in project names are escaped."""
+        msg = format_session_started("<script>", 1)
+        assert "&lt;script&gt;" in msg
+        assert "<script>" not in msg.split("<b>")[1].split("</b>")[0] if "<b>" in msg else True
+
     def test_session_ended(self):
         msg = format_session_ended("my-project", 1)
         assert "my-project" in msg
         assert "ended" in msg.lower()
 
+    def test_session_ended_uses_html_not_markdown(self):
+        """Regression: session end must use HTML bold, not Markdown asterisks."""
+        msg = format_session_ended("my-project", 1)
+        assert "<b>my-project</b>" in msg
+        assert "*my-project*" not in msg
+
     def test_history_entry(self):
         entry = {
+            "id": 3,
             "project": "my-proj",
             "started_at": "2026-02-09T10:00:00",
             "ended_at": "2026-02-09T11:00:00",
@@ -105,11 +126,13 @@ class TestFormatMessages:
             "exit_code": 0,
         }
         msg = format_history_entry(entry)
-        assert "my-proj" in msg
+        assert "⚪" in msg
+        assert "<b>#3 my-proj</b>" in msg
         assert "ended" in msg.lower()
 
     def test_history_entry_no_end(self):
         entry = {
+            "id": 5,
             "project": "my-proj",
             "started_at": "2026-02-09T10:00:00",
             "ended_at": None,
@@ -117,5 +140,125 @@ class TestFormatMessages:
             "exit_code": None,
         }
         msg = format_history_entry(entry)
-        assert "my-proj" in msg
+        assert "🟢" in msg
+        assert "<b>#5 my-proj</b>" in msg
         assert "active" in msg.lower()
+
+    def test_history_entry_uses_html_not_markdown(self):
+        """Regression: history entry must use HTML bold, not Markdown asterisks."""
+        entry = {
+            "id": 1,
+            "project": "my-proj",
+            "started_at": "2026-02-09T10:00:00.123456+00:00",
+            "ended_at": None,
+            "status": "active",
+            "exit_code": None,
+        }
+        msg = format_history_entry(entry)
+        assert "<b>#1 my-proj</b>" in msg
+        assert "*my-proj*" not in msg
+
+    def test_history_entry_short_timestamps(self):
+        """Regression: timestamps must be short, not raw ISO with microseconds."""
+        entry = {
+            "project": "my-proj",
+            "started_at": "2026-02-09T10:02:35.958687+00:00",
+            "ended_at": "2026-02-09T11:03:45.307838+00:00",
+            "status": "ended",
+            "exit_code": None,
+        }
+        msg = format_history_entry(entry)
+        assert "2026-02-09 10:02" in msg
+        assert "2026-02-09 11:03" in msg
+        assert ".958687" not in msg
+        assert "+00:00" not in msg
+
+    def test_history_entry_escapes_html(self):
+        """Project names with special chars must be HTML-escaped."""
+        entry = {
+            "id": 2,
+            "project": "my<proj>&test",
+            "started_at": "2026-02-09T10:00:00",
+            "ended_at": None,
+            "status": "active",
+            "exit_code": None,
+        }
+        msg = format_history_entry(entry)
+        assert "<b>#2 my&lt;proj&gt;&amp;test</b>" in msg
+
+
+class TestFormatTimestamp:
+    """Tests for the _format_timestamp helper."""
+
+    def test_strips_microseconds_and_timezone(self):
+        assert _format_timestamp("2026-02-09T10:02:35.958687+00:00") == "2026-02-09 10:02"
+
+    def test_no_microseconds(self):
+        assert _format_timestamp("2026-02-09T10:02:35+00:00") == "2026-02-09 10:02"
+
+    def test_no_timezone(self):
+        assert _format_timestamp("2026-02-09T10:02:35") == "2026-02-09 10:02"
+
+    def test_z_timezone(self):
+        assert _format_timestamp("2026-02-09T10:02:35Z") == "2026-02-09 10:02"
+
+    def test_already_short(self):
+        assert _format_timestamp("2026-02-09T10:02") == "2026-02-09 10:02"
+
+
+class TestBuildToolApprovalKeyboard:
+    """Tests for the tool approval inline keyboard builder."""
+
+    def test_returns_allow_deny_buttons(self):
+        keyboard = build_tool_approval_keyboard(session_id=1)
+        assert len(keyboard) == 1  # one row
+        assert len(keyboard[0]) == 2  # two buttons
+        assert keyboard[0][0]["text"] == "Allow"
+        assert keyboard[0][1]["text"] == "Deny"
+
+    def test_callback_data_includes_session_id(self):
+        keyboard = build_tool_approval_keyboard(session_id=42)
+        assert keyboard[0][0]["callback_data"] == "tool:yes:42"
+        assert keyboard[0][1]["callback_data"] == "tool:no:42"
+
+    def test_standard_yes_no_options_returns_allow_deny(self):
+        """Regression for issue 013: standard Yes/No menu keeps Allow/Deny."""
+        options = ["Yes", "Yes, allow all edits during this session (shift+tab)", "No"]
+        keyboard = build_tool_approval_keyboard(session_id=1, options=options)
+        assert len(keyboard) == 1
+        assert keyboard[0][0]["text"] == "Allow"
+        assert keyboard[0][1]["text"] == "Deny"
+
+    def test_multi_choice_options_returns_individual_buttons(self):
+        """Regression for issue 013: multi-choice menu shows each option as a button."""
+        options = ["Dark mode", "Light mode", "Dark (colorblind)", "Light (colorblind)"]
+        keyboard = build_tool_approval_keyboard(session_id=1, options=options, selected=0)
+        # One row per option + one Cancel row
+        assert len(keyboard) == 5
+        assert keyboard[0][0]["text"] == "Dark mode"
+        assert keyboard[1][0]["text"] == "Light mode"
+        assert keyboard[3][0]["text"] == "Light (colorblind)"
+        assert keyboard[4][0]["text"] == "Cancel"
+
+    def test_multi_choice_callback_data_encodes_selection(self):
+        """Regression for issue 013: callback data includes selected and target indices."""
+        options = ["Option A", "Option B", "Option C"]
+        keyboard = build_tool_approval_keyboard(session_id=5, options=options, selected=0)
+        assert keyboard[0][0]["callback_data"] == "tool:pick:0:0:5"
+        assert keyboard[1][0]["callback_data"] == "tool:pick:0:1:5"
+        assert keyboard[2][0]["callback_data"] == "tool:pick:0:2:5"
+        # Cancel uses tool:no
+        assert keyboard[3][0]["callback_data"] == "tool:no:5"
+
+    def test_multi_choice_preserves_selected_index(self):
+        """Regression for issue 013: selected index is passed through to callback data."""
+        options = ["Option A", "Option B"]
+        keyboard = build_tool_approval_keyboard(session_id=1, options=options, selected=1)
+        assert keyboard[0][0]["callback_data"] == "tool:pick:1:0:1"
+        assert keyboard[1][0]["callback_data"] == "tool:pick:1:1:1"
+
+    def test_none_options_returns_allow_deny(self):
+        """No options (backward compat) falls back to Allow/Deny."""
+        keyboard = build_tool_approval_keyboard(session_id=1, options=None)
+        assert len(keyboard) == 1
+        assert keyboard[0][0]["text"] == "Allow"

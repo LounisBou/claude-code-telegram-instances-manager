@@ -104,7 +104,7 @@ telegram:
     - 123456789
 
 projects:
-  root: "/home/lounis/dev"
+  root: "/path/to/your/projects"
   scan_depth: 1
 
 sessions:
@@ -3313,7 +3313,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=lounis
+User=<your-username>
 WorkingDirectory=/opt/claude-instance-manager
 ExecStart=/opt/claude-instance-manager/.venv/bin/python -m src.main /opt/claude-instance-manager/config.yaml
 Restart=on-failure

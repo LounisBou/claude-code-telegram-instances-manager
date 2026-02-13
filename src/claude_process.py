@@ -46,8 +46,7 @@ class ClaudeProcess:
 
         Env vars must be passed here (not baked into the command string)
         because pexpect treats the entire command argument as an executable
-        name — "CLAUDE_CONFIG_DIR=~/.claude claude" would fail with
-        "command not found".
+        name — "MY_VAR=value claude" would fail with "command not found".
         """
         merged = os.environ.copy()
         for key, value in extra.items():
@@ -141,6 +140,9 @@ class ClaudeProcess:
                 except pexpect.TIMEOUT:
                     break
                 except pexpect.EOF:
+                    break
+                except OSError:
+                    # Bad file descriptor after process termination
                     break
         except Exception as exc:
             logger.warning("Unexpected error draining PTY buffer: %s", exc)

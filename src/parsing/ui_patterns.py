@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -22,6 +23,7 @@ class ScreenState(Enum):
     BACKGROUND_TASK = "background_task"
     PARALLEL_AGENTS = "parallel_agents"
     TODO_LIST = "todo_list"
+    AUTH_REQUIRED = "auth_required"
     ERROR = "error"
     UNKNOWN = "unknown"
 
@@ -60,6 +62,11 @@ _THINKING_STAR_RE = re.compile(r"^[✶✳✻✽✢·]\s+(.+…(?:\s*\(.+\))?)$")
 
 # Claude response marker
 _RESPONSE_MARKER_RE = re.compile(r"^⏺\s+(.*)")
+
+# Auth/login screen indicators
+_AUTH_SIGN_IN_RE = re.compile(r"sign in|log in", re.IGNORECASE)
+_AUTH_PASTE_CODE_RE = re.compile(r"Paste code here", re.IGNORECASE)
+_AUTH_OAUTH_URL_RE = re.compile(r"claude\.ai/oauth/authorize")
 
 # Tool connector
 _TOOL_CONNECTOR_RE = re.compile(r"^\s*⎿")
@@ -111,9 +118,16 @@ _ERROR_RE = re.compile(
 _STARTUP_RE = re.compile(r"Claude Code v[\d.]+")
 
 # Status bar tip / hint lines
-_TIP_RE = re.compile(r"^(?:Naming )?[Tt]ip:\s")
+_TIP_RE = re.compile(r"^(?:\w+\s+)?[Tt]ip:\s")
 _BARE_TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
 _CLAUDE_HINT_RE = re.compile(r"claude\s+--(?:continue|resume)")
+
+# PR indicator in status bar area (standalone "PR #13" line)
+_PR_INDICATOR_RE = re.compile(r"^PR\s*#\d+$")
+
+# Context window progress bar (block elements) and/or timer (↻ HH:MM)
+_CONTEXT_TIMER_RE = re.compile(r"↻\s*\d+:\d+")
+_PROGRESS_BAR_RE = re.compile(r"^[▊▉█▌▍▎▏░▒▓\s]+$")
 
 # Extra status line
 _EXTRA_BASH_RE = re.compile(r"(\d+) bash")
@@ -131,9 +145,11 @@ def classify_line(line: str) -> str:
         line: A single terminal screen line to classify.
 
     Returns:
-        One of: 'separator', 'diff_delimiter', 'status_bar', 'thinking',
-        'tool_header', 'response', 'tool_connector', 'todo_item',
-        'agent_tree', 'prompt', 'box', 'logo', 'empty', or 'content'.
+        One of: 'separator', 'diff_delimiter', 'status_bar' (includes
+        extra status lines like file-change counters), 'startup',
+        'thinking', 'tool_header', 'response', 'tool_connector',
+        'todo_item', 'agent_tree', 'prompt', 'box', 'logo', 'empty',
+        or 'content'.
     """
     stripped = line.strip()
     if not stripped:
@@ -145,6 +161,10 @@ def classify_line(line: str) -> str:
         return "separator"
     if _DIFF_DELIMITER_RE.match(stripped):
         return "diff_delimiter"
+    # Startup banner line (e.g. "Claude Code v2.1.39") — must be filtered
+    # to prevent leaking into response content when pyte redraws the screen.
+    if _STARTUP_RE.search(stripped):
+        return "startup"
     # Pre-check: require distinctive status bar markers (⎇ branch or Usage:)
     # to avoid false positives on table data rows containing │
     if ("⎇" in stripped or "Usage:" in stripped) and _STATUS_BAR_RE.search(stripped):
@@ -155,6 +175,25 @@ def classify_line(line: str) -> str:
     if _BARE_TIME_RE.match(stripped):
         return "status_bar"
     if _CLAUDE_HINT_RE.search(stripped):
+        return "status_bar"
+    if _PR_INDICATOR_RE.match(stripped):
+        return "status_bar"
+    # Extra status line: "4 files +0 -0 · PR #5", "1 bash · 1 file +194 -192"
+    # These are Claude Code's bottom-row status counters.  _EXTRA_FILES_RE
+    # has a very specific format (N files? +N -N) that doesn't appear in prose.
+    # _EXTRA_BASH_RE / _EXTRA_AGENTS_RE require a · separator to avoid false
+    # positives on prose containing "bash" or "local agents".
+    if _EXTRA_FILES_RE.search(stripped):
+        return "status_bar"
+    if "\u00b7" in stripped and (
+        _EXTRA_BASH_RE.search(stripped)
+        or _EXTRA_AGENTS_RE.search(stripped)
+    ):
+        return "status_bar"
+    # Context window progress bar and/or timer (e.g. "▊░░░░░░░░░ ↻ 11:00")
+    if _CONTEXT_TIMER_RE.search(stripped):
+        return "status_bar"
+    if _PROGRESS_BAR_RE.match(stripped):
         return "status_bar"
     if _THINKING_STAR_RE.match(stripped):
         return "thinking"
@@ -192,30 +231,67 @@ def classify_line(line: str) -> str:
 def extract_content(lines: list[str]) -> str:
     """Extract meaningful content from screen lines, filtering UI chrome.
 
-    Keeps lines classified as 'content', 'response' (⏺ prefix stripped),
-    and 'tool_connector' (⎿ prefix stripped) by classify_line.
+    Keeps lines classified as 'content', 'response' (⏺ prefix replaced),
+    and 'tool_connector' (⎿ prefix replaced) by classify_line.
+
+    Preserves relative indentation by replacing Unicode markers (⏺, ⎿)
+    with spaces of equal width instead of stripping them. After collection,
+    ``textwrap.dedent`` removes the common terminal margin while keeping
+    code structure (e.g. Python indentation) intact.
+
+    Tracks prompt continuation state: lines between a ❯ prompt line and
+    the next ⏺ response / ⎿ tool connector / tool header are the user's
+    wrapped input and must be skipped.
 
     Args:
         lines: List of terminal screen lines to filter.
 
     Returns:
-        Newline-joined string of content lines, stripped.
+        Newline-joined string of content lines with common margin removed
+        but relative indentation preserved.
     """
     content_lines = []
+    in_prompt = False
     for line in lines:
         cls = classify_line(line)
+        # Start skipping after a ❯ prompt line — continuation lines
+        # (wrapped user input) are classified as 'content' but belong
+        # to the prompt, not to Claude's response.
+        if cls == "prompt":
+            in_prompt = True
+            continue
+        # End prompt continuation when we hit a response marker or
+        # another structured element that signals Claude's output.
+        if in_prompt:
+            if cls in (
+                "response", "tool_connector", "tool_header",
+                "thinking", "separator",
+            ):
+                in_prompt = False
+            else:
+                # Still in prompt continuation — skip this line.
+                continue
         if cls == "content":
-            content_lines.append(line.strip())
+            # Preserve leading whitespace (indentation); strip only trailing.
+            content_lines.append(line.rstrip())
         elif cls == "response":
-            # ⏺ lines carry Claude's response text — strip the marker.
-            # Without this, the first line of every response was silently dropped.
-            m = _RESPONSE_MARKER_RE.match(line.strip())
-            if m and m.group(1).strip():
-                content_lines.append(m.group(1).strip())
+            # ⏺ lines carry Claude's response text — replace the marker
+            # with spaces to preserve column alignment for dedent.
+            replaced = re.sub(
+                r"⏺\s?", lambda m: " " * len(m.group(0)), line, count=1,
+            )
+            if replaced.strip():
+                content_lines.append(replaced.rstrip())
         elif cls == "tool_connector":
             # ⎿ lines carry tool output (file contents, command results).
-            # Strip the connector prefix to get the actual content.
-            text = re.sub(r"^\s*⎿\s*", "", line).strip()
-            if text:
-                content_lines.append(text)
-    return "\n".join(content_lines).strip()
+            # Replace the connector prefix with spaces to preserve alignment.
+            replaced = re.sub(
+                r"⎿\s*", lambda m: " " * len(m.group(0)), line, count=1,
+            )
+            if replaced.strip():
+                content_lines.append(replaced.rstrip())
+    # Remove common leading whitespace (terminal margin) while
+    # preserving relative indentation (e.g. Python code structure).
+    joined = "\n".join(content_lines)
+    dedented = textwrap.dedent(joined)
+    return dedented.strip()

@@ -4,7 +4,7 @@ telegram:
     - 123456789
 
 projects:
-  root: "/home/lounis/dev"
+  root: "/path/to/your/projects"
   scan_depth: 1
 
 sessions:
@@ -15,8 +15,7 @@ sessions:
 
 claude:
   command: "claude"
-  env:
-    CLAUDE_CONFIG_DIR: "~/.claude-work"
+  env: {}
   default_args: []
   update_command: "claude update"
 

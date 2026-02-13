@@ -18,7 +18,7 @@ class TestScreenState:
         assert ScreenState.UNKNOWN.value == "unknown"
 
     def test_enum_count(self):
-        assert len(ScreenState) == 13
+        assert len(ScreenState) == 14
 
 
 class TestScreenEvent:
@@ -61,6 +61,26 @@ class TestClassifyLine:
             )
             == "status_bar"
         )
+
+    def test_pr_indicator_is_status_bar(self):
+        assert classify_line("PR #13") == "status_bar"
+        assert classify_line("PR #1") == "status_bar"
+        assert classify_line("PR #999") == "status_bar"
+        # PR mention inside a sentence is content, not status bar
+        assert classify_line("See PR #13 for details") == "content"
+
+    def test_progress_bar_timer_is_status_bar(self):
+        """Progress bar and/or timer from context window area."""
+        # Progress bar + timer
+        assert classify_line("▊░░░░░░░░░ ↻ 11:00") == "status_bar"
+        # Timer alone
+        assert classify_line("↻ 5:00") == "status_bar"
+        assert classify_line("↻ 12:34") == "status_bar"
+        # Progress bar alone (only block elements)
+        assert classify_line("▊▊▊░░░░░░░") == "status_bar"
+        assert classify_line("█████░░░░░") == "status_bar"
+        # ↻ inside content sentence should still match (timer is distinctive)
+        assert classify_line("something ↻ 3:00") == "status_bar"
 
     def test_thinking_star(self):
         assert classify_line("✶ Activating sleeper agents…") == "thinking"
@@ -116,16 +136,41 @@ class TestClassifyLine:
 
     def test_box_drawing_with_text_is_content(self):
         """Box lines with substantial text content are content (table data rows)."""
-        assert (
-            classify_line("╭─── Claude Code v2.1.37 ─────────────────────────╮")
-            == "content"
-        )
         assert classify_line("│            Welcome back!           │") == "content"
         assert classify_line("│ bot.py             │ Telegram bot handlers                    │") == "content"
+
+    def test_startup_banner_box(self):
+        """Startup banner lines are classified as 'startup', not content."""
+        assert (
+            classify_line("╭─── Claude Code v2.1.37 ─────────────────────────╮")
+            == "startup"
+        )
 
     def test_logo(self):
         assert classify_line("▐▛███▜▌   Opus 4.6") == "logo"
         assert classify_line("▝▜█████▛▘  ~/dev/project") == "logo"
+
+    def test_startup_line(self):
+        """Startup banner lines (version string) must be classified as 'startup'."""
+        assert classify_line("Claude Code v2.1.39") == "startup"
+        assert classify_line("           Claude Code v2.1.37") == "startup"
+        assert classify_line("╭─── Claude Code v2.1.37 ─────────╮") == "startup"
+
+    def test_extra_status_files(self):
+        """Regression for issue 003: extra status lines with file counts."""
+        assert classify_line("4 files +0 -0 · PR #5") == "status_bar"
+        assert classify_line("1 file +194 -192") == "status_bar"
+        assert classify_line("12 files +50 -30") == "status_bar"
+
+    def test_extra_status_bash_and_agents(self):
+        """Regression for issue 003: extra status lines with bash/agent counts."""
+        assert classify_line("1 bash · 1 file +194 -192") == "status_bar"
+        assert classify_line("4 local agents · 1 file +194 -192") == "status_bar"
+
+    def test_extra_status_not_prose(self):
+        """Extra status patterns must not false-positive on regular prose."""
+        assert classify_line("I changed 4 files in this PR") == "content"
+        assert classify_line("The bash command ran successfully") == "content"
 
     def test_content(self):
         assert classify_line("Hello, this is a response from Claude") == "content"
@@ -139,7 +184,8 @@ class TestExtractContent:
             "────────────────────────────────",
             "claude-instance-manager │ ⎇ main │ Usage: 32%",
             "❯ Try something",
-            "Hello, this is actual content",
+            "",
+            "⏺ Hello, this is actual content",
             "More content here",
             "",
             "────────────────────────────────",
@@ -150,6 +196,30 @@ class TestExtractContent:
         assert "────" not in result
         assert "claude-instance-manager" not in result
         assert "❯" not in result
+
+    def test_filters_startup_banner(self):
+        """Startup banner lines must be filtered out by extract_content."""
+        lines = [
+            "Claude Code v2.1.39",
+            "Formatting tip: Keep lines short",
+            "This is the actual response content",
+        ]
+        result = extract_content(lines)
+        assert "Claude Code" not in result
+        assert "This is the actual response content" in result
+        # Tip lines are classified as status_bar, also filtered
+        assert "Formatting tip" not in result
+
+    def test_filters_pr_indicator(self):
+        """PR indicator from status bar must be filtered by extract_content."""
+        lines = [
+            "────────────────────────────────",
+            "❯",
+            "ScreenBuddies │ ⎇ feat/1.2 ⇡2 │ Usage: 48%",
+            "PR #13",
+        ]
+        result = extract_content(lines)
+        assert "PR #13" not in result
 
     def test_preserves_all_content(self):
         lines = ["First line", "Second line", "Third line"]
@@ -222,3 +292,52 @@ class TestExtractContent:
         assert "my-project" not in result
         assert "⏺" not in result
         assert "⎿" not in result
+
+    def test_filters_extra_status_lines(self):
+        """Regression for issue 003: extra status bar lines must be filtered."""
+        lines = [
+            "⏺ Done. Created /tmp/test.txt with the content.",
+            "────────────────────────────────",
+            "  my-project │ ⎇ main │ Usage: 7%",
+            "4 files +0 -0 · PR #5",
+        ]
+        result = extract_content(lines)
+        assert "Done. Created /tmp/test.txt" in result
+        assert "4 files" not in result
+        assert "PR #5" not in result
+
+    def test_preserves_code_indentation(self):
+        """Regression: Python code indentation must be preserved, not stripped."""
+        # Simulate pyte screen output for a code response.
+        # Claude Code renders ⏺ at column 0, code text at column 2.
+        # Continuation lines are indented to the same base column (2)
+        # plus the Python indentation (4 per level).
+        lines = [
+            "⏺ def fibonacci(n):",       # response: indent 0 after ⏺
+            "      if n <= 1:",            # content: 6 = margin 2 + python indent 4
+            "          return n",           # content: 10 = margin 2 + python indent 8
+            "      return fibonacci(n-1)",  # content: 6 = margin 2 + python indent 4
+        ]
+        result = extract_content(lines)
+        assert "def fibonacci(n):" in result
+        # Indentation must be preserved (4 spaces for level 1, 8 for level 2)
+        assert "    if n <= 1:" in result
+        assert "        return n" in result
+        assert "    return fibonacci(n-1)" in result
+        # No flat lines (old bug: strip() removed all indentation)
+        assert "\nif n <= 1:" not in result
+        assert "\nreturn n" not in result
+
+    def test_prose_not_indented(self):
+        """Normal prose content must not gain spurious indentation."""
+        lines = [
+            "⏺ Hello! Here is my answer.",
+            "The capital of France is Paris.",
+        ]
+        result = extract_content(lines)
+        assert result.startswith("Hello! Here is my answer.")
+        assert "The capital of France is Paris." in result
+        # No leading spaces on prose lines
+        for line in result.split("\n"):
+            if line.strip():
+                assert not line.startswith(" "), f"Unexpected indent: {line!r}"

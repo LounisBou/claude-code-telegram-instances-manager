@@ -143,6 +143,23 @@ class TestHandleExit:
         assert "proj2" in msg
         assert "session #2" in msg.lower()
 
+    @pytest.mark.asyncio
+    async def test_exit_message_uses_html_parse_mode(self):
+        """Regression: /exit reply must use parse_mode=HTML, not raw tags."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock(session_id=1, project_name="my-proj")
+        sm = AsyncMock()
+        sm.get_active_session = MagicMock(side_effect=[session, None])
+        sm.kill_session = AsyncMock()
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_exit(update, context)
+        call_kwargs = update.message.reply_text.call_args[1]
+        assert call_kwargs.get("parse_mode") == "HTML"
+
 
 class TestHandleTextMessage:
     @pytest.mark.asyncio
@@ -328,6 +345,56 @@ class TestHandleCallbackQuery:
         assert "cancelled" in msg.lower()
 
     @pytest.mark.asyncio
+    async def test_update_confirm_shows_immediate_feedback(self):
+        """Regression test for issue 009: update callback sends immediate feedback."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "update:confirm"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        config.claude.update_command = "echo done"
+        context.bot_data = {"config": config, "session_manager": MagicMock()}
+        with patch(
+            "src.telegram.handlers._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = "OK: done"
+            await handle_callback_query(update, context)
+            # First edit shows "Updating..." feedback, second edit shows result
+            calls = update.callback_query.edit_message_text.call_args_list
+            assert len(calls) == 2
+            assert "Updating" in calls[0][0][0]
+            assert "OK: done" in calls[1][0][0]
+
+    @pytest.mark.asyncio
+    async def test_update_confirm_result_wrapped_in_code_tags(self):
+        """Regression test for issue 010: callback update result paths as command links."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "update:confirm"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        config.claude.update_command = "brew upgrade claude-code"
+        context.bot_data = {"config": config, "session_manager": MagicMock()}
+        with patch(
+            "src.telegram.handlers._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = (
+                "FAILED (exit 1): Error: /opt/homebrew/Cellar not writable"
+            )
+            await handle_callback_query(update, context)
+            # The result edit (second call) should use HTML with <code> tags
+            result_call = update.callback_query.edit_message_text.call_args_list[-1]
+            edited_text = result_call[0][0]
+            assert "<code>" in edited_text
+            assert result_call[1]["parse_mode"] == "HTML"
+
+    @pytest.mark.asyncio
     async def test_page_navigation(self):
         update = MagicMock()
         update.effective_user.id = 111
@@ -346,6 +413,280 @@ class TestHandleCallbackQuery:
             ]
             await handle_callback_query(update, context)
             update.callback_query.edit_message_text.assert_called_once()
+
+
+class TestToolApprovalCallback:
+    """Tests for tool approval inline keyboard callback handling."""
+
+    @pytest.mark.asyncio
+    async def test_tool_yes_sends_enter_to_pty(self):
+        """Allow button sends Enter to PTY to accept the default option."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:yes:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Do you want to create test.txt?"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        session.process.write.assert_called_once_with("\r")
+        update.callback_query.answer.assert_called_once_with("Allowed")
+
+    @pytest.mark.asyncio
+    async def test_tool_no_sends_escape_to_pty(self):
+        """Deny button sends Escape to PTY to cancel the tool request."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:no:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Do you want to create test.txt?"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        session.process.write.assert_called_once_with("\x1b")
+        update.callback_query.answer.assert_called_once_with("Denied")
+
+    @pytest.mark.asyncio
+    async def test_tool_callback_no_session(self):
+        """Tool callback with dead session returns error."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:yes:99"
+        update.callback_query.answer = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        sm._sessions = {111: {}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        update.callback_query.answer.assert_called_once_with(
+            "Session no longer active"
+        )
+
+
+class TestMultiChoiceToolCallback:
+    """Regression tests for issue 013: multi-choice tool selection callbacks."""
+
+    @pytest.mark.asyncio
+    async def test_pick_sends_arrow_keys_and_enter(self):
+        """Selecting option 2 from selected=0 sends 2 down arrows + Enter."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:0:2:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Choose a theme"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        # 2 down arrows + Enter
+        session.process.write.assert_called_once_with("\x1b[B\x1b[B\r")
+        update.callback_query.answer.assert_called_once_with("Selected")
+
+    @pytest.mark.asyncio
+    async def test_pick_sends_up_arrows_for_negative_delta(self):
+        """Selecting option 0 from selected=2 sends 2 up arrows + Enter."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:2:0:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Choose a theme"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        # 2 up arrows + Enter
+        session.process.write.assert_called_once_with("\x1b[A\x1b[A\r")
+
+    @pytest.mark.asyncio
+    async def test_pick_same_as_selected_sends_only_enter(self):
+        """Selecting already-highlighted option sends just Enter."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:0:0:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Choose a theme"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        session.process.write.assert_called_once_with("\r")
+
+    @pytest.mark.asyncio
+    async def test_pick_no_session_returns_error(self):
+        """Multi-choice callback with dead session returns error."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:0:1:99"
+        update.callback_query.answer = AsyncMock()
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        sm._sessions = {111: {}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_callback_query(update, context)
+        update.callback_query.answer.assert_called_once_with(
+            "Session no longer active"
+        )
+
+
+class TestToolCallbackMarksActed:
+    """Regression tests for issue 014: tool callbacks must signal poll_output."""
+
+    @pytest.mark.asyncio
+    async def test_tool_yes_calls_mark_tool_acted(self):
+        """Allow callback signals that the tool request was acted upon."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:yes:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Allow tool?"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+            await handle_callback_query(update, context)
+            mock_mark.assert_called_once_with(111, 1)
+
+    @pytest.mark.asyncio
+    async def test_tool_no_calls_mark_tool_acted(self):
+        """Deny callback signals that the tool request was acted upon."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:no:1"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Allow tool?"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {1: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+            await handle_callback_query(update, context)
+            mock_mark.assert_called_once_with(111, 1)
+
+    @pytest.mark.asyncio
+    async def test_tool_pick_calls_mark_tool_acted(self):
+        """Multi-choice pick callback signals that the tool request was acted upon."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.callback_query.data = "tool:pick:0:1:5"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+        update.callback_query.message.text = "Choose a theme"
+        context = MagicMock()
+        config = MagicMock()
+        config.telegram.authorized_users = [111]
+        sm = MagicMock()
+        session = MagicMock()
+        session.process.write = AsyncMock()
+        sm._sessions = {111: {5: session}}
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+            await handle_callback_query(update, context)
+            mock_mark.assert_called_once_with(111, 5)
+
+
+class TestTextBlockedDuringToolApproval:
+    """Regression tests for issue 015: text during tool approval blocked."""
+
+    @pytest.mark.asyncio
+    async def test_text_blocked_when_tool_request_pending(self):
+        """Text message is blocked with a helpful reply when tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "some text during tool approval"
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.handlers.is_tool_request_pending", return_value=True
+        ):
+            await handle_text_message(update, context)
+        # Text must NOT be forwarded to PTY
+        session.process.submit.assert_not_called()
+        # User must get a helpful reply
+        update.message.reply_text.assert_called_once()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "tool approval" in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_text_forwarded_when_no_tool_request(self):
+        """Text message is forwarded normally when no tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "normal message"
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.handlers.is_tool_request_pending", return_value=False
+        ):
+            await handle_text_message(update, context)
+        # Text IS forwarded to PTY
+        session.process.submit.assert_called_once_with("normal message")
+        # No error reply sent
+        update.message.reply_text.assert_not_called()
 
 
 class TestHandlerLogging:
@@ -400,6 +741,58 @@ class TestSpawnErrorReporting:
         with patch("src.telegram.handlers.get_git_info", new_callable=AsyncMock) as mock_git:
             await handle_callback_query(update, context)
             mock_git.assert_not_called()
+
+
+class TestUnknownCommandBlockedDuringToolApproval:
+    """Regression tests for issue 016: unknown commands blocked during tool approval."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_command_blocked_when_tool_request_pending(self):
+        """Unknown /command must not forward to PTY when tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/status"
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.handlers.is_tool_request_pending", return_value=True
+        ):
+            await handle_unknown_command(update, context)
+        session.process.submit.assert_not_called()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "tool approval" in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_unknown_command_forwarded_when_no_tool_request(self):
+        """Unknown /command forwards normally when no tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/status"
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.handlers.is_tool_request_pending", return_value=False
+        ):
+            await handle_unknown_command(update, context)
+        session.process.submit.assert_called_once_with("/status")
 
 
 class TestHandleUnknownCommand:

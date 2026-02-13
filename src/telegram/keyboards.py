@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+
 
 # --- Auth ---
 
@@ -90,58 +92,140 @@ def build_sessions_keyboard(
     return rows
 
 
+def build_tool_approval_keyboard(
+    session_id: int,
+    options: list[str] | None = None,
+    selected: int = 0,
+) -> list[list[dict]]:
+    """Build an inline keyboard for tool approval or multi-choice selection.
+
+    For standard tool approvals (first option starts with "Yes"), returns
+    two buttons: Allow / Deny.  For multi-choice selections (e.g. a theme
+    picker), each option gets its own button plus a Cancel button.
+
+    Args:
+        session_id: Session whose PTY receives the approval response.
+        options: Option labels from the selection menu.  When *None* or
+            matching the standard yes/no pattern, the simple Allow/Deny
+            keyboard is returned.
+        selected: Zero-based index of the currently highlighted option
+            (the one with the ``❯`` cursor).
+
+    Returns:
+        A list of rows suitable for ``InlineKeyboardMarkup``.
+    """
+    # Standard tool approval — first option starts with "Yes"
+    if not options or options[0].startswith("Yes"):
+        return [
+            [
+                {"text": "Allow", "callback_data": f"tool:yes:{session_id}"},
+                {"text": "Deny", "callback_data": f"tool:no:{session_id}"},
+            ]
+        ]
+
+    # Multi-choice selection — one button per option + Cancel
+    rows: list[list[dict]] = []
+    for idx, label in enumerate(options):
+        rows.append(
+            [
+                {
+                    "text": label,
+                    "callback_data": f"tool:pick:{selected}:{idx}:{session_id}",
+                }
+            ]
+        )
+    rows.append(
+        [{"text": "Cancel", "callback_data": f"tool:no:{session_id}"}]
+    )
+    return rows
+
+
 # --- Message formatting ---
 
 
 def format_session_started(project_name: str, session_id: int) -> str:
-    """Format a Markdown message announcing that a new session has started.
+    """Format an HTML message announcing that a new session has started.
 
     Args:
         project_name: Display name of the project the session belongs to.
         session_id: Numeric identifier of the newly created session.
 
     Returns:
-        A Markdown-formatted string suitable for sending via Telegram.
+        An HTML-formatted string suitable for sending via Telegram.
     """
-    return f"Session started on *{project_name}*. Session #{session_id}"
+    safe_name = html.escape(project_name)
+    return f"Session started on <b>{safe_name}</b>. Session #{session_id}"
 
 
 def format_session_ended(project_name: str, session_id: int) -> str:
-    """Format a Markdown message announcing that a session has ended.
+    """Format an HTML message announcing that a session has ended.
 
     Args:
         project_name: Display name of the project the session belonged to.
         session_id: Numeric identifier of the ended session.
 
     Returns:
-        A Markdown-formatted string suitable for sending via Telegram.
+        An HTML-formatted string suitable for sending via Telegram.
     """
-    return f"Session #{session_id} on *{project_name}* ended."
+    safe_name = html.escape(project_name)
+    return f"Session #{session_id} on <b>{safe_name}</b> ended."
+
+
+def _format_timestamp(raw: str) -> str:
+    """Convert a raw ISO timestamp to a short human-readable format.
+
+    Strips microseconds and timezone offset, returning ``YYYY-MM-DD HH:MM``.
+
+    Args:
+        raw: An ISO-8601 timestamp string (e.g. from the database).
+
+    Returns:
+        A short date-time string like ``2026-02-11 22:02``.
+    """
+    # Strip microseconds (.123456) and timezone (+00:00 / Z)
+    clean = raw.split(".")[0].replace("T", " ")
+    # Remove trailing timezone offset if present (e.g. +00:00)
+    if "+" in clean:
+        clean = clean.split("+")[0]
+    elif clean.endswith("Z"):
+        clean = clean[:-1]
+    # Truncate to minutes (drop :SS) only when seconds are present
+    # A time like "10:02:35" has 2 colons; "10:02" has 1 colon
+    if clean.count(":") >= 2:
+        clean = clean.rsplit(":", 1)[0]
+    return clean
+
+
+_STATUS_EMOJI = {"active": "🟢", "ended": "⚪", "lost": "🟡"}
 
 
 def format_history_entry(entry: dict) -> str:
-    """Format a single session history record as a Markdown text block.
+    """Format a single session history record as an HTML text block.
 
-    Includes the project name, start time, optional end time, status, and
-    optional exit code.
+    Includes session ID, status emoji, project name, start/end times,
+    status, and optional exit code.
 
     Args:
-        entry: A dict with keys ``project``, ``started_at``, ``status``,
-            and optionally ``ended_at`` and ``exit_code``.
+        entry: A dict with keys ``id``, ``project``, ``started_at``,
+            ``status``, and optionally ``ended_at`` and ``exit_code``.
 
     Returns:
-        A multi-line Markdown-formatted string representing the history
-        entry.
+        A multi-line HTML-formatted string representing the history entry.
     """
+    safe_name = html.escape(entry["project"])
+    started = _format_timestamp(entry["started_at"])
+    emoji = _STATUS_EMOJI.get(entry["status"], "⚪")
+    sid = entry.get("id", "?")
     parts = [
-        f"*{entry['project']}*",
-        f"Started: {entry['started_at']}",
+        f"{emoji} <b>#{sid} {safe_name}</b>",
+        f"  Started: {html.escape(started)}",
     ]
     if entry.get("ended_at"):
-        parts.append(f"Ended: {entry['ended_at']}")
-    parts.append(f"Status: {entry['status']}")
+        ended = _format_timestamp(entry["ended_at"])
+        parts.append(f"  Ended: {html.escape(ended)}")
+    parts.append(f"  Status: {html.escape(entry['status'])}")
     if entry.get("exit_code") is not None:
-        parts.append(f"Exit code: {entry['exit_code']}")
+        parts.append(f"  Exit code: {entry['exit_code']}")
     return "\n".join(parts)
 
 

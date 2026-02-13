@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -16,6 +17,7 @@ from src.telegram.keyboards import (
 )
 from src.git_info import get_git_info
 from src.project_scanner import scan_projects
+from src.telegram.output import is_tool_request_pending, mark_tool_acted
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +91,7 @@ async def handle_sessions(
     session_manager = context.bot_data["session_manager"]
     sessions = session_manager.list_sessions(user_id)
     if not sessions:
-        await update.message.reply_text("No active sessions.")
+        await update.message.reply_text("No active sessions. Use /start to begin one.")
         return
 
     active = session_manager.get_active_session(user_id)
@@ -134,7 +136,7 @@ async def handle_exit(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if not active:
-        await update.message.reply_text("No active session to exit.")
+        await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
     await session_manager.kill_session(user_id, active.session_id)
@@ -142,9 +144,10 @@ async def handle_exit(
 
     new_active = session_manager.get_active_session(user_id)
     if new_active:
-        msg += f"\nSwitched to *{new_active.project_name}* (session #{new_active.session_id})"
+        safe_name = html.escape(new_active.project_name)
+        msg += f"\nSwitched to <b>{safe_name}</b> (session #{new_active.session_id})"
 
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def handle_text_message(
@@ -173,6 +176,12 @@ async def handle_text_message(
     active = session_manager.get_active_session(user_id)
     if not active:
         await update.message.reply_text("No active session. Use /start to begin one.")
+        return
+
+    if is_tool_request_pending(user_id, active.session_id):
+        await update.message.reply_text(
+            "A tool approval is pending. Please respond to it first."
+        )
         return
 
     await active.process.submit(update.message.text)
@@ -206,7 +215,7 @@ async def handle_callback_query(
         return
 
     data = query.data
-    logger.debug("handle_callback_query user_id=%d action=%s", user_id, data.split(":")[0])
+    logger.debug("handle_callback_query user_id=%d data=%s", user_id, data)
     session_manager = context.bot_data["session_manager"]
 
     if data.startswith("project:"):
@@ -220,23 +229,28 @@ async def handle_callback_query(
         except Exception as exc:
             logger.error("Failed to create session for %s: %s", project_name, exc)
             await query.answer()
+            safe_name = html.escape(project_name)
+            safe_exc = html.escape(str(exc))
             await query.edit_message_text(
-                f"Failed to start Claude for *{project_name}*:\n`{exc}`"
+                f"Failed to start Claude for <b>{safe_name}</b>:\n<code>{safe_exc}</code>",
+                parse_mode="HTML",
             )
             return
         git_info = await get_git_info(project_path)
         msg = format_session_started(project_name, session.session_id)
         msg += f"\n{git_info.format()}"
         await query.answer()
-        await query.edit_message_text(msg)
+        await query.edit_message_text(msg, parse_mode="HTML")
 
     elif data.startswith("switch:"):
         session_id = int(data[len("switch:") :])
         session_manager.switch_session(user_id, session_id)
         active = session_manager.get_active_session(user_id)
         await query.answer()
+        safe_name = html.escape(active.project_name)
         await query.edit_message_text(
-            f"Switched to *{active.project_name}* (session #{active.session_id})"
+            f"Switched to <b>{safe_name}</b> (session #{active.session_id})",
+            parse_mode="HTML",
         )
 
     elif data.startswith("kill:"):
@@ -248,12 +262,68 @@ async def handle_callback_query(
     elif data.startswith("update:"):
         action = data[len("update:"):]
         if action == "confirm":
-            result = await _run_update_command(config.claude.update_command)
             await query.answer()
-            await query.edit_message_text(f"Update result:\n{result}")
+            await query.edit_message_text("Updating Claude CLI...")
+            result = await _run_update_command(config.claude.update_command)
+            await query.edit_message_text(
+                f"Update result:\n<code>{html.escape(result)}</code>",
+                parse_mode="HTML",
+            )
         else:
             await query.answer()
             await query.edit_message_text("Update cancelled.")
+
+    elif data.startswith("tool:"):
+        # Tool approval/selection callbacks:
+        #   "tool:yes:<sid>"                    — Accept default (Enter)
+        #   "tool:no:<sid>"                     — Cancel (Escape)
+        #   "tool:pick:<selected>:<target>:<sid>" — Multi-choice selection
+        parts = data.split(":")
+        action = parts[1]
+        if action == "pick":
+            # Multi-choice: navigate from current selection to target
+            selected = int(parts[2])
+            target = int(parts[3])
+            session_id = int(parts[4])
+            session = session_manager._sessions.get(user_id, {}).get(session_id)
+            if not session:
+                await query.answer("Session no longer active")
+                return
+            delta = target - selected
+            # Send arrow keys to move cursor, then Enter to confirm
+            if delta > 0:
+                keys = "\x1b[B" * delta  # Down arrow
+            elif delta < 0:
+                keys = "\x1b[A" * abs(delta)  # Up arrow
+            else:
+                keys = ""
+            await session.process.write(keys + "\r")
+            # Extract the label from the button that was clicked
+            label = query.data.split(":", 1)[0] if not query.message else ""
+            # Use the button text from the inline keyboard
+            label = "Selected"
+        else:
+            session_id = int(parts[2])
+            session = session_manager._sessions.get(user_id, {}).get(session_id)
+            if not session:
+                await query.answer("Session no longer active")
+                return
+            if action == "yes":
+                # Press Enter to accept the default (Yes) option
+                await session.process.write("\r")
+                label = "Allowed"
+            else:
+                # Press Escape to cancel the tool request
+                await session.process.write("\x1b")
+                label = "Denied"
+        mark_tool_acted(user_id, session_id)
+        await query.answer(label)
+        # Update the message to show the decision (remove keyboard)
+        original_text = query.message.text or query.message.caption or ""
+        await query.edit_message_text(
+            f"{html.escape(original_text)}\n\n<i>{label}</i>",
+            parse_mode="HTML",
+        )
 
     elif data.startswith("page:"):
         page = int(data[len("page:") :])
@@ -293,6 +363,11 @@ async def handle_unknown_command(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if active:
+        if is_tool_request_pending(user_id, active.session_id):
+            await update.message.reply_text(
+                "A tool approval is pending. Please respond to it first."
+            )
+            return
         await active.process.submit(update.message.text)
         return
 

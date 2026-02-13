@@ -27,6 +27,34 @@ class TestGitInfo:
         assert "feature/foo" in text
         assert "Fix bug" in text
 
+    def test_format_uses_html_not_markdown(self):
+        """Regression: format() must produce HTML tags, not Markdown syntax."""
+        info = GitInfo(
+            branch="feat/branch",
+            pr_url="https://github.com/u/r/pull/1",
+            pr_title="My PR",
+            pr_state="OPEN",
+        )
+        text = info.format()
+        # Must use HTML tags
+        assert "<code>feat/branch</code>" in text
+        assert '<a href="https://github.com/u/r/pull/1">My PR</a>' in text
+        # Must NOT use Markdown syntax
+        assert "`feat/branch`" not in text
+        assert "[My PR](" not in text
+
+    def test_format_escapes_html_in_pr_title(self):
+        """Ensure HTML special chars in PR titles are escaped."""
+        info = GitInfo(
+            branch="main",
+            pr_url="https://github.com/u/r/pull/1",
+            pr_title="Fix <script> & stuff",
+            pr_state="OPEN",
+        )
+        text = info.format()
+        assert "&lt;script&gt;" in text
+        assert "&amp;" in text
+
     def test_format_without_pr(self):
         info = GitInfo(branch="main")
         text = info.format()

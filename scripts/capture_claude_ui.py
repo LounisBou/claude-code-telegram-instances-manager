@@ -132,7 +132,6 @@ class CaptureSession:
     def spawn(self):
         """Start Claude Code."""
         env = os.environ.copy()
-        env["CLAUDE_CONFIG_DIR"] = os.path.expanduser("~/.claude-work")
 
         self.child = pexpect.spawn(
             "claude",

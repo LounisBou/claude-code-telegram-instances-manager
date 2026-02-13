@@ -1,6 +1,7 @@
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import ScreenEvent, ScreenState
 from tests.parsing.conftest import (
+    REAL_AUTH_SCREEN,
     REAL_BACKGROUND_SCREEN,
     REAL_ERROR_SCREEN,
     REAL_IDLE_SCREEN,
@@ -138,6 +139,78 @@ class TestClassifyScreenState:
         event = classify_screen_state(lines)
         assert event.state == ScreenState.IDLE
 
+    def test_idle_with_tip_line_below_separator(self):
+        """Regression: tip line below separator must be skipped by bottom-up scan.
+
+        Without this fix, the bottom-up scan stops on the tip line, making
+        it the 'last meaningful line' instead of the ❯ prompt, so IDLE
+        is never detected.
+        """
+        lines = [""] * 12
+        lines[5] = "─" * 40
+        lines[6] = "❯ Try something"
+        lines[7] = "─" * 40
+        lines[8] = "Tip: Run /help for more info"
+        lines[9] = "  my-project │ ⎇ main │ Usage: 5%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
+    def test_idle_with_time_and_hint_below_separator(self):
+        """Regression: bare time and claude hints must be skipped by scan."""
+        lines = [""] * 12
+        lines[5] = "─" * 40
+        lines[6] = "❯"
+        lines[7] = "─" * 40
+        lines[8] = "9:59"
+        lines[9] = "claude --continue to resume"
+        lines[10] = "  my-project │ ⎇ main │ Usage: 5%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
+    def test_idle_with_separator_prefix_overlay(self):
+        """Regression: separator with trailing text overlay (pyte bleed)."""
+        lines = [""] * 12
+        lines[5] = "─" * 30 + "my-project │ ⎇ main"
+        lines[6] = "❯"
+        lines[7] = "─" * 40
+        lines[8] = "  my-project │ ⎇ main │ Usage: 5%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
+    def test_idle_with_pr_indicator_below_separator(self):
+        """Regression: PR indicator in status area must be skipped by bottom-up scan."""
+        lines = [""] * 12
+        lines[5] = "─" * 40
+        lines[6] = "❯"
+        lines[7] = "─" * 40
+        lines[8] = "  my-project │ ⎇ main │ Usage: 5%"
+        lines[9] = "PR #13"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.IDLE
+
+    def test_user_echo_with_old_response_not_streaming(self):
+        """Regression: user message echo must NOT trigger STREAMING from old ⏺.
+
+        After a previous response, ⏺ persists on the pyte screen. When the
+        user sends a new message, the echo appears below the old ⏺. The
+        classifier must not match the old ⏺ as STREAMING — only ⏺ markers
+        BELOW the last ❯ prompt should count.
+        """
+        lines = [""] * 15
+        # Old response from previous interaction (persists on screen)
+        lines[2] = "⏺ Previous response text"
+        lines[3] = "  some old content"
+        lines[4] = "─" * 40
+        # User's new message echo
+        lines[5] = "❯ Explain the architecture of this project in detail. List the main"
+        lines[6] = "components."
+        lines[7] = "─" * 40
+        lines[8] = "  my-project │ ⎇ main │ Usage: 50%"
+        lines[9] = "PR #13"
+        event = classify_screen_state(lines)
+        # Should NOT be STREAMING (old ⏺ is above the ❯ prompt)
+        assert event.state != ScreenState.STREAMING
+
     def test_streaming_with_content_below_response_marker(self):
         """Regression: ⏺ not on last line — content lines below must still detect STREAMING."""
         lines = [""] * 15
@@ -149,6 +222,18 @@ class TestClassifyScreenState:
         lines[7] = "  2. File B"
         lines[10] = "─" * 40
         lines[11] = "  my-project │ ⎇ main │ Usage: 7%"
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.STREAMING
+
+    def test_streaming_with_response_below_user_prompt(self):
+        """STREAMING correctly detected when ⏺ is below the user's ❯ prompt."""
+        lines = [""] * 15
+        lines[2] = "❯ What is 2+2?"
+        lines[3] = "─" * 40
+        lines[4] = "⏺ Four."
+        lines[5] = ""
+        lines[8] = "─" * 40
+        lines[9] = "  my-project │ ⎇ main │ Usage: 50%"
         event = classify_screen_state(lines)
         assert event.state == ScreenState.STREAMING
 
@@ -204,3 +289,50 @@ class TestClassifyScreenStateLogging:
             classify_screen_state(lines)
         trace_records = [r for r in caplog.records if r.levelno == TRACE]
         assert any("non_empty=5" in r.message for r in trace_records)
+
+
+class TestAuthScreenDetection:
+    """Regression tests for issue 012: auth/login screen must be detected."""
+
+    def test_oauth_login_screen_detected(self):
+        """Real OAuth login screen (captured from PTY) must be AUTH_REQUIRED."""
+        event = classify_screen_state(REAL_AUTH_SCREEN)
+        assert event.state == ScreenState.AUTH_REQUIRED
+        assert "url" in event.payload
+        assert "claude.ai/oauth/authorize" in event.payload["url"]
+
+    def test_minimal_auth_screen_with_sign_in_and_url(self):
+        """Minimal auth screen with 'sign in' text and OAuth URL."""
+        lines = [
+            "Use the url below to sign in",
+            "https://claude.ai/oauth/authorize?code=true&client_id=abc",
+        ]
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.AUTH_REQUIRED
+
+    def test_auth_screen_with_paste_code_prompt(self):
+        """Auth screen with 'Paste code here' prompt and OAuth URL."""
+        lines = [
+            "",
+            "https://claude.ai/oauth/authorize?client_id=xyz",
+            " Paste code here if prompted >",
+        ]
+        event = classify_screen_state(lines)
+        assert event.state == ScreenState.AUTH_REQUIRED
+
+    def test_no_auth_without_oauth_url(self):
+        """Sign-in text without an OAuth URL must NOT trigger AUTH_REQUIRED."""
+        lines = [
+            "Please sign in to continue",
+            "Some other content",
+        ]
+        event = classify_screen_state(lines)
+        assert event.state != ScreenState.AUTH_REQUIRED
+
+    def test_no_auth_without_sign_in_text(self):
+        """OAuth URL alone without sign-in/paste-code text is not AUTH_REQUIRED."""
+        lines = [
+            "Visit https://claude.ai/oauth/authorize?code=true",
+        ]
+        event = classify_screen_state(lines)
+        assert event.state != ScreenState.AUTH_REQUIRED

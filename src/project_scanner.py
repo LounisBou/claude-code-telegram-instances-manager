@@ -37,6 +37,6 @@ def scan_projects(root: str, depth: int = 1) -> list[Project]:
         else:
             logger.log(TRACE, "Skipping %s (no .git or .claude)", entry.name)
 
-    projects.sort(key=lambda p: p.name)
+    projects.sort(key=lambda p: p.name.lower())
     logger.debug("Found %d projects in %s", len(projects), root)
     return projects

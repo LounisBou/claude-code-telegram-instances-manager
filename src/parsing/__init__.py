@@ -1,1 +1,1 @@
-"""Terminal output parsing pipeline: emulator → patterns → detectors → classifier."""
+"""Terminal output parsing pipeline: emulator → patterns → detectors → classifier → content_classifier."""

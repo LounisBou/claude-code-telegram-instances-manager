@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 
@@ -9,6 +10,7 @@ from telegram.ext import ContextTypes
 
 from src.telegram.keyboards import format_history_entry, is_authorized
 from src.git_info import get_git_info
+from src.telegram.output import is_tool_request_pending
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,7 @@ async def handle_history(
     """Handle the /history command by displaying recent session history.
 
     Retrieves up to 20 of the user's most recent sessions from the
-    database and formats them as a Markdown message.
+    database and formats them as an HTML message.
 
     Args:
         update: Incoming Telegram update containing the /history command.
@@ -42,8 +44,11 @@ async def handle_history(
         await update.message.reply_text("No session history.")
         return
 
-    lines = [format_history_entry(s) for s in sessions[:20]]
-    await update.message.reply_text("\n\n".join(lines))
+    entries = [format_history_entry(s) for s in sessions[:10]]
+    header = f"<b>Session history</b> (last {len(entries)}):\n"
+    await update.message.reply_text(
+        header + "\n\n".join(entries), parse_mode="HTML"
+    )
 
 
 async def handle_git(
@@ -71,11 +76,11 @@ async def handle_git(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if not active:
-        await update.message.reply_text("No active session.")
+        await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
     git_info = await get_git_info(active.project_path)
-    await update.message.reply_text(git_info.format())
+    await update.message.reply_text(git_info.format(), parse_mode="HTML")
 
 
 async def handle_update_claude(
@@ -121,8 +126,12 @@ async def handle_update_claude(
         )
         return
 
+    status_msg = await update.message.reply_text("Updating Claude CLI...")
     result = await _run_update_command(config.claude.update_command)
-    await update.message.reply_text(f"Update result:\n{result}")
+    await status_msg.edit_text(
+        f"Update result:\n<code>{html.escape(result)}</code>",
+        parse_mode="HTML",
+    )
 
 
 async def handle_context(
@@ -150,7 +159,13 @@ async def handle_context(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if not active:
-        await update.message.reply_text("No active session.")
+        await update.message.reply_text("No active session. Use /start to begin one.")
+        return
+
+    if is_tool_request_pending(user_id, active.session_id):
+        await update.message.reply_text(
+            "A tool approval is pending. Please respond to it first."
+        )
         return
 
     await active.process.submit("/context")
@@ -179,19 +194,26 @@ async def handle_download(
         await update.message.reply_text("You are not authorized to use this bot.")
         return
 
+    session_manager = context.bot_data["session_manager"]
+    active = session_manager.get_active_session(user_id)
+    if not active:
+        await update.message.reply_text("No active session. Use /start to begin one.")
+        return
+
     file_handler = context.bot_data["file_handler"]
     text = update.message.text
     parts = text.split(maxsplit=1)
     if len(parts) < 2:
-        await update.message.reply_text("Usage: /download /path/to/file")
+        await update.message.reply_text(
+            "Usage: /download <code>/path/to/file</code>",
+            parse_mode="HTML",
+        )
         return
 
     file_path = parts[1].strip()
 
     # Path traversal protection: resolve symlinks and verify the path falls
     # within the active session's project or an upload directory
-    session_manager = context.bot_data["session_manager"]
-    active = session_manager.get_active_session(user_id)
     resolved = os.path.realpath(file_path)
     allowed_dirs = [file_handler._base_dir]
     if active:
@@ -237,7 +259,13 @@ async def handle_file_upload(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if not active:
-        await update.message.reply_text("No active session. Upload ignored.")
+        await update.message.reply_text("No active session. Use /start to begin one.")
+        return
+
+    if is_tool_request_pending(user_id, active.session_id):
+        await update.message.reply_text(
+            "A tool approval is pending. Please respond to it first."
+        )
         return
 
     file_handler = context.bot_data["file_handler"]

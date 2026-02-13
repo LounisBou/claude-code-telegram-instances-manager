@@ -32,7 +32,6 @@ def main():
     # Spawn Claude Code
     print("[1] Spawning Claude Code...")
     env = os.environ.copy()
-    env["CLAUDE_CONFIG_DIR"] = os.path.expanduser("~/.claude-work")
 
     child = pexpect.spawn(
         "claude",

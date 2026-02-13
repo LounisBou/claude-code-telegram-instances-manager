@@ -92,6 +92,70 @@ class TestHandleHistory:
         update.message.reply_text.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_history_uses_html_parse_mode(self):
+        """Regression: /history must use parse_mode=HTML, not raw text."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        db = AsyncMock()
+        db.list_sessions = AsyncMock(
+            return_value=[
+                {
+                    "id": 7,
+                    "project": "my-proj",
+                    "started_at": "2026-02-09T10:02:35.958687+00:00",
+                    "ended_at": None,
+                    "status": "active",
+                    "exit_code": None,
+                }
+            ]
+        )
+        context.bot_data = {"config": config, "db": db}
+        await handle_history(update, context)
+        call_kwargs = update.message.reply_text.call_args
+        assert call_kwargs.kwargs.get("parse_mode") == "HTML"
+        body = call_kwargs.args[0]
+        assert "🟢" in body
+        assert "<b>#7 my-proj</b>" in body
+        assert "*my-proj*" not in body
+        assert ".958687" not in body
+
+    @pytest.mark.asyncio
+    async def test_history_readability(self):
+        """Regression for issue 001: /history must have header, entry limit, and visual structure."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        db = AsyncMock()
+        # 15 sessions — only first 10 should be shown
+        sessions = [
+            {
+                "id": i,
+                "project": f"proj-{i}",
+                "started_at": f"2026-02-09T10:0{i % 10}:00",
+                "ended_at": None,
+                "status": "active" if i <= 2 else "ended",
+                "exit_code": None if i <= 2 else 0,
+            }
+            for i in range(1, 16)
+        ]
+        db.list_sessions = AsyncMock(return_value=sessions)
+        context.bot_data = {"config": config, "db": db}
+        await handle_history(update, context)
+        body = update.message.reply_text.call_args.args[0]
+        # Header with count
+        assert "<b>Session history</b> (last 10):" in body
+        # Only 10 entries shown (not 15)
+        assert "proj-11" not in body
+        assert "proj-10" in body
+        # Double newline separation between entries
+        assert "\n\n" in body
+
+    @pytest.mark.asyncio
     async def test_empty_history(self):
         update = MagicMock()
         update.effective_user.id = 111
@@ -124,6 +188,27 @@ class TestHandleGit:
             await handle_git(update, context)
             update.message.reply_text.assert_called_once()
             assert "main" in update.message.reply_text.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_git_uses_html_parse_mode(self):
+        """Regression: /git must use parse_mode=HTML since format() produces HTML."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        session = MagicMock(project_path="/a/proj")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch("src.telegram.commands.get_git_info", new_callable=AsyncMock) as mock_git:
+            mock_git.return_value = MagicMock(
+                format=MagicMock(
+                    return_value='Branch: <code>main</code> | No open PR'
+                )
+            )
+            await handle_git(update, context)
+            call_kwargs = update.message.reply_text.call_args
+            assert call_kwargs.kwargs.get("parse_mode") == "HTML"
 
     @pytest.mark.asyncio
     async def test_no_active_session(self):
@@ -174,6 +259,91 @@ class TestHandleUpdateClaude:
         await handle_update_claude(update, context)
         call_text = update.message.reply_text.call_args[0][0]
         assert "2" in call_text
+
+
+class TestUpdateClaudeImmediateFeedback:
+    """Regression test for issue 009: /update_claude immediate feedback."""
+
+    @pytest.mark.asyncio
+    async def test_sends_updating_message_before_running_command(self):
+        """The handler must send a status message before awaiting the update."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = MagicMock()
+        config = MagicMock(
+            telegram=MagicMock(authorized_users=[111]),
+            claude=MagicMock(update_command="echo updated"),
+        )
+        sm = MagicMock(has_active_sessions=MagicMock(return_value=False))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch(
+            "src.telegram.commands._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = "OK: updated"
+            await handle_update_claude(update, context)
+            # First call to reply_text is the immediate "Updating..." feedback
+            first_reply = update.message.reply_text.call_args_list[0][0][0]
+            assert "Updating" in first_reply
+            # Then the status message is edited with the result
+            status_msg.edit_text.assert_called_once()
+            edited_text = status_msg.edit_text.call_args[0][0]
+            assert "OK: updated" in edited_text
+
+
+class TestUpdateClaudeResultFormatting:
+    """Regression test for issue 010: /update_claude result paths as command links."""
+
+    @pytest.mark.asyncio
+    async def test_update_result_wrapped_in_code_tags(self):
+        """Update result containing file paths must be wrapped in <code> tags."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = MagicMock()
+        config = MagicMock(
+            telegram=MagicMock(authorized_users=[111]),
+            claude=MagicMock(update_command="brew upgrade claude-code"),
+        )
+        sm = MagicMock(has_active_sessions=MagicMock(return_value=False))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch(
+            "src.telegram.commands._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = (
+                "FAILED (exit 1): Error: /opt/homebrew/Cellar is not writable"
+            )
+            await handle_update_claude(update, context)
+            call_kwargs = status_msg.edit_text.call_args
+            edited_text = call_kwargs[0][0]
+            assert "<code>" in edited_text
+            assert "parse_mode" in call_kwargs[1]
+            assert call_kwargs[1]["parse_mode"] == "HTML"
+
+    @pytest.mark.asyncio
+    async def test_update_result_html_escaped(self):
+        """HTML special chars in update output must be escaped."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = MagicMock()
+        config = MagicMock(
+            telegram=MagicMock(authorized_users=[111]),
+            claude=MagicMock(update_command="echo test"),
+        )
+        sm = MagicMock(has_active_sessions=MagicMock(return_value=False))
+        context.bot_data = {"config": config, "session_manager": sm}
+        with patch(
+            "src.telegram.commands._run_update_command", new_callable=AsyncMock
+        ) as mock_run:
+            mock_run.return_value = "OK: version <2.0> & stuff"
+            await handle_update_claude(update, context)
+            edited_text = status_msg.edit_text.call_args[0][0]
+            assert "&lt;2.0&gt;" in edited_text
+            assert "&amp;" in edited_text
 
 
 class TestHandleContext:
@@ -259,7 +429,9 @@ class TestHandleDownload:
         context = MagicMock()
         config = MagicMock(telegram=MagicMock(authorized_users=[111]))
         fh = MagicMock()
-        context.bot_data = {"config": config, "file_handler": fh}
+        session = MagicMock(project_path="/some/project")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "file_handler": fh, "session_manager": sm}
         await handle_download(update, context)
         call_text = update.message.reply_text.call_args[0][0]
         assert "usage" in call_text.lower()
@@ -373,6 +545,218 @@ class TestHandleFileUpload:
         }
         await handle_file_upload(update, context)
         update.message.reply_text.assert_not_called()
+
+
+class TestCommandsBlockedDuringToolApproval:
+    """Regression tests for issue 016: PTY-forwarding commands blocked during tool approval."""
+
+    @pytest.mark.asyncio
+    async def test_context_blocked_when_tool_request_pending(self):
+        """'/context' must not forward to PTY when tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.commands.is_tool_request_pending", return_value=True
+        ):
+            await handle_context(update, context)
+        session.process.submit.assert_not_called()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "tool approval" in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_context_forwarded_when_no_tool_request(self):
+        """'/context' forwards normally when no tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        session = MagicMock()
+        session.session_id = 1
+        session.process.submit = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.commands.is_tool_request_pending", return_value=False
+        ):
+            await handle_context(update, context)
+        session.process.submit.assert_called_once_with("/context")
+
+    @pytest.mark.asyncio
+    async def test_file_upload_blocked_when_tool_request_pending(self):
+        """File upload must not forward to PTY when tool approval is pending."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        update.message.document = MagicMock(file_id="abc", file_name="test.py")
+        update.message.photo = None
+        session = MagicMock()
+        session.session_id = 1
+        session.process.write = AsyncMock()
+        context = MagicMock()
+        context.bot_data = {
+            "config": MagicMock(telegram=MagicMock(authorized_users=[111])),
+            "session_manager": MagicMock(
+                get_active_session=MagicMock(return_value=session)
+            ),
+        }
+        with patch(
+            "src.telegram.commands.is_tool_request_pending", return_value=True
+        ):
+            await handle_file_upload(update, context)
+        session.process.write.assert_not_called()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "tool approval" in reply.lower()
+
+
+class TestNoSessionMessagesIncludeStartHint:
+    """Regression for issue 005: all no-session messages must include /start hint."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler,bot_data_extras", [
+        (handle_git, {"session_manager": MagicMock(get_active_session=MagicMock(return_value=None))}),
+        (handle_context, {"session_manager": MagicMock(get_active_session=MagicMock(return_value=None))}),
+    ])
+    async def test_command_no_session_includes_start_hint(self, handler, bot_data_extras):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        context.bot_data = {"config": config, **bot_data_extras}
+        await handler(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"{handler.__name__} no-session message missing /start hint: {call_text!r}"
+
+    @pytest.mark.asyncio
+    async def test_file_upload_no_session_includes_start_hint(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        update.message.document = MagicMock(file_id="abc")
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_file_upload(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"file_upload no-session message missing /start hint: {call_text!r}"
+
+    @pytest.mark.asyncio
+    async def test_sessions_no_session_includes_start_hint(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(list_sessions=MagicMock(return_value=[]))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_sessions(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"sessions no-session message missing /start hint: {call_text!r}"
+
+    @pytest.mark.asyncio
+    async def test_exit_no_session_includes_start_hint(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_exit(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"exit no-session message missing /start hint: {call_text!r}"
+
+    @pytest.mark.asyncio
+    async def test_text_message_no_session_includes_start_hint(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "hello"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_text_message(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text, f"text_message no-session message missing /start hint: {call_text!r}"
+
+
+class TestDownloadSessionCheckBeforeUsage:
+    """Regression for issue 008: /download must check for active session before showing usage."""
+
+    @pytest.mark.asyncio
+    async def test_no_session_returns_start_hint_not_usage(self):
+        """Without an active session, /download (no args) should say 'no active session', not show usage."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text
+        assert "usage" not in call_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_session_with_path_returns_start_hint(self):
+        """Without an active session, /download /some/file should also say 'no active session'."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download /tmp/test.txt"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        sm = MagicMock(get_active_session=MagicMock(return_value=None))
+        context.bot_data = {"config": config, "session_manager": sm}
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "/start" in call_text
+        assert "no active" in call_text.lower()
+
+
+class TestDownloadUsageFormatting:
+    """Regression for issue 007: /download usage path must not be parsed as Telegram commands."""
+
+    @pytest.mark.asyncio
+    async def test_usage_text_uses_html_code_tags(self):
+        """The example path in usage must be wrapped in <code> to prevent command parsing."""
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.message.text = "/download"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        config = MagicMock(telegram=MagicMock(authorized_users=[111]))
+        fh = MagicMock()
+        session = MagicMock(project_path="/some/project")
+        sm = MagicMock(get_active_session=MagicMock(return_value=session))
+        context.bot_data = {"config": config, "file_handler": fh, "session_manager": sm}
+        await handle_download(update, context)
+        call_text = update.message.reply_text.call_args[0][0]
+        call_kwargs = update.message.reply_text.call_args[1]
+        # Must use HTML parse mode
+        assert call_kwargs.get("parse_mode") == "HTML"
+        # Path must be inside <code> tags so Telegram doesn't parse slashes as commands
+        assert "<code>" in call_text
+        assert "</code>" in call_text
 
 
 class TestRunUpdateCommand:

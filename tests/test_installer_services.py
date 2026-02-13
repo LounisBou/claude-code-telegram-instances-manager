@@ -12,21 +12,21 @@ from installer.services import (
 class TestGenerateSystemdUnit:
     def test_generates_valid_unit(self, tmp_path):
         unit = generate_systemd_unit(
-            install_dir="/opt/claude-ctim",
-            user="lounis",
-            config_path="/opt/claude-ctim/config.yaml",
+            install_dir="/tmp/test-claude-ctim",
+            user="testuser",
+            config_path="/tmp/test-claude-ctim/config.yaml",
         )
         assert "[Unit]" in unit
         assert "[Service]" in unit
         assert "[Install]" in unit
-        assert "/opt/claude-ctim" in unit
-        assert "lounis" in unit
+        assert "/tmp/test-claude-ctim" in unit
+        assert "testuser" in unit
         assert "python -m src.main" in unit
 
     def test_writes_to_file(self, tmp_path):
         unit = generate_systemd_unit(
-            install_dir="/opt/claude-ctim", user="test",
-            config_path="/opt/claude-ctim/config.yaml",
+            install_dir="/tmp/test-claude-ctim", user="testuser",
+            config_path="/tmp/test-claude-ctim/config.yaml",
         )
         path = tmp_path / "test.service"
         path.write_text(unit)
@@ -36,18 +36,18 @@ class TestGenerateSystemdUnit:
 class TestGenerateLaunchdPlist:
     def test_generates_valid_plist(self):
         plist = generate_launchd_plist(
-            install_dir="/opt/claude-ctim",
-            config_path="/opt/claude-ctim/config.yaml",
+            install_dir="/tmp/test-claude-ctim",
+            config_path="/tmp/test-claude-ctim/config.yaml",
         )
         assert "<?xml" in plist
         assert "com.claude-ctim" in plist
-        assert "/opt/claude-ctim" in plist
+        assert "/tmp/test-claude-ctim" in plist
         assert "src.main" in plist
 
     def test_contains_keep_alive(self):
         plist = generate_launchd_plist(
-            install_dir="/opt/claude-ctim",
-            config_path="/opt/claude-ctim/config.yaml",
+            install_dir="/tmp/test-claude-ctim",
+            config_path="/tmp/test-claude-ctim/config.yaml",
         )
         assert "KeepAlive" in plist
 
