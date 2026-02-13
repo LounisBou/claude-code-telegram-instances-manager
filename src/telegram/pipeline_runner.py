@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import Forbidden
 
 from src.parsing.models import ScreenEvent, TerminalView
 from src.telegram.keyboards import build_tool_approval_keyboard
@@ -207,6 +208,18 @@ class PipelineRunner:
             method = getattr(self, f"_{action}")
             try:
                 await method(event)
+            except Forbidden:
+                logger.warning(
+                    "User %d blocked the bot — killing session %d",
+                    self.user_id, self.session_id,
+                )
+                try:
+                    await self.session_manager.kill_session(
+                        self.user_id, self.session_id,
+                    )
+                except Exception:
+                    pass
+                return
             except Exception:
                 logger.exception(
                     "Action %s failed during (%s, %s) for user=%d sid=%d",

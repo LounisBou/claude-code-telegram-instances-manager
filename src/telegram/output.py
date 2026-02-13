@@ -11,6 +11,7 @@ import asyncio
 import logging
 
 from telegram import Bot
+from telegram.error import Forbidden
 
 from src.parsing.screen_classifier import classify_screen_state
 from src.telegram.pipeline_runner import PipelineRunner
@@ -50,6 +51,15 @@ async def poll_output(
 
               except asyncio.CancelledError:
                 raise
+              except Forbidden:
+                logger.warning(
+                    "User %d blocked the bot — killing session %d",
+                    user_id, sid,
+                )
+                try:
+                    await session_manager.kill_session(user_id, sid)
+                except Exception:
+                    pass
               except Exception:
                 logger.exception(
                     "poll_output crash for user=%d sid=%d — will retry next cycle",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import Forbidden
 
 from src.parsing.models import ScreenEvent, TerminalView
 from src.telegram.pipeline_state import PipelinePhase, PipelineState
@@ -603,6 +604,33 @@ class TestActionDetails:
         # Phase should still advance to TOOL_PENDING despite _send_keyboard failure
         assert ps.phase == PipelinePhase.TOOL_PENDING
         ps.streaming.finalize.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_forbidden_kills_session_and_stops(self):
+        """Forbidden from Telegram API kills session and stops processing."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
+        bot.send_message.side_effect = Forbidden("Forbidden: bot was blocked by the user")
+        await runner.process(
+            _event(TerminalView.TOOL_REQUEST, question="Run?", options=["Yes"])
+        )
+        runner.session_manager.kill_session.assert_called_once_with(
+            runner.user_id, runner.session_id,
+        )
+        # Phase should NOT advance (early return)
+        assert ps.phase == PipelinePhase.DORMANT
+
+    @pytest.mark.asyncio
+    async def test_forbidden_during_streaming_kills_session(self):
+        """Forbidden during extract_and_send kills session."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
+        ps.streaming.append_content = AsyncMock(
+            side_effect=Forbidden("Forbidden: bot was blocked by the user"),
+        )
+        ps.emulator.get_attributed_changes.return_value = [
+            [MagicMock(text="⏺ hello", fg="default", bold=False, italic=False)],
+        ]
+        await runner.process(_event(TerminalView.STREAMING))
+        runner.session_manager.kill_session.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_prev_view_updated_after_process(self):
