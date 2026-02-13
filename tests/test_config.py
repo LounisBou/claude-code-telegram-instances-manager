@@ -87,12 +87,12 @@ class TestLoadConfig:
             "projects": {"root": "/tmp"},
             "claude": {
                 "command": "claude",
-                "env": {"CLAUDE_CONFIG_DIR": "~/.claude-work", "FOO": "bar"},
+                "env": {"MY_VAR": "value1", "FOO": "bar"},
             },
         }))
         config = load_config(str(config_file))
         assert config.claude.env == {
-            "CLAUDE_CONFIG_DIR": "~/.claude-work",
+            "MY_VAR": "value1",
             "FOO": "bar",
         }
 

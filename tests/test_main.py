@@ -95,13 +95,13 @@ class TestBuildApp:
             "  root: /tmp\n"
             "claude:\n"
             "  env:\n"
-            "    CLAUDE_CONFIG_DIR: '~/.claude-work'\n"
+            "    MY_CUSTOM_VAR: 'some-value'\n"
         )
         from src.main import build_app
 
         app = build_app(str(config_file))
         sm = app.bot_data["session_manager"]
-        assert sm._env == {"CLAUDE_CONFIG_DIR": "~/.claude-work"}
+        assert sm._env == {"MY_CUSTOM_VAR": "some-value"}
 
     def test_command_menu_set_on_startup(self):
         """Regression: _on_startup must call set_my_commands to register Telegram menu."""

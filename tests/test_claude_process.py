@@ -117,13 +117,13 @@ class TestBuildEnv:
         env = ClaudeProcess._build_env({})
         assert env == os.environ.copy()
 
-    def test_env_passed_to_pexpect(self):
+    def test_env_tilde_expanded(self):
         proc = ClaudeProcess(
             command="echo", args=[], cwd="/tmp",
-            env={"CLAUDE_CONFIG_DIR": "~/.claude-work"},
+            env={"MY_HOME_DIR": "~/some/path"},
         )
-        assert "CLAUDE_CONFIG_DIR" in proc._env
-        assert "~" not in proc._env["CLAUDE_CONFIG_DIR"]
+        assert "MY_HOME_DIR" in proc._env
+        assert "~" not in proc._env["MY_HOME_DIR"]
 
 
 class TestSubmit:
