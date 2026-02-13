@@ -379,3 +379,37 @@ class TestProcessCycle:
             )
             await proc.process_cycle(b"raw data")
         emu.feed.assert_called_once_with(b"raw data")
+
+
+class TestProcessCycleIntegration:
+    """End-to-end test using real TerminalEmulator (no pipeline mocks)."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_content_reaches_telegram(self):
+        """Real emulator + real pipeline: streaming text produces HTML output."""
+        from src.parsing.terminal_emulator import TerminalEmulator
+        from src.telegram.streaming_message import StreamingMessage
+
+        emu = TerminalEmulator()
+        bot = AsyncMock()
+        bot.send_message.return_value = MagicMock(message_id=42)
+        streaming = StreamingMessage(bot=bot, chat_id=99, edit_rate_limit=100)
+        state = SessionOutputState(emulator=emu, streaming=streaming)
+        state.prev_state = ScreenState.STREAMING
+
+        proc = SessionProcessor(
+            state=state, user_id=99, session_id=1,
+            bot=bot, session_manager=AsyncMock(),
+        )
+        # Simulate Claude streaming a response with a response marker
+        lines = "\r\n".join([
+            "  ⏺ Here is a simple greeting function:",
+            "",
+            "  def hello():",
+            '      print("Hello, world!")',
+        ])
+        raw = lines.encode()
+        await proc.process_cycle(raw)
+        # The streaming message should have received content
+        assert streaming.accumulated != ""
+        assert "Hello" in streaming.accumulated or "hello" in streaming.accumulated
