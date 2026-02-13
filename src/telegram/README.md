@@ -7,10 +7,15 @@ User interaction, output streaming, and message formatting for the Telegram inte
 | Module | Purpose |
 |---|---|
 | `keyboards.py` | `is_authorized()` gate, `BOT_COMMANDS` list, inline keyboard builders for projects/sessions/tools, history formatting helpers |
-| `handlers.py` | Core Telegram handlers: `/start`, `/sessions`, `/exit`, text messages, callback queries, unknown commands |
+| `handlers.py` | Core Telegram handlers: `/start`, `/sessions`, `/exit`, text messages, unknown commands |
+| `callbacks.py` | Inline keyboard callback query dispatch and per-prefix handlers (`project:`, `switch:`, `kill:`, `update:`, `tool:`, `page:`) |
 | `commands.py` | Extended command handlers: `/history`, `/git`, `/context`, `/download`, `/update_claude`, file uploads |
-| `formatter.py` | Telegram MarkdownV2 escaping (`format_telegram`), HTML formatting (`format_html`), message splitting for the 4096-char limit, text reflowing (`reflow_text`) |
-| `output.py` | `poll_output()` async loop -- polls sessions every 300ms, classifies screen state, extracts content, formats via `format_html()`, and streams to Telegram via `StreamingMessage` edit-in-place. Also provides `StreamingMessage` and `StreamingState` for edit-in-place streaming with throttled edits and overflow handling |
+| `formatter.py` | HTML formatting (`format_html`), heuristic code-block detection (`wrap_code_blocks`), text reflowing (`reflow_text`), message splitting for the 4096-char limit |
+| `output.py` | `poll_output()` thin loop — delegates to `SessionProcessor` per session each 300ms cycle; backward-compat bridge for legacy test dicts |
+| `output_state.py` | `SessionOutputState` per-session state, `ContentDeduplicator`, registry functions |
+| `output_processor.py` | `SessionProcessor` 3-phase cycle (pre-extraction → extraction → finalization), `ExtractionMode` enum |
+| `output_pipeline.py` | Content extraction helpers, `render_heuristic` / `render_ansi` rendering, span manipulation |
+| `streaming_message.py` | `StreamingMessage` edit-in-place streaming with throttled edits, overflow handling, `StreamingState` enum |
 
 ## Dependency Diagram
 
@@ -19,12 +24,19 @@ graph LR
     keyboards["keyboards.py<br/>(leaf)"]
     formatter["formatter.py<br/>(leaf)"]
     handlers["handlers.py"] --> keyboards
-    handlers --> commands
+    handlers --> callbacks
+    callbacks["callbacks.py"] --> keyboards
+    callbacks --> commands
     commands["commands.py"] --> keyboards
-    output["output.py"] --> formatter
+    output["output.py"] --> output_processor
+    output_processor["output_processor.py"] --> output_pipeline
+    output_processor --> output_state
+    output_pipeline["output_pipeline.py"] --> formatter
+    output_state["output_state.py"] --> streaming_message
+    streaming_message["streaming_message.py<br/>(leaf)"]
 ```
 
-`keyboards` and `formatter` are leaf modules. `handlers` imports from both `keyboards` and `commands`. `commands` imports from `keyboards`. `output` imports from `formatter` and the parsing sub-package.
+`keyboards`, `formatter`, and `streaming_message` are leaf modules. `handlers` delegates callback queries to `callbacks`. `output` is a thin loop that delegates to `output_processor` (3-phase cycle). `output_processor` uses `output_pipeline` for content extraction/rendering and `output_state` for per-session state.
 
 ## Key Patterns
 
