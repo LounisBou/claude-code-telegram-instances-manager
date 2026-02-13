@@ -5,31 +5,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.telegram.output import (
-    _CHROME_CATEGORIES,
-    _CONTENT_STATES,
-    _dedent_attr_lines,
-    _filter_response_attr,
-    _find_last_prompt,
-    _lstrip_n_chars,
-    _session_emulators,
-    _session_prev_state,
-    _session_sent_lines,
-    _session_streaming,
-    _session_thinking_snapshot,
-    _session_tool_acted,
-    _strip_marker_from_spans,
-    is_tool_request_pending,
-    mark_tool_acted,
-    StreamingMessage,
-    StreamingState,
-    poll_output,
-)
 from src.parsing.terminal_emulator import CharSpan
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import (
+    CHROME_CATEGORIES,
     ScreenEvent, ScreenState, classify_text_line, extract_content,
 )
+from src.telegram.output import poll_output
+from src.telegram.output_pipeline import (
+    dedent_attr_lines,
+    filter_response_attr,
+    find_last_prompt,
+    lstrip_n_chars,
+    strip_marker_from_spans,
+)
+from src.telegram.output_processor import _CONTENT_STATES
+from src.telegram.output_state import (
+    _states as _session_states,
+    cleanup as _cleanup_state,
+    get_or_create as _get_or_create,
+    is_tool_request_pending,
+    mark_tool_acted,
+)
+from src.telegram.streaming_message import StreamingMessage, StreamingState
 
 
 class TestOutputStateFiltering:
@@ -128,8 +126,9 @@ class TestOutputStateFiltering:
     def test_startup_to_unknown_guard_prevents_reentry(self):
         """Regression: once past STARTUP, classifier returning STARTUP must become UNKNOWN."""
         key = (999, 999)
-        _session_prev_state[key] = ScreenState.IDLE
-        prev = _session_prev_state[key]
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.prev_state = ScreenState.IDLE
+        prev = _session_states[key].prev_state
 
         # This is the guard logic from poll_output
         event = ScreenEvent(state=ScreenState.STARTUP, raw_lines=[])
@@ -140,7 +139,6 @@ class TestOutputStateFiltering:
         assert event.state == ScreenState.UNKNOWN
 
         # Cleanup
-        del _session_prev_state[key]
 
     def test_thinking_notification_on_transition(self):
         """Regression: THINKING must trigger start_thinking once, not every cycle."""
@@ -302,48 +300,48 @@ class TestDedupSetClearing:
     def test_idle_transition_clears_sent_lines(self):
         """Transitioning to IDLE should reset the dedup set."""
         key = (888, 888)
-        _session_sent_lines[key] = {"old line", "another old line"}
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.dedup.sent_lines = {"old line", "another old line"}
 
         # Simulate IDLE transition logic from poll_output
         prev = ScreenState.STREAMING
-        state = ScreenState.IDLE
-        if state == ScreenState.IDLE and prev != ScreenState.IDLE:
-            _session_sent_lines[key] = set()
+        cur_state = ScreenState.IDLE
+        if cur_state == ScreenState.IDLE and prev != ScreenState.IDLE:
+            state.dedup.sent_lines = set()
 
-        assert _session_sent_lines[key] == set()
+        assert _session_states[key].dedup.sent_lines == set()
 
         # Cleanup
-        del _session_sent_lines[key]
 
     def test_idle_to_idle_does_not_clear(self):
         """Staying in IDLE should NOT clear (avoid clearing on every cycle)."""
         key = (887, 887)
         original = {"some line"}
-        _session_sent_lines[key] = original.copy()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.dedup.sent_lines = original.copy()
 
         prev = ScreenState.IDLE
-        state = ScreenState.IDLE
-        if state == ScreenState.IDLE and prev != ScreenState.IDLE:
-            _session_sent_lines[key] = set()
+        cur_state = ScreenState.IDLE
+        if cur_state == ScreenState.IDLE and prev != ScreenState.IDLE:
+            state.dedup.sent_lines = set()
 
-        assert _session_sent_lines[key] == original
+        assert _session_states[key].dedup.sent_lines == original
 
         # Cleanup
-        del _session_sent_lines[key]
 
     def test_session_init_creates_empty_sent_set(self):
         """New session should start with empty dedup set."""
         key = (886, 886)
-        assert key not in _session_sent_lines
+        assert key not in _session_states
 
         # Simulate lazy-init from poll_output
-        if key not in _session_emulators:
-            _session_sent_lines[key] = set()
+        if key not in _session_states:
+            state = _get_or_create(*key, bot=AsyncMock())
+            state.dedup.sent_lines = set()
 
-        assert _session_sent_lines[key] == set()
+        assert _session_states[key].dedup.sent_lines == set()
 
         # Cleanup
-        del _session_sent_lines[key]
 
 
 class TestPollOutputIntegration:
@@ -351,11 +349,7 @@ class TestPollOutputIntegration:
 
     def _cleanup_session(self, key):
         """Remove session state created during tests."""
-        _session_emulators.pop(key, None)
-        _session_streaming.pop(key, None)
-        _session_prev_state.pop(key, None)
-        _session_sent_lines.pop(key, None)
-        _session_thinking_snapshot.pop(key, None)
+        _cleanup_state(*key)
 
     @pytest.mark.asyncio
     async def test_lazy_init_creates_all_state(self):
@@ -380,12 +374,12 @@ class TestPollOutputIntegration:
             except asyncio.CancelledError:
                 pass
 
-        assert key in _session_emulators
-        assert key in _session_streaming
-        assert key in _session_prev_state
-        assert key in _session_sent_lines
-        assert _session_prev_state[key] == ScreenState.STARTUP
-        assert _session_sent_lines[key] == set()
+        assert key in _session_states
+        assert key in _session_states
+        assert key in _session_states
+        assert key in _session_states
+        assert _session_states[key].prev_state == ScreenState.STARTUP
+        assert _session_states[key].dedup.sent_lines == set()
 
         self._cleanup_session(key)
 
@@ -412,7 +406,7 @@ class TestPollOutputIntegration:
                 pass
 
         # Verify state was updated from STARTUP
-        assert key in _session_prev_state
+        assert key in _session_states
 
         self._cleanup_session(key)
 
@@ -422,11 +416,7 @@ class TestPollOutputStateTransitions:
 
     def _cleanup_session(self, key):
         """Remove session state created during tests."""
-        _session_emulators.pop(key, None)
-        _session_streaming.pop(key, None)
-        _session_prev_state.pop(key, None)
-        _session_sent_lines.pop(key, None)
-        _session_thinking_snapshot.pop(key, None)
+        _cleanup_state(*key)
 
     @pytest.mark.asyncio
     async def test_thinking_transition_sends_notification(self):
@@ -479,14 +469,15 @@ class TestPollOutputStateTransitions:
 
         # Pre-init streaming message with a message_id (as if thinking was called)
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=769, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.state = StreamingState.STREAMING
         streaming.last_edit_time = 0
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.STREAMING
+        state.dedup.sent_lines = set()
 
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
@@ -503,7 +494,7 @@ class TestPollOutputStateTransitions:
         bot.edit_message_text.assert_called()
 
         # Sent set should track the lines
-        sent = _session_sent_lines.get(key, set())
+        sent = state.dedup.sent_lines
         assert "Hello world" in sent
         assert "New line" in sent
 
@@ -525,14 +516,15 @@ class TestPollOutputStateTransitions:
 
         # Pre-fill session state with already-sent lines and a streaming message
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=768, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.state = StreamingState.STREAMING
         streaming.last_edit_time = 0
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = {"Already sent"}
+        state.streaming = streaming
+        state.prev_state = ScreenState.STREAMING
+        state.dedup.sent_lines = {"Already sent"}
 
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
@@ -575,14 +567,15 @@ class TestPollOutputStateTransitions:
 
         # Pre-fill session state mid-stream
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=767, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.accumulated = "Buffered content"
         streaming.state = StreamingState.STREAMING
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = {"old line"}
+        state.streaming = streaming
+        state.prev_state = ScreenState.STREAMING
+        state.dedup.sent_lines = {"old line"}
 
         idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
         with (
@@ -595,7 +588,7 @@ class TestPollOutputStateTransitions:
                 pass
 
         # Dedup set should be re-seeded with display content, not cleared
-        sent = _session_sent_lines.get(key)
+        sent = state.dedup.sent_lines
         assert "old line" in sent  # pre-existing content preserved
         assert "data" in sent  # display content added
         # finalize should have sent final edit and reset streaming state
@@ -632,14 +625,15 @@ class TestPollOutputStateTransitions:
 
         from src.parsing.terminal_emulator import TerminalEmulator
         emu = TerminalEmulator()
-        _session_emulators[key] = emu
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = emu
         streaming = StreamingMessage(bot=bot, chat_id=768, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.accumulated = "Old response"
         streaming.state = StreamingState.STREAMING
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.STREAMING
+        state.dedup.sent_lines = set()
 
         idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
         tool_event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
@@ -660,7 +654,7 @@ class TestPollOutputStateTransitions:
                 pass
 
         # After IDLE, "prev" should be in the dedup set (re-seeded)
-        sent = _session_sent_lines.get(key)
+        sent = state.dedup.sent_lines
         assert "prev" in sent
 
         self._cleanup_session(key)
@@ -690,13 +684,14 @@ class TestPollOutputStateTransitions:
         # Pre-init state as THINKING (start_thinking already called)
         from src.parsing.terminal_emulator import TerminalEmulator
         emu = TerminalEmulator()
-        _session_emulators[key] = emu
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = emu
         streaming = StreamingMessage(bot=bot, chat_id=764, edit_rate_limit=3)
         streaming.message_id = 99
         streaming.state = StreamingState.THINKING
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.THINKING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.THINKING
+        state.dedup.sent_lines = set()
 
         # Classifier returns IDLE (response already complete).
         # Capture what extract_content receives to verify it gets the
@@ -801,7 +796,7 @@ class TestPollOutputStateTransitions:
         # at THINKING time. Since we use a real TerminalEmulator (initialized
         # with empty screen), the snapshot is empty for this mock. But we can
         # verify the snapshot dict was populated.
-        assert key in _session_thinking_snapshot
+        assert key in _session_states
 
         # Verify extract_content was called (during fast-IDLE)
         assert len(extract_calls) >= 1
@@ -876,7 +871,7 @@ class TestPollOutputStateTransitions:
         edit_text = bot.edit_message_text.call_args[1]["text"]
         assert "Four." in edit_text
         # Streaming should be finalized
-        assert _session_streaming[key].state == StreamingState.IDLE
+        assert _session_states[key].streaming.state == StreamingState.IDLE
 
         self._cleanup_session(key)
 
@@ -948,7 +943,7 @@ class TestPollOutputStateTransitions:
         ]
         assert any("Four." in t for t in sent_texts)
         # Streaming should be finalized
-        assert _session_streaming[key].state == StreamingState.IDLE
+        assert _session_states[key].streaming.state == StreamingState.IDLE
 
         self._cleanup_session(key)
 
@@ -1001,14 +996,15 @@ class TestPollOutputStateTransitions:
 
         # Pre-init with streaming message
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=765, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.state = StreamingState.STREAMING
         streaming.last_edit_time = 0
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.STREAMING
+        state.dedup.sent_lines = set()
 
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
@@ -1046,13 +1042,14 @@ class TestPollOutputStateTransitions:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=769, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.state = StreamingState.THINKING
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.THINKING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.THINKING
+        state.dedup.sent_lines = set()
 
         tool_event = ScreenEvent(
             state=ScreenState.TOOL_REQUEST,
@@ -1099,11 +1096,7 @@ class TestPollOutputStreaming:
 
     def _cleanup_session(self, key):
         """Remove session state created during tests."""
-        _session_emulators.pop(key, None)
-        _session_streaming.pop(key, None)
-        _session_prev_state.pop(key, None)
-        _session_sent_lines.pop(key, None)
-        _session_thinking_snapshot.pop(key, None)
+        _cleanup_state(*key)
 
     @pytest.mark.asyncio
     async def test_thinking_starts_streaming_message(self):
@@ -1156,14 +1149,15 @@ class TestPollOutputStreaming:
 
         # Pre-init with a streaming message that has a message_id (as if thinking was called)
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=699, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.state = StreamingState.STREAMING
         streaming.last_edit_time = 0
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.STREAMING
+        state.dedup.sent_lines = set()
 
         streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
         with (
@@ -1198,14 +1192,15 @@ class TestPollOutputStreaming:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=698, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.accumulated = "Final content"
         streaming.state = StreamingState.STREAMING
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.STREAMING
+        state.dedup.sent_lines = set()
 
         idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
         with (
@@ -1247,8 +1242,9 @@ class TestPollOutputStreaming:
             except asyncio.CancelledError:
                 pass
 
-        streaming = _session_streaming.get(key)
-        assert streaming is not None
+        state_obj = _session_states.get((690, 1))
+        assert state_obj is not None
+        streaming = state_obj.streaming
         assert streaming.edit_rate_limit == 5
 
         self._cleanup_session(key)
@@ -1364,7 +1360,7 @@ class TestDedentAfterDedup:
 
 
 class TestFindLastPrompt:
-    """Unit tests for _find_last_prompt helper."""
+    """Unit tests for find_last_prompt helper."""
 
     def test_finds_prompt_with_text(self):
         display = [
@@ -1373,7 +1369,7 @@ class TestFindLastPrompt:
             "⏺ Here is the function:",
             "more content",
         ]
-        assert _find_last_prompt(display) == 1
+        assert find_last_prompt(display) == 1
 
     def test_returns_last_prompt_when_multiple(self):
         display = [
@@ -1382,17 +1378,17 @@ class TestFindLastPrompt:
             "❯ Second prompt text",
             "⏺ Second response",
         ]
-        assert _find_last_prompt(display) == 2
+        assert find_last_prompt(display) == 2
 
     def test_ignores_bare_prompt(self):
         """Bare ❯ (no text) must be ignored."""
         display = ["❯", "content", "more"]
-        assert _find_last_prompt(display) is None
+        assert find_last_prompt(display) is None
 
     def test_finds_short_user_prompt(self):
         """Short user prompts like '❯ hi' (len 4) must be found."""
         display = ["❯", "content", "❯ hi", "⏺ Hello!", "more"]
-        assert _find_last_prompt(display) == 2
+        assert find_last_prompt(display) == 2
 
     def test_skips_idle_hint_prompt(self):
         """Idle hint prompt at screen bottom must be skipped.
@@ -1410,7 +1406,7 @@ class TestFindLastPrompt:
             "  project │ ⎇ main │ Usage: 5%",
         ]
         # Must select the user prompt (index 0), NOT the idle hint (index 3)
-        assert _find_last_prompt(display) == 0
+        assert find_last_prompt(display) == 0
 
     def test_finds_emoji_only_prompt(self):
         """Regression: emoji-only prompt '❯ 🤖💬🔥' (len 5) was incorrectly
@@ -1426,7 +1422,7 @@ class TestFindLastPrompt:
             "❯",
             "────────────────────────────────────",
         ]
-        prompt_idx = _find_last_prompt(display)
+        prompt_idx = find_last_prompt(display)
         assert prompt_idx == 2
         # Trimmed display must NOT include old "Two." response
         trimmed = display[prompt_idx:]
@@ -1436,10 +1432,10 @@ class TestFindLastPrompt:
 
     def test_returns_none_when_no_prompt(self):
         display = ["line one", "line two", "line three"]
-        assert _find_last_prompt(display) is None
+        assert find_last_prompt(display) is None
 
     def test_returns_none_on_empty_display(self):
-        assert _find_last_prompt([]) is None
+        assert find_last_prompt([]) is None
 
 
 class TestDisplayTrimToLastPrompt:
@@ -1477,7 +1473,7 @@ class TestDisplayTrimToLastPrompt:
             "❯",
             "────────────────────────────────────",
         ]
-        prompt_idx = _find_last_prompt(display)
+        prompt_idx = find_last_prompt(display)
         assert prompt_idx == 7
         trimmed = display[prompt_idx:]
         content = extract_content(trimmed)
@@ -1497,7 +1493,7 @@ class TestDisplayTrimToLastPrompt:
             "❯",
             "────────────────────────────────────",
         ]
-        prompt_idx = _find_last_prompt(display)
+        prompt_idx = find_last_prompt(display)
         assert prompt_idx == 0
         trimmed = display[prompt_idx:]
         content = extract_content(trimmed)
@@ -1522,7 +1518,7 @@ class TestDisplayTrimToLastPrompt:
             '      """',
             "      return s == s[::-1]",
         ]
-        prompt_idx = _find_last_prompt(display)
+        prompt_idx = find_last_prompt(display)
         assert prompt_idx is None
         # When no prompt found, extraction uses full display — both
         # old and new content appear.  Snapshot will be empty, so
@@ -1536,7 +1532,7 @@ class TestDisplayTrimToLastPrompt:
 
         When Claude goes IDLE, it may display a hint like
         '❯ Try "how does <filepath> work?"' at the bottom of the screen.
-        _find_last_prompt must select the user's input prompt (which has
+        find_last_prompt must select the user's input prompt (which has
         ⏺ below it), not the idle hint (which has no ⏺ below it).
         Without this fix, source = full[hint_idx:] would contain only
         the hint + chrome, extract_content would return empty, and
@@ -1555,7 +1551,7 @@ class TestDisplayTrimToLastPrompt:
             "────────────────────────────────────",
             "  project │ ⎇ main │ Usage: 5%",
         ]
-        prompt_idx = _find_last_prompt(display)
+        prompt_idx = find_last_prompt(display)
         # Must select the user prompt (index 3), NOT the idle hint (index 8)
         assert prompt_idx == 3
         trimmed = display[prompt_idx:]
@@ -1572,7 +1568,7 @@ class TestThinkingSnapshotChromeOnly:
     the next response used the same patterns, they were incorrectly deduped.
 
     Fix: snapshot only captures UI chrome lines (classify_text_line result in
-    _CHROME_CATEGORIES).  Content, response, and tool lines are excluded.
+    CHROME_CATEGORIES).  Content, response, and tool lines are excluded.
     """
 
     def test_snapshot_excludes_content_lines(self):
@@ -1592,7 +1588,7 @@ class TestThinkingSnapshotChromeOnly:
         snap = set()
         for line in display_at_thinking:
             stripped = line.strip()
-            if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
+            if stripped and classify_text_line(line) in CHROME_CATEGORIES:
                 snap.add(stripped)
         assert "Args:" not in snap
         assert "Returns:" not in snap
@@ -1611,7 +1607,7 @@ class TestThinkingSnapshotChromeOnly:
         snap = set()
         for line in display_at_thinking:
             stripped = line.strip()
-            if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
+            if stripped and classify_text_line(line) in CHROME_CATEGORIES:
                 snap.add(stripped)
         assert any("palindrome" in s for s in snap)  # prompt
         assert any("────" in s for s in snap)  # separator
@@ -1629,7 +1625,7 @@ class TestThinkingSnapshotChromeOnly:
         snap = set()
         for line in display_at_thinking:
             stripped = line.strip()
-            if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
+            if stripped and classify_text_line(line) in CHROME_CATEGORIES:
                 snap.add(stripped)
         assert not any("⏺" in s for s in snap)
         assert not any("⎿" in s for s in snap)
@@ -1638,7 +1634,7 @@ class TestThinkingSnapshotChromeOnly:
         """Exact regression: fibonacci Args:/Returns: must not dedup from
         is_palindrome response when both are on the pyte screen at THINKING.
 
-        This reproduces the real scenario where _find_last_prompt found the
+        This reproduces the real scenario where find_last_prompt found the
         fibonacci prompt (not the is_palindrome prompt, which Claude Code
         already cleared), causing the entire fibonacci response to land in
         the snapshot.
@@ -1668,7 +1664,7 @@ class TestThinkingSnapshotChromeOnly:
         snap = set()
         for line in display_at_thinking:
             stripped = line.strip()
-            if stripped and classify_text_line(line) in _CHROME_CATEGORIES:
+            if stripped and classify_text_line(line) in CHROME_CATEGORIES:
                 snap.add(stripped)
         # These MUST NOT be in the snap
         assert "Args:" not in snap
@@ -1691,31 +1687,30 @@ class TestUserMessageResetsDedup:
 
     def test_user_message_clears_sent_lines(self):
         key = (885, 1)
-        _session_sent_lines[key] = {"old content", "Args:", "Returns:"}
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.dedup.sent_lines = {"old content", "Args:", "Returns:"}
         # Simulate USER_MESSAGE detection (same logic as poll_output)
-        state = ScreenState.USER_MESSAGE
-        if state == ScreenState.USER_MESSAGE:
-            _session_sent_lines[key] = set()
-            _session_thinking_snapshot.pop(key, None)
-        assert _session_sent_lines[key] == set()
+        cur_state = ScreenState.USER_MESSAGE
+        if cur_state == ScreenState.USER_MESSAGE:
+            state.dedup.sent_lines = set()
+            state.dedup.thinking_snapshot = set()
+        assert _session_states[key].dedup.sent_lines == set()
         # Cleanup
-        del _session_sent_lines[key]
 
     def test_user_message_clears_thinking_snapshot(self):
         key = (884, 1)
-        _session_thinking_snapshot[key] = {"old snap", "Args:"}
-        state = ScreenState.USER_MESSAGE
-        if state == ScreenState.USER_MESSAGE:
-            _session_sent_lines.setdefault(key, set())
-            _session_sent_lines[key] = set()
-            _session_thinking_snapshot.pop(key, None)
-        assert key not in _session_thinking_snapshot
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.dedup.thinking_snapshot = {"old snap", "Args:"}
+        cur_state = ScreenState.USER_MESSAGE
+        if cur_state == ScreenState.USER_MESSAGE:
+            state.dedup.sent_lines = set()
+            state.dedup.thinking_snapshot = set()
+        assert (key not in _session_states or not _session_states[key].dedup.thinking_snapshot)
         # Cleanup
-        _session_sent_lines.pop(key, None)
 
 
 class TestStripMarkerFromSpans:
-    """Tests for _strip_marker_from_spans."""
+    """Tests for strip_marker_from_spans."""
 
     def test_strip_response_marker(self):
         """⏺ prefix is removed from first span."""
@@ -1724,7 +1719,7 @@ class TestStripMarkerFromSpans:
             CharSpan(text="def", fg="blue"),
             CharSpan(text=" foo():", fg="default"),
         ]
-        result = _strip_marker_from_spans(spans, "⏺")
+        result = strip_marker_from_spans(spans, "⏺")
         texts = [s.text for s in result]
         assert "⏺" not in "".join(texts)
         assert any("def" in t for t in texts)
@@ -1735,7 +1730,7 @@ class TestStripMarkerFromSpans:
             CharSpan(text="⎿ ", fg="default"),
             CharSpan(text="file.py", fg="default"),
         ]
-        result = _strip_marker_from_spans(spans, "⎿")
+        result = strip_marker_from_spans(spans, "⎿")
         texts = [s.text for s in result]
         assert "⎿" not in "".join(texts)
         assert "file.py" in "".join(texts)
@@ -1743,7 +1738,7 @@ class TestStripMarkerFromSpans:
     def test_no_marker_unchanged(self):
         """Spans without marker are returned unchanged."""
         spans = [CharSpan(text="hello world", fg="default")]
-        result = _strip_marker_from_spans(spans, "⏺")
+        result = strip_marker_from_spans(spans, "⏺")
         assert result == spans
 
     def test_empty_after_strip(self):
@@ -1752,14 +1747,14 @@ class TestStripMarkerFromSpans:
             CharSpan(text="⏺ ", fg="default"),
             CharSpan(text="text", fg="blue"),
         ]
-        result = _strip_marker_from_spans(spans, "⏺")
+        result = strip_marker_from_spans(spans, "⏺")
         # The first span was "⏺ " -> "" after strip -> dropped
         assert len(result) == 1
         assert result[0].text == "text"
 
 
 class TestFilterResponseAttr:
-    """Tests for _filter_response_attr: filters terminal chrome from attributed lines."""
+    """Tests for filter_response_attr: filters terminal chrome from attributed lines."""
 
     def test_strips_prompt_and_status_bar(self):
         """Prompt, status bar, and progress bar lines are removed."""
@@ -1781,7 +1776,7 @@ class TestFilterResponseAttr:
             [CharSpan(text="  claude-instance-manager │ ⎇ feat/test │ Usage: 15%", fg="default")],
             [CharSpan(text="  █▌░░░░░░░░ ↻ 1:59", fg="default")],
         ]
-        filtered = _filter_response_attr(source, attr)
+        filtered = filter_response_attr(source, attr)
         # Should only keep response content (line 2: ⏺ stripped, line 3: code)
         assert len(filtered) == 2
         # ⏺ marker should be stripped
@@ -1804,7 +1799,7 @@ class TestFilterResponseAttr:
             [CharSpan(text="  multiple terminal lines because it is so long", fg="default")],
             [CharSpan(text="⏺ ", fg="default"), CharSpan(text="Short answer.", fg="default")],
         ]
-        filtered = _filter_response_attr(source, attr)
+        filtered = filter_response_attr(source, attr)
         assert len(filtered) == 1
         all_text = "".join(s.text for line in filtered for s in line)
         assert "Short answer." in all_text
@@ -1822,7 +1817,7 @@ class TestFilterResponseAttr:
             [CharSpan(text="  ", fg="default"), CharSpan(text="def", fg="blue"), CharSpan(text=" hello():", fg="default")],
             [CharSpan(text="      ", fg="default"), CharSpan(text="print", fg="cyan"), CharSpan(text="('hi')", fg="default")],
         ]
-        filtered = _filter_response_attr(source, attr)
+        filtered = filter_response_attr(source, attr)
         assert len(filtered) == 3
         # First line should have ⏺ stripped
         first_text = "".join(s.text for s in filtered[0])
@@ -1830,7 +1825,7 @@ class TestFilterResponseAttr:
 
     def test_empty_input(self):
         """Empty input returns empty output."""
-        assert _filter_response_attr([], []) == []
+        assert filter_response_attr([], []) == []
 
     def test_separator_lines_skipped(self):
         """Separator lines (box drawing chars) are filtered out."""
@@ -1844,7 +1839,7 @@ class TestFilterResponseAttr:
             [CharSpan(text="⏺ ", fg="default"), CharSpan(text="Hello world", fg="default")],
             [CharSpan(text="─" * 40, fg="default")],
         ]
-        filtered = _filter_response_attr(source, attr)
+        filtered = filter_response_attr(source, attr)
         assert len(filtered) == 1
         assert "Hello world" in "".join(s.text for s in filtered[0])
 
@@ -1854,7 +1849,7 @@ class TestFilterResponseAttr:
         Real Claude Code renders content with a 2-space left margin:
         ``  ⏺ text`` for marker lines, ``  content`` for continuation.
         After marker stripping both have a residual 2-space indent that
-        _filter_response_attr must remove via dedent.
+        filter_response_attr must remove via dedent.
         """
         source = [
             "  ⏺ Here is the code:",
@@ -1870,7 +1865,7 @@ class TestFilterResponseAttr:
             [CharSpan(text="  How it works:", fg="default")],
             [CharSpan(text="  - It prints hi", fg="default")],
         ]
-        filtered = _filter_response_attr(source, attr)
+        filtered = filter_response_attr(source, attr)
         texts = ["".join(s.text for s in line) for line in filtered]
         # 2-space margin should be stripped from all lines
         assert texts[0] == "Here is the code:"
@@ -1903,7 +1898,7 @@ class TestFilterResponseAttr:
             [CharSpan(text="  How it works:", fg="default")],
             [CharSpan(text="  - It prints hi", fg="default")],
         ]
-        filtered = _filter_response_attr(source, attr)
+        filtered = filter_response_attr(source, attr)
         texts = ["".join(s.text for s in line) for line in filtered]
         # Marker-stripped line stays at 0 indent; content lines get
         # their 2-space margin stripped.
@@ -1915,7 +1910,7 @@ class TestFilterResponseAttr:
 
 
 class TestLstripNChars:
-    """Tests for _lstrip_n_chars: strip N leading chars from span list."""
+    """Tests for lstrip_n_chars: strip N leading chars from span list."""
 
     def test_strip_full_span(self):
         """Span shorter than N is entirely consumed."""
@@ -1923,21 +1918,21 @@ class TestLstripNChars:
             CharSpan(text="  ", fg="default"),
             CharSpan(text="hello", fg="blue"),
         ]
-        result = _lstrip_n_chars(spans, 2)
+        result = lstrip_n_chars(spans, 2)
         assert len(result) == 1
         assert result[0].text == "hello"
 
     def test_strip_partial_span(self):
         """Span longer than N loses first N characters."""
         spans = [CharSpan(text="    code", fg="default")]
-        result = _lstrip_n_chars(spans, 2)
+        result = lstrip_n_chars(spans, 2)
         assert len(result) == 1
         assert result[0].text == "  code"
 
     def test_strip_zero(self):
         """Stripping 0 characters returns all spans unchanged."""
         spans = [CharSpan(text="text", fg="default")]
-        result = _lstrip_n_chars(spans, 0)
+        result = lstrip_n_chars(spans, 0)
         assert len(result) == 1
         assert result[0].text == "text"
 
@@ -1949,21 +1944,21 @@ class TestLstripNChars:
             CharSpan(text="content", fg="blue"),
         ]
         # Strip 3 chars across two spans
-        result = _lstrip_n_chars(spans, 3)
+        result = lstrip_n_chars(spans, 3)
         assert len(result) == 1
         assert result[0].text == "content"
 
     def test_strip_preserves_attributes(self):
         """Partially stripped span retains its ANSI attributes."""
         spans = [CharSpan(text="  bold", fg="red", bold=True)]
-        result = _lstrip_n_chars(spans, 2)
+        result = lstrip_n_chars(spans, 2)
         assert result[0].text == "bold"
         assert result[0].fg == "red"
         assert result[0].bold is True
 
 
 class TestDedentAttrLines:
-    """Tests for _dedent_attr_lines: remove common leading whitespace from spans."""
+    """Tests for dedent_attr_lines: remove common leading whitespace from spans."""
 
     def test_strips_common_indent(self):
         """All lines with 2-space indent lose 2 leading chars."""
@@ -1971,7 +1966,7 @@ class TestDedentAttrLines:
             [CharSpan(text="  hello", fg="default")],
             [CharSpan(text="  world", fg="default")],
         ]
-        result = _dedent_attr_lines(lines)
+        result = dedent_attr_lines(lines)
         texts = ["".join(s.text for s in line) for line in result]
         assert texts == ["hello", "world"]
 
@@ -1981,7 +1976,7 @@ class TestDedentAttrLines:
             [CharSpan(text="  code:", fg="default")],
             [CharSpan(text="      indented", fg="default")],
         ]
-        result = _dedent_attr_lines(lines)
+        result = dedent_attr_lines(lines)
         texts = ["".join(s.text for s in line) for line in result]
         assert texts[0] == "code:"
         assert texts[1] == "    indented"
@@ -1992,7 +1987,7 @@ class TestDedentAttrLines:
             [CharSpan(text="no indent", fg="default")],
             [CharSpan(text="  has indent", fg="default")],
         ]
-        result = _dedent_attr_lines(lines)
+        result = dedent_attr_lines(lines)
         texts = ["".join(s.text for s in line) for line in result]
         assert texts == ["no indent", "  has indent"]
 
@@ -2003,7 +1998,7 @@ class TestDedentAttrLines:
             [],
             [CharSpan(text="  more", fg="default")],
         ]
-        result = _dedent_attr_lines(lines)
+        result = dedent_attr_lines(lines)
         texts = ["".join(s.text for s in line) for line in result]
         assert texts[0] == "text"
         assert texts[2] == "more"
@@ -2015,7 +2010,7 @@ class TestDedentAttrLines:
             [CharSpan(text="  two spaces", fg="default")],  # index 1
             [CharSpan(text="  also two", fg="default")],    # index 2
         ]
-        result = _dedent_attr_lines(lines, skip_indices={0})
+        result = dedent_attr_lines(lines, skip_indices={0})
         texts = ["".join(s.text for s in line) for line in result]
         # Index 0 has 0 indent but is skipped → min computed from 1,2 → 2
         assert texts[0] == "no indent"  # not enough indent → left as-is
@@ -2028,7 +2023,7 @@ class TestDedentAttrLines:
             [CharSpan(text="  marker line", fg="default")],   # index 0 — skip
             [CharSpan(text="  content", fg="default")],        # index 1
         ]
-        result = _dedent_attr_lines(lines, skip_indices={0})
+        result = dedent_attr_lines(lines, skip_indices={0})
         texts = ["".join(s.text for s in line) for line in result]
         # Index 0 has indent 2, min from non-skipped = 2 → stripped
         assert texts[0] == "marker line"
@@ -2036,7 +2031,7 @@ class TestDedentAttrLines:
 
     def test_empty_input(self):
         """Empty list returns empty list."""
-        assert _dedent_attr_lines([]) == []
+        assert dedent_attr_lines([]) == []
 
 
 class TestStartupMessage:
@@ -2105,11 +2100,7 @@ class TestAnsiReRenderOnCompletion:
     """STREAMING->IDLE must re-render final message with ANSI pipeline."""
 
     def _cleanup_session(self, key):
-        _session_emulators.pop(key, None)
-        _session_streaming.pop(key, None)
-        _session_prev_state.pop(key, None)
-        _session_sent_lines.pop(key, None)
-        _session_thinking_snapshot.pop(key, None)
+        _cleanup_state(*key)
 
     @pytest.mark.asyncio
     async def test_streaming_idle_uses_ansi_pipeline(self):
@@ -2126,14 +2117,15 @@ class TestAnsiReRenderOnCompletion:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=750, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.accumulated = "Heuristic content"
         streaming.state = StreamingState.STREAMING
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.STREAMING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.STREAMING
+        state.dedup.sent_lines = set()
 
         idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
 
@@ -2167,11 +2159,7 @@ class TestPollOutputExceptionResilience:
     """Regression tests for issue 011: poll_output must survive per-session exceptions."""
 
     def _cleanup_session(self, key):
-        _session_emulators.pop(key, None)
-        _session_streaming.pop(key, None)
-        _session_prev_state.pop(key, None)
-        _session_sent_lines.pop(key, None)
-        _session_thinking_snapshot.pop(key, None)
+        _cleanup_state(*key)
 
     @pytest.mark.asyncio
     async def test_poll_loop_survives_per_session_exception(self):
@@ -2194,10 +2182,11 @@ class TestPollOutputExceptionResilience:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
-        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=780, edit_rate_limit=3)
-        _session_prev_state[key] = ScreenState.STARTUP
-        _session_sent_lines[key] = set()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
+        state.streaming = StreamingMessage(bot=bot, chat_id=780, edit_rate_limit=3)
+        state.prev_state = ScreenState.STARTUP
+        state.dedup.sent_lines = set()
 
         # classify_screen_state raises to simulate a crash mid-processing
         with (
@@ -2241,10 +2230,11 @@ class TestPollOutputExceptionResilience:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
-        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=781, edit_rate_limit=3)
-        _session_prev_state[key] = ScreenState.STARTUP
-        _session_sent_lines[key] = set()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
+        state.streaming = StreamingMessage(bot=bot, chat_id=781, edit_rate_limit=3)
+        state.prev_state = ScreenState.STARTUP
+        state.dedup.sent_lines = set()
 
         # TOOL_REQUEST with question=None (key exists but value is None)
         tool_event = ScreenEvent(
@@ -2294,10 +2284,11 @@ class TestPollOutputExceptionResilience:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
-        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=782, edit_rate_limit=3)
-        _session_prev_state[key] = ScreenState.STARTUP
-        _session_sent_lines[key] = set()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
+        state.streaming = StreamingMessage(bot=bot, chat_id=782, edit_rate_limit=3)
+        state.prev_state = ScreenState.STARTUP
+        state.dedup.sent_lines = set()
 
         # classify_screen_state raises CancelledError (simulating task cancellation)
         with patch(
@@ -2317,11 +2308,7 @@ class TestPollOutputAuthRequired:
     """Regression tests for issue 012: auth screen must notify user and kill session."""
 
     def _cleanup_session(self, key):
-        _session_emulators.pop(key, None)
-        _session_streaming.pop(key, None)
-        _session_prev_state.pop(key, None)
-        _session_sent_lines.pop(key, None)
-        _session_thinking_snapshot.pop(key, None)
+        _cleanup_state(*key)
 
     @pytest.mark.asyncio
     async def test_auth_screen_sends_notification_and_kills_session(self):
@@ -2342,10 +2329,11 @@ class TestPollOutputAuthRequired:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
-        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=790, edit_rate_limit=3)
-        _session_prev_state[key] = ScreenState.STARTUP
-        _session_sent_lines[key] = set()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
+        state.streaming = StreamingMessage(bot=bot, chat_id=790, edit_rate_limit=3)
+        state.prev_state = ScreenState.STARTUP
+        state.dedup.sent_lines = set()
 
         auth_event = ScreenEvent(
             state=ScreenState.AUTH_REQUIRED,
@@ -2396,10 +2384,11 @@ class TestPollOutputAuthRequired:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
-        _session_streaming[key] = StreamingMessage(bot=bot, chat_id=791, edit_rate_limit=3)
-        _session_prev_state[key] = ScreenState.STARTUP
-        _session_sent_lines[key] = set()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
+        state.streaming = StreamingMessage(bot=bot, chat_id=791, edit_rate_limit=3)
+        state.prev_state = ScreenState.STARTUP
+        state.dedup.sent_lines = set()
 
         auth_event = ScreenEvent(
             state=ScreenState.AUTH_REQUIRED,
@@ -2434,20 +2423,16 @@ class TestStaleToolRequestOverride:
     """Regression tests for issue 014: stale TOOL_REQUEST after callback."""
 
     def _cleanup_session(self, key):
-        _session_emulators.pop(key, None)
-        _session_streaming.pop(key, None)
-        _session_prev_state.pop(key, None)
-        _session_sent_lines.pop(key, None)
-        _session_thinking_snapshot.pop(key, None)
-        _session_tool_acted.pop(key, None)
+        _cleanup_state(*key)
 
     def test_mark_tool_acted_sets_flag(self):
         """mark_tool_acted sets the per-session flag."""
         key = (800, 1)
-        _session_tool_acted.pop(key, None)
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.tool_acted = False
         mark_tool_acted(800, 1)
-        assert _session_tool_acted.get(key) is True
-        _session_tool_acted.pop(key, None)
+        assert state.tool_acted is True
+        self._cleanup_session(key)
 
     def test_stale_tool_request_overridden_to_unknown(self):
         """Regression: after tool callback, stale TOOL_REQUEST becomes UNKNOWN.
@@ -2458,62 +2443,64 @@ class TestStaleToolRequestOverride:
         can process the new screen content.
         """
         key = (801, 1)
-        _session_prev_state[key] = ScreenState.TOOL_REQUEST
-        _session_tool_acted[key] = True
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.prev_state = ScreenState.TOOL_REQUEST
+        state.tool_acted = True
 
         event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
         # Replicate the guard logic from poll_output
-        if event.state == ScreenState.TOOL_REQUEST and _session_tool_acted.get(key):
+        if event.state == ScreenState.TOOL_REQUEST and state.tool_acted:
             event = ScreenEvent(
                 state=ScreenState.UNKNOWN,
                 payload=event.payload,
                 raw_lines=event.raw_lines,
             )
         assert event.state == ScreenState.UNKNOWN
-
-        del _session_prev_state[key]
-        _session_tool_acted.pop(key, None)
+        state.tool_acted = False
 
     def test_flag_cleared_when_screen_moves_to_different_state(self):
         """Regression: tool_acted flag clears when screen naturally transitions."""
         key = (802, 1)
-        _session_tool_acted[key] = True
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.tool_acted = True
 
         event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
         # Replicate the elif branch from poll_output
-        if event.state == ScreenState.TOOL_REQUEST and _session_tool_acted.get(key):
+        if event.state == ScreenState.TOOL_REQUEST and state.tool_acted:
             pass
         elif event.state != ScreenState.TOOL_REQUEST:
-            _session_tool_acted.pop(key, None)
+            state.tool_acted = False
 
-        assert key not in _session_tool_acted
+        assert (key not in _session_states or not _session_states[key].tool_acted)
 
     def test_flag_not_cleared_while_stale_content_persists(self):
         """Regression: flag stays set while classifier keeps returning TOOL_REQUEST."""
         key = (803, 1)
-        _session_tool_acted[key] = True
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.tool_acted = True
 
         event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
-        if event.state == ScreenState.TOOL_REQUEST and _session_tool_acted.get(key):
+        if event.state == ScreenState.TOOL_REQUEST and state.tool_acted:
             event = ScreenEvent(
                 state=ScreenState.UNKNOWN,
                 payload=event.payload,
                 raw_lines=event.raw_lines,
             )
         elif event.state != ScreenState.TOOL_REQUEST:
-            _session_tool_acted.pop(key, None)
+            state.tool_acted = False
 
         # Flag persists — UNKNOWN was due to override, not natural transition
-        assert _session_tool_acted.get(key) is True
-        _session_tool_acted.pop(key, None)
+        assert state.tool_acted is True
+        state.tool_acted = False
 
     def test_legitimate_tool_request_not_suppressed_without_flag(self):
         """A fresh TOOL_REQUEST without the flag must NOT be overridden."""
         key = (804, 1)
-        _session_tool_acted.pop(key, None)
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.tool_acted = False
 
         event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
-        if event.state == ScreenState.TOOL_REQUEST and _session_tool_acted.get(key):
+        if event.state == ScreenState.TOOL_REQUEST and state.tool_acted:
             event = ScreenEvent(
                 state=ScreenState.UNKNOWN,
                 payload=event.payload,
@@ -2541,13 +2528,14 @@ class TestStaleToolRequestOverride:
         bot = AsyncMock()
 
         from src.parsing.terminal_emulator import TerminalEmulator
-        _session_emulators[key] = TerminalEmulator()
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.emulator = TerminalEmulator()
         streaming = StreamingMessage(bot=bot, chat_id=805, edit_rate_limit=3)
         streaming.message_id = 42
         streaming.state = StreamingState.THINKING
-        _session_streaming[key] = streaming
-        _session_prev_state[key] = ScreenState.THINKING
-        _session_sent_lines[key] = set()
+        state.streaming = streaming
+        state.prev_state = ScreenState.THINKING
+        state.dedup.sent_lines = set()
 
         tool_event = ScreenEvent(
             state=ScreenState.TOOL_REQUEST,
@@ -2601,7 +2589,7 @@ class TestStaleToolRequestOverride:
         assert len(keyboard_calls) == 1
 
         # After cycle 3, prev_state should be THINKING (not stuck at TOOL_REQUEST)
-        assert _session_prev_state[key] == ScreenState.THINKING
+        assert _session_states[key].prev_state == ScreenState.THINKING
 
         self._cleanup_session(key)
 
@@ -2612,36 +2600,40 @@ class TestIsToolRequestPending:
     def test_returns_true_when_tool_request(self):
         """is_tool_request_pending returns True when session is in TOOL_REQUEST."""
         key = (900, 1)
-        _session_prev_state[key] = ScreenState.TOOL_REQUEST
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.prev_state = ScreenState.TOOL_REQUEST
         assert is_tool_request_pending(900, 1) is True
-        _session_prev_state.pop(key, None)
+        _cleanup_state(*key)
 
     def test_returns_false_when_idle(self):
         """is_tool_request_pending returns False for non-TOOL_REQUEST states."""
         key = (901, 1)
-        _session_prev_state[key] = ScreenState.IDLE
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.prev_state = ScreenState.IDLE
         assert is_tool_request_pending(901, 1) is False
-        _session_prev_state.pop(key, None)
+        _cleanup_state(*key)
 
     def test_returns_false_when_no_state(self):
         """is_tool_request_pending returns False for unknown sessions."""
         key = (902, 99)
-        _session_prev_state.pop(key, None)
+        _cleanup_state(*key)
         assert is_tool_request_pending(902, 99) is False
 
     def test_returns_false_after_tool_acted(self):
         """Regression for issue 017: after Allow/Deny, pending must be False even if prev_state still TOOL_REQUEST."""
         key = (903, 1)
-        _session_prev_state[key] = ScreenState.TOOL_REQUEST
-        _session_tool_acted[key] = True
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.prev_state = ScreenState.TOOL_REQUEST
+        state.tool_acted = True
         assert is_tool_request_pending(903, 1) is False
-        _session_prev_state.pop(key, None)
-        _session_tool_acted.pop(key, None)
+        _cleanup_state(*key)
+        state.tool_acted = False
 
     def test_returns_true_when_tool_request_and_not_acted(self):
         """TOOL_REQUEST with no tool_acted flag should still return True."""
         key = (904, 1)
-        _session_prev_state[key] = ScreenState.TOOL_REQUEST
-        _session_tool_acted.pop(key, None)
+        state = _get_or_create(*key, bot=AsyncMock())
+        state.prev_state = ScreenState.TOOL_REQUEST
+        state.tool_acted = False
         assert is_tool_request_pending(904, 1) is True
-        _session_prev_state.pop(key, None)
+        _cleanup_state(*key)

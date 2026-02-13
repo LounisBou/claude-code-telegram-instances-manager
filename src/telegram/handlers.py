@@ -15,7 +15,7 @@ from src.telegram.keyboards import (
     is_authorized,
 )
 from src.project_scanner import scan_projects
-from src.telegram.output import is_tool_request_pending
+from src.telegram.output_state import is_tool_request_pending
 
 logger = logging.getLogger(__name__)
 
