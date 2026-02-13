@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.telegram.output import StreamingMessage, StreamingState
+from src.telegram.streaming_message import StreamingMessage, StreamingState
 
 
 class TestStreamingMessageInit:
