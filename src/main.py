@@ -205,7 +205,7 @@ async def main() -> None:
     session_manager = app.bot_data["session_manager"]
     config = app.bot_data["config"]
     poll_task = asyncio.create_task(
-        poll_output(app.bot, session_manager, edit_rate_limit=config.telegram.edit_rate_limit)
+        poll_output(app.bot, session_manager)
     )
 
     logger.info("Bot is running. Press Ctrl+C to stop.")

@@ -523,6 +523,23 @@ class TestActionDetails:
         assert "auth" in text.lower() or "Auth" in text
 
     @pytest.mark.asyncio
+    async def test_auth_warned_guard_prevents_repeated_warning(self):
+        """Auth warning only fires once even if AUTH_REQUIRED persists."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
+        await runner.process(_event(TerminalView.AUTH_REQUIRED))
+        assert ps.auth_warned is True
+        assert bot.send_message.call_count == 1
+        runner.session_manager.kill_session.assert_called_once()
+
+        # Second AUTH_REQUIRED should be a no-op
+        bot.send_message.reset_mock()
+        runner.session_manager.kill_session.reset_mock()
+        ps.phase = PipelinePhase.DORMANT  # back to dormant
+        await runner.process(_event(TerminalView.AUTH_REQUIRED))
+        bot.send_message.assert_not_called()
+        runner.session_manager.kill_session.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_finalize_clears_emulator_history(self):
         """Finalize calls emulator.clear_history()."""
         runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)

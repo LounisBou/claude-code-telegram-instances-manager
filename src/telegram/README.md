@@ -32,6 +32,7 @@ graph LR
     pipeline_runner["pipeline_runner.py"] --> pipeline_state
     pipeline_runner --> output_pipeline
     pipeline_runner --> formatter
+    pipeline_runner --> keyboards
     pipeline_state["pipeline_state.py<br/>(leaf)"]
     output_pipeline["output_pipeline.py"] --> formatter
     streaming_message["streaming_message.py<br/>(leaf)"]

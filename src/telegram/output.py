@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 async def poll_output(
-    bot: Bot, session_manager, *, edit_rate_limit: int = 3,
+    bot: Bot, session_manager,
 ) -> None:
     """Background loop that reads Claude output and streams it to Telegram."""
     while True:

@@ -11,7 +11,7 @@ Raw PTY bytes flow through this pipeline to produce a structured screen state th
 | `models.py` | Shared data types: `TerminalView` enum (14 observations), `ScreenEvent` dataclass |
 | `content_classifier.py` | ANSI-aware semantic region classifier using pyte character attributes; produces `ContentRegion` objects |
 | `detectors.py` | Structured detectors for complex UI elements: tool requests, TODO lists, parallel agents, thinking indicators, background tasks |
-| `screen_classifier.py` | `classify_screen_state()` -- 3-pass priority classifier that returns a single `ScreenState` from a full screen grid |
+| `screen_classifier.py` | `classify_screen_state()` -- 3-pass priority classifier that returns a `ScreenEvent` from a full screen grid |
 
 ## Dependency Diagram
 

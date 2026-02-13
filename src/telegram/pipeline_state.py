@@ -43,6 +43,7 @@ class PipelineState:
         self.phase: PipelinePhase = PipelinePhase.DORMANT
         self.prev_view: TerminalView | None = None
         self.tool_acted: bool = False
+        self.auth_warned: bool = False
 
 
 

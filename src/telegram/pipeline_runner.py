@@ -260,7 +260,10 @@ class PipelineRunner:
         )
 
     async def _send_auth_warning(self, event: ScreenEvent) -> None:
-        """Send authentication warning and kill the session."""
+        """Send authentication warning and kill the session (one-shot)."""
+        if self.state.auth_warned:
+            return
+        self.state.auth_warned = True
         await self.bot.send_message(
             chat_id=self.user_id,
             text=(
