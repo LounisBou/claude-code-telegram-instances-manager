@@ -73,6 +73,17 @@ trap cleanup EXIT INT TERM
 # Remove stale control file from previous run
 rm -f "$CONTROL_FILE"
 
+# Kill any stale bot process from a previous runner
+if [ -f "$PID_FILE" ]; then
+    old_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        echo "[runner] Killing stale bot process (PID: $old_pid)..."
+        kill "$old_pid" 2>/dev/null || true
+        wait "$old_pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+fi
+
 # Initial start
 start_bot
 
@@ -89,7 +100,7 @@ while true; do
 
     # Check for control commands
     if [ -f "$CONTROL_FILE" ]; then
-        cmd=$(cat "$CONTROL_FILE")
+        cmd=$(cat "$CONTROL_FILE" | xargs)
         rm -f "$CONTROL_FILE"
 
         case "$cmd" in
