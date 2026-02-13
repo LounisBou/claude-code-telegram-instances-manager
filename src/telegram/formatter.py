@@ -6,7 +6,6 @@ import re
 from src.parsing.content_classifier import ContentRegion
 
 
-
 def render_regions(regions: list[ContentRegion]) -> str:
     """Convert classified content regions to markdown-annotated text.
 

@@ -6,7 +6,7 @@ Raw PTY bytes flow through this pipeline to produce a structured screen state th
 
 | Module | Purpose |
 |---|---|
-| `terminal_emulator.py` | pyte-based virtual terminal; feeds raw bytes, exposes `get_display()` (full screen) and `get_changes()` (incremental delta) |
+| `terminal_emulator.py` | pyte-based virtual terminal; feeds raw bytes, exposes `get_display()` (full screen) and `get_attributed_changes()` (incremental delta with ANSI attributes) |
 | `ui_patterns.py` | Compiled regex patterns, `classify_text_line()` for 15 line types, `CHROME_CATEGORIES` constant |
 | `models.py` | Shared data types: `TerminalView` enum (14 observations), `ScreenEvent` dataclass |
 | `content_classifier.py` | ANSI-aware semantic region classifier using pyte character attributes; produces `ContentRegion` objects |
@@ -29,6 +29,6 @@ graph LR
 ## Key Patterns
 
 - **TerminalView enum (14 observations):** Full-screen classification, not line-by-line. Every poll cycle produces exactly one `TerminalView`.
-- **3-pass priority classifier:** Pass 1 scans the whole screen for tool approval menus, TODO lists, and parallel agents. Pass 2 scans the bottom 8 lines for thinking, running tools, and tool results. Pass 3 checks the last line for idle/streaming/user message, with startup/error/unknown as fallbacks.
+- **3-pass priority classifier:** Pass 1 scans the whole screen for tool approval menus, auth screens, TODO lists, and parallel agents. Pass 2 scans the bottom 8 lines for thinking, running tools, tool results, and background tasks. Pass 3 checks the last line for idle/streaming/user message, with startup/error/unknown as fallbacks.
 - **Capture-driven testing:** All parser changes are validated against real terminal snapshots captured from live Claude Code sessions. Zero UNKNOWN classifications across the entire corpus.
 - **pyte artifacts:** Trailing U+FFFD on separator lines from partial ANSI sequences; all regexes allow `\uFFFD*$`.

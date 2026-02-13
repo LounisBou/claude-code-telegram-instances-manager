@@ -59,7 +59,12 @@ async def poll_output(
                 try:
                     await session_manager.kill_session(user_id, sid)
                 except Exception:
-                    pass
+                    logger.debug(
+                        "kill_session failed during Forbidden cleanup "
+                        "for user=%d sid=%d",
+                        user_id, sid,
+                        exc_info=True,
+                    )
               except Exception:
                 logger.exception(
                     "poll_output crash for user=%d sid=%d — will retry next cycle",

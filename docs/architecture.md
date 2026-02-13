@@ -46,6 +46,7 @@ graph TB
     CMD --> SM
     CB --> SM
     OUT --> PR
+    OUT --> SC
     PR --> PS
     PR --> OP
     PR --> FMT
@@ -255,6 +256,8 @@ stateDiagram-v2
         TODO_LIST
         PARALLEL_AGENTS
         BACKGROUND_TASK
+        TOOL_RUNNING
+        TOOL_RESULT
     }
 
     state "Suppressed (no actions from DORMANT)" as suppressed {
@@ -346,7 +349,7 @@ When a response completes, `_finalize` does a full re-render:
 | | `diff_delimiter` — ╌ lines |
 | | `todo_item` — ◻◼✔ checkboxes |
 | | `agent_tree` — ├└─ tree items |
-| | `tool_running` — running/waiting status |
+| | `startup` — Claude Code version banner |
 
 ## Startup & Shutdown
 

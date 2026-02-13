@@ -9,7 +9,7 @@ from src.parsing.terminal_emulator import CharSpan
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import (
     CHROME_CATEGORIES,
-    ScreenEvent, TerminalView, classify_text_line,
+    TerminalView, classify_text_line,
 )
 from src.telegram.output import poll_output
 from src.telegram.output_pipeline import (
@@ -19,134 +19,6 @@ from src.telegram.output_pipeline import (
     lstrip_n_chars,
     strip_marker_from_spans,
 )
-
-
-class TestContentDedup:
-    """Regression: screen scroll must not cause duplicate content in Telegram."""
-
-    def _run_dedup(self, content: str, sent: set[str]) -> tuple[str, set[str]]:
-        """Run the dedup logic from poll_output and return (deduped, updated_sent).
-
-        Mirrors the two-pass approach: first pass filters against pre-existing
-        sent set (without modifying it), second pass records all lines as sent.
-        """
-        from src.telegram.formatter import reflow_text
-
-        new_lines = []
-        for line in content.split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                new_lines.append(line)
-            elif stripped not in sent:
-                new_lines.append(line)
-        for line in content.split("\n"):
-            stripped = line.strip()
-            if stripped:
-                sent.add(stripped)
-        if new_lines:
-            return reflow_text("\n".join(new_lines)), sent
-        return "", sent
-
-    def test_first_content_passes_through(self):
-        """First time content is seen, it should pass through entirely."""
-        content = "Hello world\nThis is a test"
-        result, sent = self._run_dedup(content, set())
-        assert "Hello world" in result
-        assert "This is a test" in result
-        assert "Hello world" in sent
-        assert "This is a test" in sent
-
-    def test_duplicate_lines_filtered(self):
-        """Lines already in sent set must be filtered out."""
-        sent = {"Hello world", "This is a test"}
-        content = "Hello world\nThis is a test\nNew content here"
-        result, sent = self._run_dedup(content, sent)
-        assert "Hello world" not in result
-        assert "This is a test" not in result
-        assert "New content here" in result
-
-    def test_all_duplicates_returns_empty(self):
-        """If all lines are duplicates, result should be empty."""
-        sent = {"Line one", "Line two"}
-        content = "Line one\nLine two"
-        result, _ = self._run_dedup(content, sent)
-        assert result == ""
-
-    def test_empty_lines_ignored_in_dedup(self):
-        """Blank lines should not be added to the sent set."""
-        content = "Hello\n\nWorld"
-        result, sent = self._run_dedup(content, set())
-        assert "" not in sent
-        assert "Hello" in sent
-        assert "World" in sent
-
-    def test_whitespace_stripped_for_dedup(self):
-        """Lines with leading/trailing whitespace should dedup against stripped version."""
-        sent = {"Hello world"}
-        content = "  Hello world  "
-        result, _ = self._run_dedup(content, sent)
-        assert result == ""
-
-    def test_partial_overlap_keeps_new(self):
-        """Mixed old and new content: only new lines should appear."""
-        sent = {"Already seen line"}
-        content = "Already seen line\nBrand new line\nAnother new one"
-        result, sent = self._run_dedup(content, sent)
-        assert "Already seen line" not in result
-        assert "Brand new line" in result
-        assert "Another new one" in result
-        assert "Brand new line" in sent
-        assert "Another new one" in sent
-
-    def test_repeated_lines_within_response_preserved(self):
-        """Regression: identical lines within the same response must not be deduped.
-
-        Code responses often contain repeated lines like 'return False' or
-        'return True' at multiple points. These must all be preserved.
-        """
-        content = (
-            "def is_prime(n):\n"
-            "    if n < 2:\n"
-            "        return False\n"
-            "    if n % 2 == 0:\n"
-            "        return False\n"
-            "    return True"
-        )
-        result, sent = self._run_dedup(content, set())
-        assert result.count("return False") == 2
-        assert "return True" in result
-
-    def test_repeated_lines_still_dedup_across_responses(self):
-        """Repeated lines from a PREVIOUS response must still be deduped."""
-        sent = {"return False", "return True"}
-        content = (
-            "def is_prime(n):\n"
-            "    if n < 2:\n"
-            "        return False\n"
-            "    return True"
-        )
-        result, _ = self._run_dedup(content, sent)
-        assert "return False" not in result
-        assert "return True" not in result
-        assert "def is_prime(n):" in result
-        assert "if n < 2:" in result
-
-    def test_blank_lines_preserved_between_paragraphs(self):
-        """Regression: blank lines between paragraphs must survive dedup."""
-        content = "First paragraph\n\nSecond paragraph"
-        result, sent = self._run_dedup(content, set())
-        assert "First paragraph" in result
-        assert "Second paragraph" in result
-        # The blank line separator must be preserved
-        assert "\n\n" in result or result.count("\n") >= 2
-
-    def test_blank_lines_preserved_after_partial_dedup(self):
-        """Blank lines must survive even when some lines are deduped."""
-        sent = {"First paragraph"}
-        content = "First paragraph\n\nSecond paragraph"
-        result, sent = self._run_dedup(content, sent)
-        assert "First paragraph" not in result
-        assert "Second paragraph" in result
 
 
 class TestBuildApp:

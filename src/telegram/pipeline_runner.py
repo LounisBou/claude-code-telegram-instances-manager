@@ -65,6 +65,15 @@ _TRANSITIONS: dict[
     (PipelinePhase.DORMANT, TerminalView.BACKGROUND_TASK): (
         PipelinePhase.STREAMING, ("extract_and_send",),
     ),
+    (PipelinePhase.DORMANT, TerminalView.IDLE): (
+        PipelinePhase.DORMANT, (),
+    ),
+    (PipelinePhase.DORMANT, TerminalView.TOOL_RUNNING): (
+        PipelinePhase.DORMANT, (),
+    ),
+    (PipelinePhase.DORMANT, TerminalView.TOOL_RESULT): (
+        PipelinePhase.DORMANT, (),
+    ),
 
     # --- THINKING ---
     (PipelinePhase.THINKING, TerminalView.STREAMING): (
@@ -89,6 +98,15 @@ _TRANSITIONS: dict[
         PipelinePhase.STREAMING, ("extract_and_send",),
     ),
     (PipelinePhase.THINKING, TerminalView.BACKGROUND_TASK): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.THINKING, TerminalView.THINKING): (
+        PipelinePhase.THINKING, (),
+    ),
+    (PipelinePhase.THINKING, TerminalView.TOOL_RUNNING): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.THINKING, TerminalView.TOOL_RESULT): (
         PipelinePhase.STREAMING, ("extract_and_send",),
     ),
 
@@ -158,6 +176,9 @@ _TRANSITIONS: dict[
     (PipelinePhase.TOOL_PENDING, TerminalView.BACKGROUND_TASK): (
         PipelinePhase.STREAMING, ("extract_and_send",),
     ),
+    (PipelinePhase.TOOL_PENDING, TerminalView.TOOL_RESULT): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
 }
 
 # Fallback: when (phase, view) is not in _TRANSITIONS, phase stays the same
@@ -218,7 +239,12 @@ class PipelineRunner:
                         self.user_id, self.session_id,
                     )
                 except Exception:
-                    pass
+                    logger.debug(
+                        "kill_session failed during Forbidden cleanup "
+                        "for user=%d sid=%d",
+                        self.user_id, self.session_id,
+                        exc_info=True,
+                    )
                 return
             except Exception:
                 logger.exception(

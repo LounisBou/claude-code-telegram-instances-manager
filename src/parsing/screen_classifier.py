@@ -76,9 +76,9 @@ def classify_screen_state(
     Examines all screen lines and returns the most prominent current state
     with extracted payload data. Uses priority-ordered detection to resolve
     ambiguity when multiple patterns are present:
-      1. Tool approval menus (need user action, highest priority)
+      1. Tool approval menus, auth/login screens (need user action, highest priority)
       2. TODO lists and parallel agents (screen-wide patterns)
-      3. Thinking indicators, running tools, tool results (bottom-up scan)
+      3. Thinking indicators, running tools, tool results, background tasks (bottom-up scan)
       4. Idle prompt, streaming, user message (last meaningful line)
       5. Startup and error (fallback patterns)
 

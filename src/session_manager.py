@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from src.claude_process import ClaudeProcess
 from src.core.database import Database
 from src.file_handler import FileHandler
-from src.core.log_setup import TRACE
 from src.telegram.pipeline_state import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -250,61 +248,3 @@ class SessionManager:
             Count of sessions currently tracked by the manager.
         """
         return sum(len(s) for s in self._sessions.values())
-
-
-class OutputBuffer:
-    """Accumulate incremental output and flush when ready."""
-
-    def __init__(self, debounce_ms: int, max_buffer: int) -> None:
-        """Initialize the output buffer.
-
-        Args:
-            debounce_ms: Minimum quiet period in milliseconds before
-                the buffer is considered ready to flush.
-            max_buffer: Character count threshold that forces an
-                immediate flush regardless of the debounce timer.
-        """
-        self._debounce_s = debounce_ms / 1000.0
-        self._max_buffer = max_buffer
-        self._buffer: str = ""
-        self._last_append: float = 0
-
-    def append(self, text: str) -> None:
-        """Add text to the internal buffer and reset the debounce timer.
-
-        Args:
-            text: Output fragment to accumulate.
-        """
-        self._buffer += text
-        self._last_append = time.monotonic()
-        logger.log(TRACE, "OutputBuffer append len=%d total=%d", len(text), len(self._buffer))
-
-    def flush(self) -> str:
-        """Drain the buffer and return its contents.
-
-        Returns:
-            The accumulated text. The buffer is empty after this call.
-        """
-        result = self._buffer
-        logger.debug("OutputBuffer flush len=%d", len(result))
-        self._buffer = ""
-        self._last_append = 0
-        return result
-
-    def is_ready(self) -> bool:
-        """Check whether the buffer should be flushed.
-
-        The buffer is ready when it exceeds the max size limit or when
-        the debounce period has elapsed since the last append.
-
-        Returns:
-            True if the buffer has content that should be flushed.
-        """
-        if not self._buffer:
-            return False
-        # Force-flush large bursts immediately, even if debounce hasn't elapsed
-        if len(self._buffer) >= self._max_buffer:
-            return True
-        if self._last_append and (time.monotonic() - self._last_append) >= self._debounce_s:
-            return True
-        return False

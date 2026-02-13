@@ -27,6 +27,7 @@ graph LR
     handlers --> callbacks
     callbacks["callbacks.py"] --> keyboards
     callbacks --> commands
+    callbacks --> pipeline_state
     commands["commands.py"] --> keyboards
     output["output.py"] --> pipeline_runner
     pipeline_runner["pipeline_runner.py"] --> pipeline_state

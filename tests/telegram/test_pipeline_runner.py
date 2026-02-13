@@ -273,6 +273,24 @@ class TestThinkingTransitions:
             assert ps.phase == PipelinePhase.STREAMING
             mock_extract.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_thinking_tool_running_starts_streaming(self):
+        """TOOL_RUNNING during THINKING transitions to STREAMING."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.TOOL_RUNNING))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_thinking_tool_result_starts_streaming(self):
+        """TOOL_RESULT during THINKING transitions to STREAMING."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.TOOL_RESULT))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
 
 # ===================================================================
 # STREAMING transitions
@@ -492,6 +510,15 @@ class TestToolPendingTransitions:
         runner, ps, bot, sm = _make_runner(PipelinePhase.TOOL_PENDING)
         await runner.process(_event(TerminalView.USER_MESSAGE))
         assert ps.phase == PipelinePhase.TOOL_PENDING
+
+    @pytest.mark.asyncio
+    async def test_tool_pending_tool_result_starts_streaming(self):
+        """TOOL_RESULT during TOOL_PENDING transitions to STREAMING."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.TOOL_PENDING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.TOOL_RESULT))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
 
 
 # ===================================================================

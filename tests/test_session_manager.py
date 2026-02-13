@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.session_manager import ClaudeSession, OutputBuffer, SessionError, SessionManager
+from src.session_manager import ClaudeSession, SessionError, SessionManager
 
 
 @pytest.fixture
@@ -208,39 +208,6 @@ class TestSessionManagerShutdown:
         # Should not raise when no sessions exist
         await manager.shutdown()
         assert manager.active_session_count() == 0
-
-
-class TestOutputBuffer:
-    def test_buffer_accumulates(self):
-        buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
-        buf.append("hello ")
-        buf.append("world")
-        text = buf.flush()
-        assert text == "hello world"
-
-    def test_flush_clears_buffer(self):
-        buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
-        buf.append("hello")
-        buf.flush()
-        assert buf.flush() == ""
-
-    def test_is_ready_after_debounce(self):
-        import time as t
-
-        buf = OutputBuffer(debounce_ms=50, max_buffer=2000)
-        buf.append("data")
-        assert buf.is_ready() is False
-        t.sleep(0.06)
-        assert buf.is_ready() is True
-
-    def test_is_ready_when_max_buffer_exceeded(self):
-        buf = OutputBuffer(debounce_ms=5000, max_buffer=10)
-        buf.append("A" * 15)
-        assert buf.is_ready() is True
-
-    def test_empty_buffer_not_ready(self):
-        buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
-        assert buf.is_ready() is False
 
 
 class TestSessionManagerLogging:

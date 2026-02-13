@@ -77,7 +77,7 @@ The output module is decomposed into:
 ### Screen state classifier
 
 `classify_screen_state()` in `src/parsing/screen_classifier.py` uses a 3-pass priority system:
-- **Pass 1 (screen-wide):** tool approval menus, TODO lists, parallel agents
+- **Pass 1 (screen-wide):** tool approval menus, auth screens, TODO lists, parallel agents
 - **Pass 2 (bottom-up):** thinking, running tools, tool results, background tasks
 - **Pass 3 (last line + fallback):** idle prompt, streaming, user message, startup, error
 
