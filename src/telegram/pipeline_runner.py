@@ -14,6 +14,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Forbidden
 
 from src.parsing.models import ScreenEvent, TerminalView
+from src.parsing.terminal_emulator import CharSpan
 from src.telegram.keyboards import build_tool_approval_keyboard
 from src.parsing.content_classifier import classify_regions
 from src.telegram.formatter import format_html, reflow_text, render_regions
@@ -66,7 +67,7 @@ _TRANSITIONS: dict[
         PipelinePhase.STREAMING, ("extract_and_send",),
     ),
     (PipelinePhase.DORMANT, TerminalView.IDLE): (
-        PipelinePhase.DORMANT, (),
+        PipelinePhase.DORMANT, ("extract_history",),
     ),
     (PipelinePhase.DORMANT, TerminalView.TOOL_RUNNING): (
         PipelinePhase.DORMANT, (),
@@ -339,7 +340,8 @@ class PipelineRunner:
         rendered = render_regions(regions)
         html = format_html(reflow_text(rendered))
 
-        if not html.strip():
+        stripped = html.strip()
+        if not stripped or len(stripped) < 3:
             return
 
         await self.state.streaming.append_content(html)
@@ -357,6 +359,56 @@ class PipelineRunner:
             if html.strip():
                 streaming.replace_content(html)
 
+        await streaming.finalize()
+        emu.clear_history()
+
+    async def _extract_history(self, event: ScreenEvent) -> None:
+        """Extract content from scrollback history if present.
+
+        Some CLI outputs (e.g. /context) arrive as a single large PTY
+        write that pyte processes in one feed() call.  The content scrolls
+        through the visible screen into history before any poll cycle can
+        capture it.  This action checks the scrollback buffer and, if
+        non-empty, extracts and sends the content.
+        """
+        emu = self.state.emulator
+        if not emu.screen.history.top:
+            return
+
+        # Build source/attr from history ONLY (not the current screen,
+        # which is back at IDLE and would contribute artifacts).
+        source: list[str] = []
+        attr: list[list[CharSpan]] = []
+        for row in emu.screen.history.top:
+            rendered = "".join(
+                row[col].data for col in range(emu.cols)
+            ).rstrip()
+            source.append(rendered)
+            attr.append(emu._row_to_spans(row, emu.cols))
+
+        html = render_ansi(source, attr)
+
+        # Strip leading noise lines (single-char pyte artifacts from
+        # command echo fragments that end up in scrollback history).
+        lines = html.split("\n")
+        while lines and len(lines[0].strip()) < 3:
+            lines.pop(0)
+        html = "\n".join(lines)
+
+        if not html.strip():
+            emu.clear_history()
+            return
+
+        logger.debug("extract_history: %d history lines, html len=%d",
+                      len(emu.screen.history.top), len(html))
+
+        # Ensure streaming message has a message_id so append_content
+        # can use the overflow (split) logic instead of sending raw.
+        streaming = self.state.streaming
+        if streaming.state.value == "idle":
+            await streaming.start_thinking()
+
+        await streaming.append_content(html)
         await streaming.finalize()
         emu.clear_history()
 
