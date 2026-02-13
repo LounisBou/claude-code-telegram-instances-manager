@@ -51,22 +51,27 @@ The system has three layers connected by an async pipeline:
 
 **Session layer** (`src/session_manager.py`, `src/claude_process.py`) — Manages per-user session lifecycles. `ClaudeProcess` wraps a pexpect-managed PTY subprocess. Text is sent via `submit()` which separates text and Enter with a 150ms delay to avoid triggering Claude Code's paste detection.
 
-**Parsing layer** (`src/parsing/`) — A pyte virtual terminal (`terminal_emulator.py`) feeds a 3-pass priority screen classifier (`screen_classifier.py`) that returns one of 14 `ScreenState` values. Content is extracted via `ui_patterns.py` line classification and `content_classifier.py` ANSI-attribute-based region detection.
+**Parsing layer** (`src/parsing/`) — A pyte virtual terminal (`terminal_emulator.py`) feeds a 3-pass priority screen classifier (`screen_classifier.py`) that returns a `TerminalView` observation. Content is classified into semantic regions via `content_classifier.py` using ANSI color attributes from pyte.
 
 ### Output pipeline (the critical path)
 
 `poll_output()` in `src/telegram/output.py` runs a 300ms async loop across all sessions. Each cycle:
 1. Reads raw PTY bytes via `ClaudeProcess.read_available()`
 2. Feeds bytes into the pyte terminal emulator
-3. Reads the full screen (`get_display()`) for state classification — classifier needs full context
-4. Reads only changed lines (`get_changes()`) for content extraction — avoids re-sending the entire screen
-5. Delegates to `SessionProcessor` (`output_processor.py`) which runs a 3-phase pipeline: pre-extraction (side effects), extraction (dedup + render + send), finalization (ANSI re-render on IDLE)
+3. Reads the full screen (`get_display()`) for state classification
+4. Classifies screen → `ScreenEvent(state=TerminalView.XXX)`
+5. Dispatches to `PipelineRunner.process(event)` which looks up `(current_phase, observation) → (next_phase, actions)` in a transition table
 
-The output module is decomposed into 5 files:
-- `output.py` — orchestration loop
-- `output_processor.py` — 3-phase per-session event processor
-- `output_state.py` — per-session state registry and content deduplication
-- `output_pipeline.py` — span manipulation and rendering helpers (heuristic + ANSI pipelines)
+**Key types:**
+- `TerminalView` (14 values, `parsing/models.py`) — pure observation of what the terminal looks like
+- `PipelinePhase` (4 values: DORMANT, THINKING, STREAMING, TOOL_PENDING) — behavioral state of the bot
+- `PipelineState` — per-session state (emulator + streaming message + phase), owned by `ClaudeSession`
+
+The output module is decomposed into:
+- `output.py` — orchestration loop (thin)
+- `pipeline_runner.py` — transition-table-driven event processor
+- `pipeline_state.py` — `PipelinePhase` enum, `PipelineState` class, tool-pending helpers
+- `output_pipeline.py` — span manipulation and ANSI rendering helpers
 - `streaming_message.py` — edit-in-place Telegram message with rate limiting
 
 ### Screen state classifier
@@ -76,7 +81,7 @@ The output module is decomposed into 5 files:
 - **Pass 2 (bottom-up):** thinking, running tools, tool results, background tasks
 - **Pass 3 (last line + fallback):** idle prompt, streaming, user message, startup, error
 
-The 14 states are defined in `ScreenState` enum (`src/parsing/models.py`). Only `_CONTENT_STATES` produce output sent to Telegram; others (STARTUP, IDLE, USER_MESSAGE, UNKNOWN) are suppressed.
+The 14 observations are defined in `TerminalView` enum (`src/parsing/models.py`). The `PipelineRunner` transition table determines what to do with each observation based on the current `PipelinePhase`.
 
 ### Callback query dispatch
 
