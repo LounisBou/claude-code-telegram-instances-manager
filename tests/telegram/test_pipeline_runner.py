@@ -118,10 +118,40 @@ class TestDormantTransitions:
         assert ps.phase == PipelinePhase.DORMANT
 
     @pytest.mark.asyncio
-    async def test_dormant_error_noop(self):
+    async def test_dormant_error_starts_streaming(self):
+        """ERROR during DORMANT extracts content and enters STREAMING."""
         runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
-        await runner.process(_event(TerminalView.ERROR))
-        assert ps.phase == PipelinePhase.DORMANT
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.ERROR))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dormant_todo_list_starts_streaming(self):
+        """TODO_LIST during DORMANT extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.TODO_LIST))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dormant_parallel_agents_starts_streaming(self):
+        """PARALLEL_AGENTS during DORMANT extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.PARALLEL_AGENTS))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dormant_background_task_starts_streaming(self):
+        """BACKGROUND_TASK during DORMANT extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.BACKGROUND_TASK))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_dormant_tool_running_noop(self):
@@ -151,10 +181,13 @@ class TestThinkingTransitions:
         assert ps.phase == PipelinePhase.STREAMING
 
     @pytest.mark.asyncio
-    async def test_thinking_idle(self):
+    async def test_thinking_idle_extracts_then_finalizes(self):
+        """THINKING -> IDLE (fast response): extract content then finalize."""
         runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)
-        await runner.process(_event(TerminalView.IDLE))
-        assert ps.phase == PipelinePhase.DORMANT
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.IDLE))
+            assert ps.phase == PipelinePhase.DORMANT
+            mock_extract.assert_called_once()
         ps.streaming.finalize.assert_called_once()
 
     @pytest.mark.asyncio
@@ -193,17 +226,51 @@ class TestThinkingTransitions:
         assert ps.phase == PipelinePhase.THINKING
 
     @pytest.mark.asyncio
-    async def test_thinking_auth_required_noop(self):
-        """AUTH_REQUIRED during THINKING is a wildcard -- stays THINKING."""
+    async def test_thinking_auth_required_finalizes_and_kills(self):
+        """AUTH_REQUIRED during THINKING finalizes, warns, and kills session."""
         runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)
         await runner.process(_event(TerminalView.AUTH_REQUIRED))
-        assert ps.phase == PipelinePhase.THINKING
+        assert ps.phase == PipelinePhase.DORMANT
+        ps.streaming.finalize.assert_called_once()
+        bot.send_message.assert_called_once()
+        sm.kill_session.assert_called_once_with(1, 2)
 
     @pytest.mark.asyncio
-    async def test_thinking_error_noop(self):
+    async def test_thinking_error_extracts_and_finalizes(self):
+        """ERROR during THINKING extracts content, finalizes, goes DORMANT."""
         runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)
-        await runner.process(_event(TerminalView.ERROR))
-        assert ps.phase == PipelinePhase.THINKING
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.ERROR))
+            assert ps.phase == PipelinePhase.DORMANT
+            mock_extract.assert_called_once()
+        ps.streaming.finalize.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_thinking_todo_list_starts_streaming(self):
+        """TODO_LIST during THINKING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.TODO_LIST))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_thinking_parallel_agents_starts_streaming(self):
+        """PARALLEL_AGENTS during THINKING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.PARALLEL_AGENTS))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_thinking_background_task_starts_streaming(self):
+        """BACKGROUND_TASK during THINKING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.THINKING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.BACKGROUND_TASK))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
 
 
 # ===================================================================
@@ -282,10 +349,41 @@ class TestStreamingTransitions:
         assert ps.phase == PipelinePhase.STREAMING
 
     @pytest.mark.asyncio
-    async def test_streaming_auth_required_noop(self):
+    async def test_streaming_todo_list(self):
+        """TODO_LIST during STREAMING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.STREAMING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.TODO_LIST))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_streaming_parallel_agents(self):
+        """PARALLEL_AGENTS during STREAMING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.STREAMING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.PARALLEL_AGENTS))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_streaming_background_task(self):
+        """BACKGROUND_TASK during STREAMING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.STREAMING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.BACKGROUND_TASK))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_streaming_auth_required_finalizes_and_kills(self):
+        """AUTH_REQUIRED during STREAMING finalizes, warns, and kills session."""
         runner, ps, bot, sm = _make_runner(PipelinePhase.STREAMING)
         await runner.process(_event(TerminalView.AUTH_REQUIRED))
-        assert ps.phase == PipelinePhase.STREAMING
+        assert ps.phase == PipelinePhase.DORMANT
+        ps.streaming.finalize.assert_called_once()
+        bot.send_message.assert_called_once()
+        sm.kill_session.assert_called_once_with(1, 2)
 
 
 # ===================================================================
@@ -338,10 +436,49 @@ class TestToolPendingTransitions:
         assert ps.phase == PipelinePhase.TOOL_PENDING
 
     @pytest.mark.asyncio
-    async def test_tool_pending_error_noop(self):
+    async def test_tool_pending_auth_required_kills(self):
+        """AUTH_REQUIRED during TOOL_PENDING warns and kills session."""
         runner, ps, bot, sm = _make_runner(PipelinePhase.TOOL_PENDING)
-        await runner.process(_event(TerminalView.ERROR))
-        assert ps.phase == PipelinePhase.TOOL_PENDING
+        await runner.process(_event(TerminalView.AUTH_REQUIRED))
+        assert ps.phase == PipelinePhase.DORMANT
+        bot.send_message.assert_called_once()
+        sm.kill_session.assert_called_once_with(1, 2)
+
+    @pytest.mark.asyncio
+    async def test_tool_pending_error_extracts(self):
+        """ERROR during TOOL_PENDING extracts content and enters STREAMING."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.TOOL_PENDING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.ERROR))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tool_pending_todo_list(self):
+        """TODO_LIST during TOOL_PENDING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.TOOL_PENDING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.TODO_LIST))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tool_pending_parallel_agents(self):
+        """PARALLEL_AGENTS during TOOL_PENDING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.TOOL_PENDING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.PARALLEL_AGENTS))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tool_pending_background_task(self):
+        """BACKGROUND_TASK during TOOL_PENDING extracts content."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.TOOL_PENDING)
+        with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
+            await runner.process(_event(TerminalView.BACKGROUND_TASK))
+            assert ps.phase == PipelinePhase.STREAMING
+            mock_extract.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_tool_pending_startup_noop(self):
@@ -426,6 +563,29 @@ class TestActionDetails:
         assert "finalize" in call_order
         assert "send_message" in call_order
         assert call_order.index("finalize") < call_order.index("send_message")
+
+    @pytest.mark.asyncio
+    async def test_send_keyboard_resets_tool_acted(self):
+        """_send_keyboard sets tool_acted = False."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
+        ps.tool_acted = True
+        await runner.process(
+            _event(TerminalView.TOOL_REQUEST, question="Run?", options=["Yes"])
+        )
+        assert ps.tool_acted is False
+
+    @pytest.mark.asyncio
+    async def test_partial_action_failure_still_advances_phase(self):
+        """If one action fails in a multi-action transition, phase still advances."""
+        runner, ps, bot, sm = _make_runner(PipelinePhase.STREAMING)
+        # Make finalize succeed but send_message (used by _send_keyboard) raise
+        bot.send_message.side_effect = RuntimeError("Telegram API error")
+        await runner.process(
+            _event(TerminalView.TOOL_REQUEST, question="Run?", options=["Yes"])
+        )
+        # Phase should still advance to TOOL_PENDING despite _send_keyboard failure
+        assert ps.phase == PipelinePhase.TOOL_PENDING
+        ps.streaming.finalize.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_prev_view_updated_after_process(self):

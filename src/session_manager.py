@@ -126,6 +126,12 @@ class SessionManager:
                     bot=self._bot, chat_id=user_id, edit_rate_limit=self._edit_rate_limit,
                 ),
             )
+        else:
+            logger.warning(
+                "Creating session without pipeline (set_bot() not called) "
+                "-- output streaming disabled for user=%d",
+                user_id,
+            )
 
         session = ClaudeSession(
             session_id=session_id,

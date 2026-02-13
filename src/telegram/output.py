@@ -27,9 +27,9 @@ async def poll_output(
         for user_id, sessions in list(session_manager._sessions.items()):
             for sid, session in list(sessions.items()):
               try:
-                pipeline = getattr(session, 'pipeline', None)
-                if pipeline is None:
+                if session.pipeline is None:
                     continue
+                pipeline = session.pipeline
 
                 raw = session.process.read_available()
                 if not raw:
@@ -47,8 +47,6 @@ async def poll_output(
                     session_manager=session_manager,
                 )
                 await runner.process(event)
-
-                pipeline.prev_view = event.state
 
               except asyncio.CancelledError:
                 raise

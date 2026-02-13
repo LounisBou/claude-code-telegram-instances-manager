@@ -52,16 +52,43 @@ _TRANSITIONS: dict[
     (PipelinePhase.DORMANT, TerminalView.AUTH_REQUIRED): (
         PipelinePhase.DORMANT, ("send_auth_warning",),
     ),
+    (PipelinePhase.DORMANT, TerminalView.ERROR): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.DORMANT, TerminalView.TODO_LIST): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.DORMANT, TerminalView.PARALLEL_AGENTS): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.DORMANT, TerminalView.BACKGROUND_TASK): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
 
     # --- THINKING ---
     (PipelinePhase.THINKING, TerminalView.STREAMING): (
         PipelinePhase.STREAMING, ("extract_and_send",),
     ),
     (PipelinePhase.THINKING, TerminalView.IDLE): (
-        PipelinePhase.DORMANT, ("finalize",),
+        PipelinePhase.DORMANT, ("extract_and_send", "finalize"),
     ),
     (PipelinePhase.THINKING, TerminalView.TOOL_REQUEST): (
         PipelinePhase.TOOL_PENDING, ("finalize", "send_keyboard"),
+    ),
+    (PipelinePhase.THINKING, TerminalView.AUTH_REQUIRED): (
+        PipelinePhase.DORMANT, ("finalize", "send_auth_warning"),
+    ),
+    (PipelinePhase.THINKING, TerminalView.ERROR): (
+        PipelinePhase.DORMANT, ("extract_and_send", "finalize"),
+    ),
+    (PipelinePhase.THINKING, TerminalView.TODO_LIST): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.THINKING, TerminalView.PARALLEL_AGENTS): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.THINKING, TerminalView.BACKGROUND_TASK): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
     ),
 
     # --- STREAMING ---
@@ -86,6 +113,18 @@ _TRANSITIONS: dict[
     (PipelinePhase.STREAMING, TerminalView.ERROR): (
         PipelinePhase.STREAMING, ("extract_and_send",),
     ),
+    (PipelinePhase.STREAMING, TerminalView.AUTH_REQUIRED): (
+        PipelinePhase.DORMANT, ("finalize", "send_auth_warning"),
+    ),
+    (PipelinePhase.STREAMING, TerminalView.TODO_LIST): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.STREAMING, TerminalView.PARALLEL_AGENTS): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.STREAMING, TerminalView.BACKGROUND_TASK): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
 
     # --- TOOL_PENDING ---
     (PipelinePhase.TOOL_PENDING, TerminalView.TOOL_RUNNING): (
@@ -103,15 +142,25 @@ _TRANSITIONS: dict[
     (PipelinePhase.TOOL_PENDING, TerminalView.TOOL_REQUEST): (
         PipelinePhase.TOOL_PENDING, (),
     ),
+    (PipelinePhase.TOOL_PENDING, TerminalView.AUTH_REQUIRED): (
+        PipelinePhase.DORMANT, ("send_auth_warning",),
+    ),
+    (PipelinePhase.TOOL_PENDING, TerminalView.ERROR): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.TOOL_PENDING, TerminalView.TODO_LIST): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.TOOL_PENDING, TerminalView.PARALLEL_AGENTS): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
+    (PipelinePhase.TOOL_PENDING, TerminalView.BACKGROUND_TASK): (
+        PipelinePhase.STREAMING, ("extract_and_send",),
+    ),
 }
 
-# Fallback: when (phase, view) is not in _TRANSITIONS, phase stays the same.
-_PHASE_DEFAULTS: dict[PipelinePhase, PipelinePhase] = {
-    PipelinePhase.DORMANT: PipelinePhase.DORMANT,
-    PipelinePhase.THINKING: PipelinePhase.THINKING,
-    PipelinePhase.STREAMING: PipelinePhase.STREAMING,
-    PipelinePhase.TOOL_PENDING: PipelinePhase.TOOL_PENDING,
-}
+# Fallback: when (phase, view) is not in _TRANSITIONS, phase stays the same
+# and no actions fire.
 
 
 class PipelineRunner:
@@ -142,9 +191,7 @@ class PipelineRunner:
         if key in _TRANSITIONS:
             next_phase, actions = _TRANSITIONS[key]
         else:
-            next_phase = _PHASE_DEFAULTS.get(
-                self.state.phase, self.state.phase,
-            )
+            next_phase = self.state.phase
             actions = ()
             if event.state not in (
                 TerminalView.UNKNOWN,
@@ -158,7 +205,14 @@ class PipelineRunner:
 
         for action in actions:
             method = getattr(self, f"_{action}")
-            await method(event)
+            try:
+                await method(event)
+            except Exception:
+                logger.exception(
+                    "Action %s failed during (%s, %s) for user=%d sid=%d",
+                    action, self.state.phase.name, event.state.name,
+                    self.user_id, self.session_id,
+                )
 
         self.state.phase = next_phase
         self.state.prev_view = event.state
@@ -263,3 +317,15 @@ class PipelineRunner:
 
         await streaming.finalize()
         emu.clear_history()
+
+
+# ---------------------------------------------------------------------------
+# Import-time validation: every action string in the table must have a method
+# ---------------------------------------------------------------------------
+for (_ph, _tv), (_next, _acts) in _TRANSITIONS.items():
+    for _a in _acts:
+        if not hasattr(PipelineRunner, f"_{_a}"):
+            raise AssertionError(
+                f"Transition ({_ph.name}, {_tv.name}) references "
+                f"unknown action {_a!r}"
+            )

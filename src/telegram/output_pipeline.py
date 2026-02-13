@@ -210,7 +210,7 @@ def find_last_prompt(display: list[str]) -> int | None:
 
 # Categories that represent actual response content (not chrome).
 _RESPONSE_CATEGORIES = frozenset({
-    "content", "response", "tool_connector", "tool_header",
+    "content", "response", "tool_connector",
 })
 
 

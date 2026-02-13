@@ -32,6 +32,3 @@ class ScreenEvent:
     state: TerminalView
     payload: dict = field(default_factory=dict)
     raw_lines: list[str] = field(default_factory=list)
-
-
-# Backward-compatible alias
