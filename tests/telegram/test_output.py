@@ -2638,3 +2638,48 @@ class TestIsToolRequestPending:
         state.tool_acted = False
         assert is_tool_request_pending(904, 1) is True
         _cleanup_state(*key)
+
+
+
+class TestPollOutputPipelineRunner:
+    """poll_output uses PipelineRunner when session has pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_runner_path_feeds_emulator(self):
+        """When session.pipeline exists, raw bytes go through PipelineRunner."""
+        from src.telegram.pipeline_state import PipelinePhase, PipelineState
+
+        bot = AsyncMock()
+        sm = AsyncMock()
+
+        # Create a session with a pipeline
+        emu = MagicMock()
+        emu.get_display.return_value = [""] * 40
+        emu.get_attributed_changes.return_value = []
+        emu.get_full_display.return_value = [""] * 40
+        emu.get_full_attributed_lines.return_value = [[] for _ in range(40)]
+        streaming = AsyncMock()
+        streaming.accumulated = ""
+        pipeline = PipelineState(emulator=emu, streaming=streaming)
+
+        session = MagicMock()
+        session.pipeline = pipeline
+        session.process.read_available.return_value = b"hello"
+
+        sm._sessions = {1: {1: session}}
+
+        # Run one cycle
+        with patch("src.telegram.output.classify_screen_state") as mock_classify:
+            from src.parsing.models import ScreenEvent, TerminalView
+            mock_classify.return_value = ScreenEvent(state=TerminalView.IDLE)
+
+            poll_task = asyncio.create_task(poll_output(bot, sm))
+            await asyncio.sleep(0.5)
+            poll_task.cancel()
+            try:
+                await poll_task
+            except asyncio.CancelledError:
+                pass
+
+        emu.feed.assert_called_with(b"hello")
+        mock_classify.assert_called()
