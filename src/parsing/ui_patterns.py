@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import textwrap
 
-from src.parsing.models import ScreenEvent, ScreenState  # noqa: F401 — re-exported
+from src.parsing.models import ScreenEvent, TerminalView  # noqa: F401 — re-exported
 
 
 # --- UI element classification ---

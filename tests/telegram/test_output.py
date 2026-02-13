@@ -9,7 +9,7 @@ from src.parsing.terminal_emulator import CharSpan
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import (
     CHROME_CATEGORIES,
-    ScreenEvent, ScreenState, classify_text_line, extract_content,
+    ScreenEvent, TerminalView, classify_text_line, extract_content,
 )
 from src.telegram.output import poll_output
 from src.telegram.output_pipeline import (
@@ -34,23 +34,23 @@ class TestOutputStateFiltering:
     """Regression: poll_output must suppress UI chrome and only send content."""
 
     def test_startup_not_in_content_states(self):
-        assert ScreenState.STARTUP not in _CONTENT_STATES
+        assert TerminalView.STARTUP not in _CONTENT_STATES
 
     def test_idle_not_in_content_states(self):
-        assert ScreenState.IDLE not in _CONTENT_STATES
+        assert TerminalView.IDLE not in _CONTENT_STATES
 
     def test_unknown_not_in_content_states(self):
-        assert ScreenState.UNKNOWN not in _CONTENT_STATES
+        assert TerminalView.UNKNOWN not in _CONTENT_STATES
 
     def test_streaming_in_content_states(self):
-        assert ScreenState.STREAMING in _CONTENT_STATES
+        assert TerminalView.STREAMING in _CONTENT_STATES
 
     def test_tool_request_not_in_content_states(self):
         """TOOL_REQUEST is handled with an inline keyboard, not as content."""
-        assert ScreenState.TOOL_REQUEST not in _CONTENT_STATES
+        assert TerminalView.TOOL_REQUEST not in _CONTENT_STATES
 
     def test_error_in_content_states(self):
-        assert ScreenState.ERROR in _CONTENT_STATES
+        assert TerminalView.ERROR in _CONTENT_STATES
 
     def test_startup_screen_classified_and_filtered(self):
         """A Claude Code startup banner must be classified as STARTUP."""
@@ -62,7 +62,7 @@ class TestOutputStateFiltering:
             "",
         ] + [""] * 35
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.STARTUP
+        assert event.state == TerminalView.STARTUP
         # extract_content should return nothing useful from startup chrome
         content = extract_content(lines)
         # No meaningful user content in startup screen
@@ -127,42 +127,42 @@ class TestOutputStateFiltering:
         """Regression: once past STARTUP, classifier returning STARTUP must become UNKNOWN."""
         key = (999, 999)
         state = _get_or_create(*key, bot=AsyncMock())
-        state.prev_state = ScreenState.IDLE
+        state.prev_state = TerminalView.IDLE
         prev = _session_states[key].prev_state
 
         # This is the guard logic from poll_output
-        event = ScreenEvent(state=ScreenState.STARTUP, raw_lines=[])
-        if event.state == ScreenState.STARTUP and prev not in (ScreenState.STARTUP, None):
+        event = ScreenEvent(state=TerminalView.STARTUP, raw_lines=[])
+        if event.state == TerminalView.STARTUP and prev not in (TerminalView.STARTUP, None):
             event = ScreenEvent(
-                state=ScreenState.UNKNOWN, payload=event.payload, raw_lines=event.raw_lines
+                state=TerminalView.UNKNOWN, payload=event.payload, raw_lines=event.raw_lines
             )
-        assert event.state == ScreenState.UNKNOWN
+        assert event.state == TerminalView.UNKNOWN
 
         # Cleanup
 
     def test_thinking_notification_on_transition(self):
         """Regression: THINKING must trigger start_thinking once, not every cycle."""
-        prev = ScreenState.IDLE
+        prev = TerminalView.IDLE
         triggered = False
 
         # First transition to THINKING -> should trigger
-        state = ScreenState.THINKING
-        if state == ScreenState.THINKING and prev != ScreenState.THINKING:
+        state = TerminalView.THINKING
+        if state == TerminalView.THINKING and prev != TerminalView.THINKING:
             triggered = True
         assert triggered
 
         # Second cycle still THINKING -> should NOT trigger
-        prev = ScreenState.THINKING
+        prev = TerminalView.THINKING
         triggered = False
-        if state == ScreenState.THINKING and prev != ScreenState.THINKING:
+        if state == TerminalView.THINKING and prev != TerminalView.THINKING:
             triggered = True
         assert not triggered
 
     def test_finalize_on_idle_transition(self):
         """Regression: streaming must finalize when state transitions to IDLE."""
-        prev = ScreenState.STREAMING
-        state = ScreenState.IDLE
-        should_finalize = state == ScreenState.IDLE and prev != ScreenState.IDLE
+        prev = TerminalView.STREAMING
+        state = TerminalView.IDLE
+        should_finalize = state == TerminalView.IDLE and prev != TerminalView.IDLE
         assert should_finalize
 
 
@@ -304,9 +304,9 @@ class TestDedupSetClearing:
         state.dedup.sent_lines = {"old line", "another old line"}
 
         # Simulate IDLE transition logic from poll_output
-        prev = ScreenState.STREAMING
-        cur_state = ScreenState.IDLE
-        if cur_state == ScreenState.IDLE and prev != ScreenState.IDLE:
+        prev = TerminalView.STREAMING
+        cur_state = TerminalView.IDLE
+        if cur_state == TerminalView.IDLE and prev != TerminalView.IDLE:
             state.dedup.sent_lines = set()
 
         assert _session_states[key].dedup.sent_lines == set()
@@ -320,9 +320,9 @@ class TestDedupSetClearing:
         state = _get_or_create(*key, bot=AsyncMock())
         state.dedup.sent_lines = original.copy()
 
-        prev = ScreenState.IDLE
-        cur_state = ScreenState.IDLE
-        if cur_state == ScreenState.IDLE and prev != ScreenState.IDLE:
+        prev = TerminalView.IDLE
+        cur_state = TerminalView.IDLE
+        if cur_state == TerminalView.IDLE and prev != TerminalView.IDLE:
             state.dedup.sent_lines = set()
 
         assert _session_states[key].dedup.sent_lines == original
@@ -378,7 +378,7 @@ class TestPollOutputIntegration:
         assert key in _session_states
         assert key in _session_states
         assert key in _session_states
-        assert _session_states[key].prev_state == ScreenState.STARTUP
+        assert _session_states[key].prev_state == TerminalView.STARTUP
         assert _session_states[key].dedup.sent_lines == set()
 
         self._cleanup_session(key)
@@ -433,7 +433,7 @@ class TestPollOutputStateTransitions:
         bot = AsyncMock()
         bot.send_message.return_value = MagicMock(message_id=42)
 
-        thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
+        thinking_event = ScreenEvent(state=TerminalView.THINKING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=thinking_event),
@@ -476,10 +476,10 @@ class TestPollOutputStateTransitions:
         streaming.state = StreamingState.STREAMING
         streaming.last_edit_time = 0
         state.streaming = streaming
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         state.dedup.sent_lines = set()
 
-        streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
+        streaming_event = ScreenEvent(state=TerminalView.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=streaming_event),
@@ -523,10 +523,10 @@ class TestPollOutputStateTransitions:
         streaming.state = StreamingState.STREAMING
         streaming.last_edit_time = 0
         state.streaming = streaming
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         state.dedup.sent_lines = {"Already sent"}
 
-        streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
+        streaming_event = ScreenEvent(state=TerminalView.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=streaming_event),
@@ -574,10 +574,10 @@ class TestPollOutputStateTransitions:
         streaming.accumulated = "Buffered content"
         streaming.state = StreamingState.STREAMING
         state.streaming = streaming
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         state.dedup.sent_lines = {"old line"}
 
-        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        idle_event = ScreenEvent(state=TerminalView.IDLE, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=idle_event),
@@ -632,11 +632,11 @@ class TestPollOutputStateTransitions:
         streaming.accumulated = "Old response"
         streaming.state = StreamingState.STREAMING
         state.streaming = streaming
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         state.dedup.sent_lines = set()
 
-        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
-        tool_event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
+        idle_event = ScreenEvent(state=TerminalView.IDLE, raw_lines=[])
+        tool_event = ScreenEvent(state=TerminalView.TOOL_REQUEST, raw_lines=[])
 
         with (
             patch(
@@ -690,13 +690,13 @@ class TestPollOutputStateTransitions:
         streaming.message_id = 99
         streaming.state = StreamingState.THINKING
         state.streaming = streaming
-        state.prev_state = ScreenState.THINKING
+        state.prev_state = TerminalView.THINKING
         state.dedup.sent_lines = set()
 
         # Classifier returns IDLE (response already complete).
         # Capture what extract_content receives to verify it gets the
         # full display (not just changed lines).
-        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        idle_event = ScreenEvent(state=TerminalView.IDLE, raw_lines=[])
         extract_calls = []
 
         def _capture_extract(lines):
@@ -754,8 +754,8 @@ class TestPollOutputStateTransitions:
         bot.send_message.return_value = MagicMock(message_id=99)
 
         # Simulate the two-step transition: THINKING then IDLE
-        thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
-        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        thinking_event = ScreenEvent(state=TerminalView.THINKING, raw_lines=[])
+        idle_event = ScreenEvent(state=TerminalView.IDLE, raw_lines=[])
 
         # extract_content returns simulated content including banner artifact 'u'
         # The snapshot should filter 'u' because it existed at THINKING time.
@@ -826,9 +826,9 @@ class TestPollOutputStateTransitions:
         bot = AsyncMock()
         bot.send_message.return_value = MagicMock(message_id=99)
 
-        thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
-        unknown_event = ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=[])
-        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        thinking_event = ScreenEvent(state=TerminalView.THINKING, raw_lines=[])
+        unknown_event = ScreenEvent(state=TerminalView.UNKNOWN, raw_lines=[])
+        idle_event = ScreenEvent(state=TerminalView.IDLE, raw_lines=[])
 
         event_sequence = [thinking_event, unknown_event, idle_event]
         event_idx = [0]
@@ -899,8 +899,8 @@ class TestPollOutputStateTransitions:
         bot = AsyncMock()
         bot.send_message.return_value = MagicMock(message_id=77)
 
-        unknown_event = ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=[])
-        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        unknown_event = ScreenEvent(state=TerminalView.UNKNOWN, raw_lines=[])
+        idle_event = ScreenEvent(state=TerminalView.IDLE, raw_lines=[])
 
         event_sequence = [unknown_event, idle_event]
         event_idx = [0]
@@ -962,7 +962,7 @@ class TestPollOutputStateTransitions:
         bot = AsyncMock()
 
         # Both cycles return same state
-        unknown_event = ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=[])
+        unknown_event = ScreenEvent(state=TerminalView.UNKNOWN, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=unknown_event),
@@ -1003,10 +1003,10 @@ class TestPollOutputStateTransitions:
         streaming.state = StreamingState.STREAMING
         streaming.last_edit_time = 0
         state.streaming = streaming
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         state.dedup.sent_lines = set()
 
-        streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
+        streaming_event = ScreenEvent(state=TerminalView.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=streaming_event),
@@ -1048,11 +1048,11 @@ class TestPollOutputStateTransitions:
         streaming.message_id = 42
         streaming.state = StreamingState.THINKING
         state.streaming = streaming
-        state.prev_state = ScreenState.THINKING
+        state.prev_state = TerminalView.THINKING
         state.dedup.sent_lines = set()
 
         tool_event = ScreenEvent(
-            state=ScreenState.TOOL_REQUEST,
+            state=TerminalView.TOOL_REQUEST,
             payload={
                 "question": "Do you want to create test.txt?",
                 "options": ["Yes", "No"],
@@ -1113,7 +1113,7 @@ class TestPollOutputStreaming:
         bot = AsyncMock()
         bot.send_message.return_value = MagicMock(message_id=42)
 
-        thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
+        thinking_event = ScreenEvent(state=TerminalView.THINKING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=thinking_event),
@@ -1156,10 +1156,10 @@ class TestPollOutputStreaming:
         streaming.state = StreamingState.STREAMING
         streaming.last_edit_time = 0
         state.streaming = streaming
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         state.dedup.sent_lines = set()
 
-        streaming_event = ScreenEvent(state=ScreenState.STREAMING, raw_lines=[])
+        streaming_event = ScreenEvent(state=TerminalView.STREAMING, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=streaming_event),
@@ -1199,10 +1199,10 @@ class TestPollOutputStreaming:
         streaming.accumulated = "Final content"
         streaming.state = StreamingState.STREAMING
         state.streaming = streaming
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         state.dedup.sent_lines = set()
 
-        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        idle_event = ScreenEvent(state=TerminalView.IDLE, raw_lines=[])
         with (
             patch("src.telegram.output.asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
             patch("src.telegram.output_processor.classify_screen_state", return_value=idle_event),
@@ -1690,8 +1690,8 @@ class TestUserMessageResetsDedup:
         state = _get_or_create(*key, bot=AsyncMock())
         state.dedup.sent_lines = {"old content", "Args:", "Returns:"}
         # Simulate USER_MESSAGE detection (same logic as poll_output)
-        cur_state = ScreenState.USER_MESSAGE
-        if cur_state == ScreenState.USER_MESSAGE:
+        cur_state = TerminalView.USER_MESSAGE
+        if cur_state == TerminalView.USER_MESSAGE:
             state.dedup.sent_lines = set()
             state.dedup.thinking_snapshot = set()
         assert _session_states[key].dedup.sent_lines == set()
@@ -1701,8 +1701,8 @@ class TestUserMessageResetsDedup:
         key = (884, 1)
         state = _get_or_create(*key, bot=AsyncMock())
         state.dedup.thinking_snapshot = {"old snap", "Args:"}
-        cur_state = ScreenState.USER_MESSAGE
-        if cur_state == ScreenState.USER_MESSAGE:
+        cur_state = TerminalView.USER_MESSAGE
+        if cur_state == TerminalView.USER_MESSAGE:
             state.dedup.sent_lines = set()
             state.dedup.thinking_snapshot = set()
         assert (key not in _session_states or not _session_states[key].dedup.thinking_snapshot)
@@ -2124,10 +2124,10 @@ class TestAnsiReRenderOnCompletion:
         streaming.accumulated = "Heuristic content"
         streaming.state = StreamingState.STREAMING
         state.streaming = streaming
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         state.dedup.sent_lines = set()
 
-        idle_event = ScreenEvent(state=ScreenState.IDLE, raw_lines=[])
+        idle_event = ScreenEvent(state=TerminalView.IDLE, raw_lines=[])
 
         classify_calls = []
         def _capture_classify(lines):
@@ -2185,7 +2185,7 @@ class TestPollOutputExceptionResilience:
         state = _get_or_create(*key, bot=AsyncMock())
         state.emulator = TerminalEmulator()
         state.streaming = StreamingMessage(bot=bot, chat_id=780, edit_rate_limit=3)
-        state.prev_state = ScreenState.STARTUP
+        state.prev_state = TerminalView.STARTUP
         state.dedup.sent_lines = set()
 
         # classify_screen_state raises to simulate a crash mid-processing
@@ -2233,12 +2233,12 @@ class TestPollOutputExceptionResilience:
         state = _get_or_create(*key, bot=AsyncMock())
         state.emulator = TerminalEmulator()
         state.streaming = StreamingMessage(bot=bot, chat_id=781, edit_rate_limit=3)
-        state.prev_state = ScreenState.STARTUP
+        state.prev_state = TerminalView.STARTUP
         state.dedup.sent_lines = set()
 
         # TOOL_REQUEST with question=None (key exists but value is None)
         tool_event = ScreenEvent(
-            state=ScreenState.TOOL_REQUEST,
+            state=TerminalView.TOOL_REQUEST,
             payload={
                 "question": None,
                 "options": ["Yes", "No"],
@@ -2287,7 +2287,7 @@ class TestPollOutputExceptionResilience:
         state = _get_or_create(*key, bot=AsyncMock())
         state.emulator = TerminalEmulator()
         state.streaming = StreamingMessage(bot=bot, chat_id=782, edit_rate_limit=3)
-        state.prev_state = ScreenState.STARTUP
+        state.prev_state = TerminalView.STARTUP
         state.dedup.sent_lines = set()
 
         # classify_screen_state raises CancelledError (simulating task cancellation)
@@ -2332,11 +2332,11 @@ class TestPollOutputAuthRequired:
         state = _get_or_create(*key, bot=AsyncMock())
         state.emulator = TerminalEmulator()
         state.streaming = StreamingMessage(bot=bot, chat_id=790, edit_rate_limit=3)
-        state.prev_state = ScreenState.STARTUP
+        state.prev_state = TerminalView.STARTUP
         state.dedup.sent_lines = set()
 
         auth_event = ScreenEvent(
-            state=ScreenState.AUTH_REQUIRED,
+            state=TerminalView.AUTH_REQUIRED,
             payload={"url": "https://claude.ai/oauth/authorize?code=true"},
             raw_lines=[],
         )
@@ -2387,11 +2387,11 @@ class TestPollOutputAuthRequired:
         state = _get_or_create(*key, bot=AsyncMock())
         state.emulator = TerminalEmulator()
         state.streaming = StreamingMessage(bot=bot, chat_id=791, edit_rate_limit=3)
-        state.prev_state = ScreenState.STARTUP
+        state.prev_state = TerminalView.STARTUP
         state.dedup.sent_lines = set()
 
         auth_event = ScreenEvent(
-            state=ScreenState.AUTH_REQUIRED,
+            state=TerminalView.AUTH_REQUIRED,
             payload={"url": "https://claude.ai/oauth/authorize?code=true"},
             raw_lines=[],
         )
@@ -2444,18 +2444,18 @@ class TestStaleToolRequestOverride:
         """
         key = (801, 1)
         state = _get_or_create(*key, bot=AsyncMock())
-        state.prev_state = ScreenState.TOOL_REQUEST
+        state.prev_state = TerminalView.TOOL_REQUEST
         state.tool_acted = True
 
-        event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
+        event = ScreenEvent(state=TerminalView.TOOL_REQUEST, raw_lines=[])
         # Replicate the guard logic from poll_output
-        if event.state == ScreenState.TOOL_REQUEST and state.tool_acted:
+        if event.state == TerminalView.TOOL_REQUEST and state.tool_acted:
             event = ScreenEvent(
-                state=ScreenState.UNKNOWN,
+                state=TerminalView.UNKNOWN,
                 payload=event.payload,
                 raw_lines=event.raw_lines,
             )
-        assert event.state == ScreenState.UNKNOWN
+        assert event.state == TerminalView.UNKNOWN
         state.tool_acted = False
 
     def test_flag_cleared_when_screen_moves_to_different_state(self):
@@ -2464,11 +2464,11 @@ class TestStaleToolRequestOverride:
         state = _get_or_create(*key, bot=AsyncMock())
         state.tool_acted = True
 
-        event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
+        event = ScreenEvent(state=TerminalView.THINKING, raw_lines=[])
         # Replicate the elif branch from poll_output
-        if event.state == ScreenState.TOOL_REQUEST and state.tool_acted:
+        if event.state == TerminalView.TOOL_REQUEST and state.tool_acted:
             pass
-        elif event.state != ScreenState.TOOL_REQUEST:
+        elif event.state != TerminalView.TOOL_REQUEST:
             state.tool_acted = False
 
         assert (key not in _session_states or not _session_states[key].tool_acted)
@@ -2479,14 +2479,14 @@ class TestStaleToolRequestOverride:
         state = _get_or_create(*key, bot=AsyncMock())
         state.tool_acted = True
 
-        event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
-        if event.state == ScreenState.TOOL_REQUEST and state.tool_acted:
+        event = ScreenEvent(state=TerminalView.TOOL_REQUEST, raw_lines=[])
+        if event.state == TerminalView.TOOL_REQUEST and state.tool_acted:
             event = ScreenEvent(
-                state=ScreenState.UNKNOWN,
+                state=TerminalView.UNKNOWN,
                 payload=event.payload,
                 raw_lines=event.raw_lines,
             )
-        elif event.state != ScreenState.TOOL_REQUEST:
+        elif event.state != TerminalView.TOOL_REQUEST:
             state.tool_acted = False
 
         # Flag persists — UNKNOWN was due to override, not natural transition
@@ -2499,14 +2499,14 @@ class TestStaleToolRequestOverride:
         state = _get_or_create(*key, bot=AsyncMock())
         state.tool_acted = False
 
-        event = ScreenEvent(state=ScreenState.TOOL_REQUEST, raw_lines=[])
-        if event.state == ScreenState.TOOL_REQUEST and state.tool_acted:
+        event = ScreenEvent(state=TerminalView.TOOL_REQUEST, raw_lines=[])
+        if event.state == TerminalView.TOOL_REQUEST and state.tool_acted:
             event = ScreenEvent(
-                state=ScreenState.UNKNOWN,
+                state=TerminalView.UNKNOWN,
                 payload=event.payload,
                 raw_lines=event.raw_lines,
             )
-        assert event.state == ScreenState.TOOL_REQUEST
+        assert event.state == TerminalView.TOOL_REQUEST
 
     @pytest.mark.asyncio
     async def test_poll_output_overrides_stale_tool_request(self):
@@ -2534,11 +2534,11 @@ class TestStaleToolRequestOverride:
         streaming.message_id = 42
         streaming.state = StreamingState.THINKING
         state.streaming = streaming
-        state.prev_state = ScreenState.THINKING
+        state.prev_state = TerminalView.THINKING
         state.dedup.sent_lines = set()
 
         tool_event = ScreenEvent(
-            state=ScreenState.TOOL_REQUEST,
+            state=TerminalView.TOOL_REQUEST,
             payload={
                 "question": "Allow tool?",
                 "options": ["Yes", "No"],
@@ -2547,7 +2547,7 @@ class TestStaleToolRequestOverride:
             },
             raw_lines=[],
         )
-        thinking_event = ScreenEvent(state=ScreenState.THINKING, raw_lines=[])
+        thinking_event = ScreenEvent(state=TerminalView.THINKING, raw_lines=[])
 
         # Cycle 1: TOOL_REQUEST (keyboard sent)
         # Cycle 2: mark_tool_acted, then stale TOOL_REQUEST (should be overridden)
@@ -2589,7 +2589,7 @@ class TestStaleToolRequestOverride:
         assert len(keyboard_calls) == 1
 
         # After cycle 3, prev_state should be THINKING (not stuck at TOOL_REQUEST)
-        assert _session_states[key].prev_state == ScreenState.THINKING
+        assert _session_states[key].prev_state == TerminalView.THINKING
 
         self._cleanup_session(key)
 
@@ -2601,7 +2601,7 @@ class TestIsToolRequestPending:
         """is_tool_request_pending returns True when session is in TOOL_REQUEST."""
         key = (900, 1)
         state = _get_or_create(*key, bot=AsyncMock())
-        state.prev_state = ScreenState.TOOL_REQUEST
+        state.prev_state = TerminalView.TOOL_REQUEST
         assert is_tool_request_pending(900, 1) is True
         _cleanup_state(*key)
 
@@ -2609,7 +2609,7 @@ class TestIsToolRequestPending:
         """is_tool_request_pending returns False for non-TOOL_REQUEST states."""
         key = (901, 1)
         state = _get_or_create(*key, bot=AsyncMock())
-        state.prev_state = ScreenState.IDLE
+        state.prev_state = TerminalView.IDLE
         assert is_tool_request_pending(901, 1) is False
         _cleanup_state(*key)
 
@@ -2623,7 +2623,7 @@ class TestIsToolRequestPending:
         """Regression for issue 017: after Allow/Deny, pending must be False even if prev_state still TOOL_REQUEST."""
         key = (903, 1)
         state = _get_or_create(*key, bot=AsyncMock())
-        state.prev_state = ScreenState.TOOL_REQUEST
+        state.prev_state = TerminalView.TOOL_REQUEST
         state.tool_acted = True
         assert is_tool_request_pending(903, 1) is False
         _cleanup_state(*key)
@@ -2633,7 +2633,7 @@ class TestIsToolRequestPending:
         """TOOL_REQUEST with no tool_acted flag should still return True."""
         key = (904, 1)
         state = _get_or_create(*key, bot=AsyncMock())
-        state.prev_state = ScreenState.TOOL_REQUEST
+        state.prev_state = TerminalView.TOOL_REQUEST
         state.tool_acted = False
         assert is_tool_request_pending(904, 1) is True
         _cleanup_state(*key)

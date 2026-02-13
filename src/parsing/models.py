@@ -35,4 +35,3 @@ class ScreenEvent:
 
 
 # Backward-compatible alias
-ScreenState = TerminalView

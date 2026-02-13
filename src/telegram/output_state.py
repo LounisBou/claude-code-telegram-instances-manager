@@ -15,7 +15,7 @@ import logging
 import textwrap
 from typing import TYPE_CHECKING
 
-from src.parsing.models import ScreenState
+from src.parsing.models import TerminalView
 from src.parsing.ui_patterns import CHROME_CATEGORIES, classify_text_line
 
 if TYPE_CHECKING:
@@ -137,7 +137,7 @@ class SessionOutputState:
     ) -> None:
         self.emulator = emulator
         self.streaming = streaming
-        self.prev_state: ScreenState = ScreenState.STARTUP
+        self.prev_state: TerminalView = TerminalView.STARTUP
         self.dedup = ContentDeduplicator()
         self.tool_acted: bool = False
 
@@ -208,4 +208,4 @@ def is_tool_request_pending(user_id: int, session_id: int) -> bool:
         return False
     if state.tool_acted:
         return False
-    return state.prev_state == ScreenState.TOOL_REQUEST
+    return state.prev_state == TerminalView.TOOL_REQUEST

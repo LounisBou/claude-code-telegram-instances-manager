@@ -13,7 +13,7 @@ from src.parsing.detectors import (
 from src.core.log_setup import TRACE
 from src.parsing.ui_patterns import (
     ScreenEvent,
-    ScreenState,
+    TerminalView,
     AUTH_OAUTH_URL_RE,
     AUTH_PASTE_CODE_RE,
     AUTH_SIGN_IN_RE,
@@ -69,7 +69,7 @@ def _extract_tool_info(lines: list[str]) -> dict:
 
 def classify_screen_state(
     lines: list[str],
-    prev_state: ScreenState | None = None,
+    prev_state: TerminalView | None = None,
 ) -> ScreenEvent:
     """Classify the current screen state from terminal display lines.
 
@@ -99,14 +99,14 @@ def classify_screen_state(
         return event
 
     if not non_empty:
-        return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
+        return _return(ScreenEvent(state=TerminalView.UNKNOWN, raw_lines=lines))
 
     # --- First pass: screen-wide patterns (need full context) ---
 
     # 1. Tool approval / selection menu (needs user action - highest priority)
     payload = detect_tool_request(lines)
     if payload:
-        return _return(ScreenEvent(state=ScreenState.TOOL_REQUEST, payload=payload, raw_lines=lines))
+        return _return(ScreenEvent(state=TerminalView.TOOL_REQUEST, payload=payload, raw_lines=lines))
 
     # 1b. Auth/login screen (OAuth prompt — session cannot proceed)
     has_auth_indicator = False
@@ -120,7 +120,7 @@ def classify_screen_state(
             auth_url = stripped
     if has_auth_indicator and auth_url:
         return _return(ScreenEvent(
-            state=ScreenState.AUTH_REQUIRED,
+            state=TerminalView.AUTH_REQUIRED,
             payload={"url": auth_url},
             raw_lines=lines,
         ))
@@ -128,12 +128,12 @@ def classify_screen_state(
     # 2. TODO list
     payload = detect_todo_list(lines)
     if payload:
-        return _return(ScreenEvent(state=ScreenState.TODO_LIST, payload=payload, raw_lines=lines))
+        return _return(ScreenEvent(state=TerminalView.TODO_LIST, payload=payload, raw_lines=lines))
 
     # 3. Parallel agents
     payload = detect_parallel_agents(lines)
     if payload:
-        return _return(ScreenEvent(state=ScreenState.PARALLEL_AGENTS, payload=payload, raw_lines=lines))
+        return _return(ScreenEvent(state=TerminalView.PARALLEL_AGENTS, payload=payload, raw_lines=lines))
 
     # --- Second pass: bottom-up scan for current activity ---
 
@@ -164,7 +164,7 @@ def classify_screen_state(
         active_idx -= 1
 
     if active_idx < 0:
-        return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
+        return _return(ScreenEvent(state=TerminalView.UNKNOWN, raw_lines=lines))
 
     # Check the bottom content area (last ~8 meaningful lines)
     bottom_start = max(0, active_idx - 7)
@@ -173,14 +173,14 @@ def classify_screen_state(
     # 4. Thinking indicator
     payload = detect_thinking(bottom_lines)
     if payload:
-        return _return(ScreenEvent(state=ScreenState.THINKING, payload=payload, raw_lines=lines))
+        return _return(ScreenEvent(state=TerminalView.THINKING, payload=payload, raw_lines=lines))
 
     # 5. Tool running/waiting
     for line in reversed(bottom_lines):
         if TOOL_STATUS_RE.search(line) or TOOL_HOOKS_RE.search(line):
             tool_info = _extract_tool_info(lines)
             return _return(ScreenEvent(
-                state=ScreenState.TOOL_RUNNING, payload=tool_info, raw_lines=lines
+                state=TerminalView.TOOL_RUNNING, payload=tool_info, raw_lines=lines
             ))
 
     # 6. Tool result (diff summary)
@@ -188,7 +188,7 @@ def classify_screen_state(
         m = TOOL_DIFF_RE.search(line)
         if m:
             return _return(ScreenEvent(
-                state=ScreenState.TOOL_RESULT,
+                state=TerminalView.TOOL_RESULT,
                 payload={"added": int(m.group(1)), "removed": int(m.group(2))},
                 raw_lines=lines,
             ))
@@ -197,7 +197,7 @@ def classify_screen_state(
     payload = detect_background_task(bottom_lines)
     if payload:
         return _return(ScreenEvent(
-            state=ScreenState.BACKGROUND_TASK, payload=payload, raw_lines=lines
+            state=TerminalView.BACKGROUND_TASK, payload=payload, raw_lines=lines
         ))
 
     # --- Third pass: check last meaningful line ---
@@ -226,7 +226,7 @@ def classify_screen_state(
         if found_sep_above and found_sep_below:
             placeholder = re.sub(r"^❯\s*", "", last_line)
             return _return(ScreenEvent(
-                state=ScreenState.IDLE,
+                state=TerminalView.IDLE,
                 payload={"placeholder": placeholder},
                 raw_lines=lines,
             ))
@@ -249,7 +249,7 @@ def classify_screen_state(
         m = RESPONSE_MARKER_RE.match(stripped)
         if m:
             return _return(ScreenEvent(
-                state=ScreenState.STREAMING,
+                state=TerminalView.STREAMING,
                 payload={"text": m.group(1)},
                 raw_lines=lines,
             ))
@@ -258,7 +258,7 @@ def classify_screen_state(
     if PROMPT_MARKER_RE.match(last_line):
         user_text = re.sub(r"^❯\s*", "", last_line)
         return _return(ScreenEvent(
-            state=ScreenState.USER_MESSAGE,
+            state=TerminalView.USER_MESSAGE,
             payload={"text": user_text},
             raw_lines=lines,
         ))
@@ -271,18 +271,18 @@ def classify_screen_state(
     if not has_response:
         for line in non_empty[:10]:
             if STARTUP_RE.search(line):
-                return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
+                return _return(ScreenEvent(state=TerminalView.STARTUP, raw_lines=lines))
             stripped = line.strip()
             if LOGO_RE.search(stripped) and sum(1 for c in stripped if LOGO_RE.match(c)) >= 3:
-                return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
+                return _return(ScreenEvent(state=TerminalView.STARTUP, raw_lines=lines))
 
     # 12. Error
     for line in non_empty:
         if ERROR_RE.search(line):
             return _return(ScreenEvent(
-                state=ScreenState.ERROR,
+                state=TerminalView.ERROR,
                 payload={"text": line.strip()},
                 raw_lines=lines,
             ))
 
-    return _return(ScreenEvent(state=ScreenState.UNKNOWN, raw_lines=lines))
+    return _return(ScreenEvent(state=TerminalView.UNKNOWN, raw_lines=lines))

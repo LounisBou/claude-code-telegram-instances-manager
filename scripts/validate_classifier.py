@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.parsing.screen_classifier import classify_screen_state
-from src.parsing.ui_patterns import ScreenState
+from src.parsing.ui_patterns import TerminalView
 
 
 def load_snapshots(capture_dir: str) -> list[dict]:
@@ -68,7 +68,7 @@ def main():
         state_counts[state.value] += 1
         results.append((label, state.value, event.payload))
 
-        if state == ScreenState.UNKNOWN:
+        if state == TerminalView.UNKNOWN:
             non_empty = [l for l in lines if l.strip()]
             unknown_snapshots.append((label, non_empty))
 

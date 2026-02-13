@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.parsing.models import ScreenEvent, ScreenState
+from src.parsing.models import ScreenEvent, TerminalView
 from src.telegram.output_processor import (
     ExtractionMode,
     SessionProcessor,
@@ -17,7 +17,7 @@ from src.telegram.streaming_message import StreamingState
 
 
 def _make_state(
-    prev: ScreenState = ScreenState.STARTUP,
+    prev: TerminalView = TerminalView.STARTUP,
 ) -> SessionOutputState:
     """Create a SessionOutputState with mocked components."""
     emu = MagicMock()
@@ -72,16 +72,16 @@ class TestContentStates:
     """_CONTENT_STATES has the right members."""
 
     def test_streaming_included(self):
-        assert ScreenState.STREAMING in _CONTENT_STATES
+        assert TerminalView.STREAMING in _CONTENT_STATES
 
     def test_idle_excluded(self):
-        assert ScreenState.IDLE not in _CONTENT_STATES
+        assert TerminalView.IDLE not in _CONTENT_STATES
 
     def test_startup_excluded(self):
-        assert ScreenState.STARTUP not in _CONTENT_STATES
+        assert TerminalView.STARTUP not in _CONTENT_STATES
 
     def test_thinking_excluded(self):
-        assert ScreenState.THINKING not in _CONTENT_STATES
+        assert TerminalView.THINKING not in _CONTENT_STATES
 
 
 class TestApplyOverrides:
@@ -89,30 +89,30 @@ class TestApplyOverrides:
 
     def test_startup_after_non_startup_becomes_unknown(self):
         proc = _make_processor()
-        event = ScreenEvent(state=ScreenState.STARTUP)
-        result = proc._apply_overrides(event, ScreenState.IDLE)
-        assert result.state == ScreenState.UNKNOWN
+        event = ScreenEvent(state=TerminalView.STARTUP)
+        result = proc._apply_overrides(event, TerminalView.IDLE)
+        assert result.state == TerminalView.UNKNOWN
 
     def test_startup_from_startup_stays(self):
         proc = _make_processor()
-        event = ScreenEvent(state=ScreenState.STARTUP)
-        result = proc._apply_overrides(event, ScreenState.STARTUP)
-        assert result.state == ScreenState.STARTUP
+        event = ScreenEvent(state=TerminalView.STARTUP)
+        result = proc._apply_overrides(event, TerminalView.STARTUP)
+        assert result.state == TerminalView.STARTUP
 
     def test_tool_request_suppressed_when_acted(self):
         state = _make_state()
         state.tool_acted = True
         proc = _make_processor(state=state)
-        event = ScreenEvent(state=ScreenState.TOOL_REQUEST)
-        result = proc._apply_overrides(event, ScreenState.STREAMING)
-        assert result.state == ScreenState.UNKNOWN
+        event = ScreenEvent(state=TerminalView.TOOL_REQUEST)
+        result = proc._apply_overrides(event, TerminalView.STREAMING)
+        assert result.state == TerminalView.UNKNOWN
 
     def test_non_tool_request_clears_acted(self):
         state = _make_state()
         state.tool_acted = True
         proc = _make_processor(state=state)
-        event = ScreenEvent(state=ScreenState.STREAMING)
-        proc._apply_overrides(event, ScreenState.TOOL_REQUEST)
+        event = ScreenEvent(state=TerminalView.STREAMING)
+        proc._apply_overrides(event, TerminalView.TOOL_REQUEST)
         assert state.tool_acted is False
 
 
@@ -122,45 +122,45 @@ class TestExtractionModeLogic:
     def test_streaming_state_returns_streaming(self):
         streaming = MagicMock()
         streaming.state = StreamingState.STREAMING
-        event = ScreenEvent(state=ScreenState.STREAMING)
+        event = ScreenEvent(state=TerminalView.STREAMING)
         mode = SessionProcessor._extraction_mode(
-            event, ScreenState.THINKING, ["line"], streaming,
+            event, TerminalView.THINKING, ["line"], streaming,
         )
         assert mode == ExtractionMode.STREAMING
 
     def test_idle_from_thinking_returns_fast_idle(self):
         streaming = MagicMock()
         streaming.state = StreamingState.THINKING
-        event = ScreenEvent(state=ScreenState.IDLE)
+        event = ScreenEvent(state=TerminalView.IDLE)
         mode = SessionProcessor._extraction_mode(
-            event, ScreenState.THINKING, [], streaming,
+            event, TerminalView.THINKING, [], streaming,
         )
         assert mode == ExtractionMode.FAST_IDLE
 
     def test_idle_with_changes_no_thinking_returns_ultra_fast(self):
         streaming = MagicMock()
         streaming.state = StreamingState.IDLE
-        event = ScreenEvent(state=ScreenState.IDLE)
+        event = ScreenEvent(state=TerminalView.IDLE)
         mode = SessionProcessor._extraction_mode(
-            event, ScreenState.UNKNOWN, ["changed"], streaming,
+            event, TerminalView.UNKNOWN, ["changed"], streaming,
         )
         assert mode == ExtractionMode.ULTRA_FAST
 
     def test_idle_from_idle_returns_none(self):
         streaming = MagicMock()
         streaming.state = StreamingState.IDLE
-        event = ScreenEvent(state=ScreenState.IDLE)
+        event = ScreenEvent(state=TerminalView.IDLE)
         mode = SessionProcessor._extraction_mode(
-            event, ScreenState.IDLE, [], streaming,
+            event, TerminalView.IDLE, [], streaming,
         )
         assert mode == ExtractionMode.NONE
 
     def test_thinking_returns_none(self):
         streaming = MagicMock()
         streaming.state = StreamingState.THINKING
-        event = ScreenEvent(state=ScreenState.THINKING)
+        event = ScreenEvent(state=TerminalView.THINKING)
         mode = SessionProcessor._extraction_mode(
-            event, ScreenState.STARTUP, [], streaming,
+            event, TerminalView.STARTUP, [], streaming,
         )
         assert mode == ExtractionMode.NONE
 
@@ -170,11 +170,11 @@ class TestHandleStateEntry:
 
     @pytest.mark.asyncio
     async def test_startup_seeds_dedup(self):
-        state = _make_state(prev=ScreenState.STARTUP)
+        state = _make_state(prev=TerminalView.STARTUP)
         proc = _make_processor(state=state)
-        event = ScreenEvent(state=ScreenState.STARTUP)
+        event = ScreenEvent(state=TerminalView.STARTUP)
         display = ["Banner line", ""]
-        await proc._handle_state_entry(event, ScreenState.STARTUP, display)
+        await proc._handle_state_entry(event, TerminalView.STARTUP, display)
         assert "Banner line" in state.dedup.sent_lines
 
     @pytest.mark.asyncio
@@ -183,28 +183,28 @@ class TestHandleStateEntry:
         state.dedup.sent_lines.add("old")
         state.dedup.thinking_snapshot.add("snap")
         proc = _make_processor(state=state)
-        event = ScreenEvent(state=ScreenState.USER_MESSAGE)
-        await proc._handle_state_entry(event, ScreenState.IDLE, [])
+        event = ScreenEvent(state=TerminalView.USER_MESSAGE)
+        await proc._handle_state_entry(event, TerminalView.IDLE, [])
         assert len(state.dedup.sent_lines) == 0
         assert len(state.dedup.thinking_snapshot) == 0
 
     @pytest.mark.asyncio
     async def test_thinking_entry_starts_typing(self):
-        state = _make_state(prev=ScreenState.IDLE)
+        state = _make_state(prev=TerminalView.IDLE)
         proc = _make_processor(state=state)
-        event = ScreenEvent(state=ScreenState.THINKING)
+        event = ScreenEvent(state=TerminalView.THINKING)
         await proc._handle_state_entry(
-            event, ScreenState.IDLE, ["────────────────────"],
+            event, TerminalView.IDLE, ["────────────────────"],
         )
         state.streaming.start_thinking.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_thinking_entry_snapshots_chrome(self):
-        state = _make_state(prev=ScreenState.IDLE)
+        state = _make_state(prev=TerminalView.IDLE)
         proc = _make_processor(state=state)
-        event = ScreenEvent(state=ScreenState.THINKING)
+        event = ScreenEvent(state=TerminalView.THINKING)
         await proc._handle_state_entry(
-            event, ScreenState.IDLE, ["────────────────────"],
+            event, TerminalView.IDLE, ["────────────────────"],
         )
         assert "────────────────────" in state.dedup.thinking_snapshot
 
@@ -212,9 +212,9 @@ class TestHandleStateEntry:
     async def test_auth_required_kills_session(self):
         state = _make_state()
         proc = _make_processor(state=state)
-        event = ScreenEvent(state=ScreenState.AUTH_REQUIRED)
+        event = ScreenEvent(state=TerminalView.AUTH_REQUIRED)
         result = await proc._handle_state_entry(
-            event, ScreenState.IDLE, [],
+            event, TerminalView.IDLE, [],
         )
         assert result is True
         proc.session_manager.kill_session.assert_called_once()
@@ -224,7 +224,7 @@ class TestHandleStateEntry:
         state = _make_state()
         proc = _make_processor(state=state)
         event = ScreenEvent(
-            state=ScreenState.TOOL_REQUEST,
+            state=TerminalView.TOOL_REQUEST,
             payload={
                 "question": "Allow?",
                 "options": ["Yes", "No"],
@@ -232,7 +232,7 @@ class TestHandleStateEntry:
             },
         )
         await proc._handle_state_entry(
-            event, ScreenState.STREAMING, [],
+            event, TerminalView.STREAMING, [],
         )
         state.streaming.finalize.assert_called()
         proc.bot.send_message.assert_called_once()
@@ -367,7 +367,7 @@ class TestProcessCycle:
 
     @pytest.mark.asyncio
     async def test_processes_raw_bytes(self):
-        state = _make_state(prev=ScreenState.IDLE)
+        state = _make_state(prev=TerminalView.IDLE)
         proc = _make_processor(state=state)
         emu = state.emulator
         emu.get_display.return_value = ["" for _ in range(36)]
@@ -376,7 +376,7 @@ class TestProcessCycle:
             "src.telegram.output_processor.classify_screen_state"
         ) as mock_classify:
             mock_classify.return_value = ScreenEvent(
-                state=ScreenState.IDLE,
+                state=TerminalView.IDLE,
             )
             await proc.process_cycle(b"raw data")
         emu.feed.assert_called_once_with(b"raw data")
@@ -396,7 +396,7 @@ class TestProcessCycleIntegration:
         bot.send_message.return_value = MagicMock(message_id=42)
         streaming = StreamingMessage(bot=bot, chat_id=99, edit_rate_limit=100)
         state = SessionOutputState(emulator=emu, streaming=streaming)
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
 
         proc = SessionProcessor(
             state=state, user_id=99, session_id=1,

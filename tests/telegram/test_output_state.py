@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from src.parsing.models import ScreenState
+from src.parsing.models import TerminalView
 from src.telegram.output_state import (
     SessionOutputState,
     _states,
@@ -32,7 +32,7 @@ class TestSessionOutputStateInit:
 
     def test_default_prev_state_is_startup(self):
         state = SessionOutputState(emulator=MagicMock(), streaming=MagicMock())
-        assert state.prev_state == ScreenState.STARTUP
+        assert state.prev_state == TerminalView.STARTUP
 
     def test_has_dedup(self):
         state = SessionOutputState(emulator=MagicMock(), streaming=MagicMock())
@@ -96,20 +96,20 @@ class TestToolActedFunctions:
     def test_is_tool_request_pending_true(self):
         bot = AsyncMock()
         state = get_or_create(user_id=1, session_id=2, bot=bot)
-        state.prev_state = ScreenState.TOOL_REQUEST
+        state.prev_state = TerminalView.TOOL_REQUEST
         assert is_tool_request_pending(user_id=1, session_id=2) is True
 
     def test_is_tool_request_pending_false_after_acted(self):
         bot = AsyncMock()
         state = get_or_create(user_id=1, session_id=2, bot=bot)
-        state.prev_state = ScreenState.TOOL_REQUEST
+        state.prev_state = TerminalView.TOOL_REQUEST
         mark_tool_acted(user_id=1, session_id=2)
         assert is_tool_request_pending(user_id=1, session_id=2) is False
 
     def test_is_tool_request_pending_false_when_different_state(self):
         bot = AsyncMock()
         state = get_or_create(user_id=1, session_id=2, bot=bot)
-        state.prev_state = ScreenState.STREAMING
+        state.prev_state = TerminalView.STREAMING
         assert is_tool_request_pending(user_id=1, session_id=2) is False
 
     def test_is_tool_request_pending_false_when_missing(self):

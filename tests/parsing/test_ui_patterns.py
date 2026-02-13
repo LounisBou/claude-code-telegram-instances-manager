@@ -1,40 +1,40 @@
-from src.parsing.ui_patterns import ScreenEvent, ScreenState, classify_text_line, extract_content
+from src.parsing.ui_patterns import ScreenEvent, TerminalView, classify_text_line, extract_content
 
 
-class TestScreenState:
+class TestTerminalView:
     def test_all_states_exist(self):
-        assert ScreenState.STARTUP.value == "startup"
-        assert ScreenState.IDLE.value == "idle"
-        assert ScreenState.THINKING.value == "thinking"
-        assert ScreenState.STREAMING.value == "streaming"
-        assert ScreenState.USER_MESSAGE.value == "user_message"
-        assert ScreenState.TOOL_REQUEST.value == "tool_request"
-        assert ScreenState.TOOL_RUNNING.value == "tool_running"
-        assert ScreenState.TOOL_RESULT.value == "tool_result"
-        assert ScreenState.BACKGROUND_TASK.value == "background_task"
-        assert ScreenState.PARALLEL_AGENTS.value == "parallel_agents"
-        assert ScreenState.TODO_LIST.value == "todo_list"
-        assert ScreenState.ERROR.value == "error"
-        assert ScreenState.UNKNOWN.value == "unknown"
+        assert TerminalView.STARTUP.value == "startup"
+        assert TerminalView.IDLE.value == "idle"
+        assert TerminalView.THINKING.value == "thinking"
+        assert TerminalView.STREAMING.value == "streaming"
+        assert TerminalView.USER_MESSAGE.value == "user_message"
+        assert TerminalView.TOOL_REQUEST.value == "tool_request"
+        assert TerminalView.TOOL_RUNNING.value == "tool_running"
+        assert TerminalView.TOOL_RESULT.value == "tool_result"
+        assert TerminalView.BACKGROUND_TASK.value == "background_task"
+        assert TerminalView.PARALLEL_AGENTS.value == "parallel_agents"
+        assert TerminalView.TODO_LIST.value == "todo_list"
+        assert TerminalView.ERROR.value == "error"
+        assert TerminalView.UNKNOWN.value == "unknown"
 
     def test_enum_count(self):
-        assert len(ScreenState) == 14
+        assert len(TerminalView) == 14
 
 
 class TestScreenEvent:
     def test_default_values(self):
-        event = ScreenEvent(state=ScreenState.UNKNOWN)
-        assert event.state == ScreenState.UNKNOWN
+        event = ScreenEvent(state=TerminalView.UNKNOWN)
+        assert event.state == TerminalView.UNKNOWN
         assert event.payload == {}
         assert event.raw_lines == []
 
     def test_with_payload(self):
         event = ScreenEvent(
-            state=ScreenState.THINKING,
+            state=TerminalView.THINKING,
             payload={"text": "Deploying robot army…"},
             raw_lines=["✶ Deploying robot army…"],
         )
-        assert event.state == ScreenState.THINKING
+        assert event.state == TerminalView.THINKING
         assert event.payload["text"] == "Deploying robot army…"
         assert len(event.raw_lines) == 1
 

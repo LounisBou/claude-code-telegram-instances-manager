@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.core.log_setup import TRACE
-from src.parsing.models import ScreenEvent, ScreenState
+from src.parsing.models import ScreenEvent, TerminalView
 from src.parsing.screen_classifier import classify_screen_state
 from src.parsing.ui_patterns import extract_content
 from src.telegram.keyboards import build_tool_approval_keyboard
@@ -63,13 +63,13 @@ class ExtractionMode(Enum):
 
 # States that produce user-visible output sent to Telegram.
 _CONTENT_STATES = {
-    ScreenState.STREAMING,
-    ScreenState.TOOL_RUNNING,
-    ScreenState.TOOL_RESULT,
-    ScreenState.ERROR,
-    ScreenState.TODO_LIST,
-    ScreenState.PARALLEL_AGENTS,
-    ScreenState.BACKGROUND_TASK,
+    TerminalView.STREAMING,
+    TerminalView.TOOL_RUNNING,
+    TerminalView.TOOL_RESULT,
+    TerminalView.ERROR,
+    TerminalView.TODO_LIST,
+    TerminalView.PARALLEL_AGENTS,
+    TerminalView.BACKGROUND_TASK,
 }
 
 
@@ -136,7 +136,7 @@ class SessionProcessor:
             )
 
         # === Phase 3: Finalization (IDLE only, after extraction) ===
-        if event.state == ScreenState.IDLE and prev != ScreenState.IDLE:
+        if event.state == TerminalView.IDLE and prev != TerminalView.IDLE:
             await self._finalize_response(
                 was_fast_idle, display, emu, streaming,
             )
@@ -146,30 +146,30 @@ class SessionProcessor:
     # ------------------------------------------------------------------
 
     def _apply_overrides(
-        self, event: ScreenEvent, prev: ScreenState,
+        self, event: ScreenEvent, prev: TerminalView,
     ) -> ScreenEvent:
         """Apply state overrides (STARTUP lockout, tool-acted suppression)."""
         # Once we've left STARTUP, never go back — the banner persists
-        if event.state == ScreenState.STARTUP and prev not in (
-            ScreenState.STARTUP, None,
+        if event.state == TerminalView.STARTUP and prev not in (
+            TerminalView.STARTUP, None,
         ):
             event = ScreenEvent(
-                state=ScreenState.UNKNOWN,
+                state=TerminalView.UNKNOWN,
                 payload=event.payload,
                 raw_lines=event.raw_lines,
             )
 
         # After tool callback, suppress stale TOOL_REQUEST detections
         if (
-            event.state == ScreenState.TOOL_REQUEST
+            event.state == TerminalView.TOOL_REQUEST
             and self.s.tool_acted
         ):
             event = ScreenEvent(
-                state=ScreenState.UNKNOWN,
+                state=TerminalView.UNKNOWN,
                 payload=event.payload,
                 raw_lines=event.raw_lines,
             )
-        elif event.state != ScreenState.TOOL_REQUEST:
+        elif event.state != TerminalView.TOOL_REQUEST:
             self.s.tool_acted = False
 
         return event
@@ -181,7 +181,7 @@ class SessionProcessor:
     async def _handle_state_entry(
         self,
         event: ScreenEvent,
-        prev: ScreenState,
+        prev: TerminalView,
         display: list[str],
     ) -> bool:
         """Handle state entry side effects.
@@ -189,17 +189,17 @@ class SessionProcessor:
         Returns True if the caller should break (session killed).
         """
         # Pre-seed dedup during STARTUP
-        if event.state == ScreenState.STARTUP:
+        if event.state == TerminalView.STARTUP:
             self.s.dedup.seed_from_display(display)
 
         # Reset dedup on new user interaction
-        if event.state == ScreenState.USER_MESSAGE:
+        if event.state == TerminalView.USER_MESSAGE:
             self.s.dedup.clear()
 
         # Auth screen: notify user and kill session
         if (
-            event.state == ScreenState.AUTH_REQUIRED
-            and prev != ScreenState.AUTH_REQUIRED
+            event.state == TerminalView.AUTH_REQUIRED
+            and prev != TerminalView.AUTH_REQUIRED
         ):
             await self.s.streaming.finalize()
             await self.bot.send_message(
@@ -222,16 +222,16 @@ class SessionProcessor:
 
         # THINKING entry: snapshot chrome and start typing
         if (
-            event.state == ScreenState.THINKING
-            and prev != ScreenState.THINKING
+            event.state == TerminalView.THINKING
+            and prev != TerminalView.THINKING
         ):
             self.s.dedup.snapshot_chrome(display)
             await self.s.streaming.start_thinking()
 
         # TOOL_REQUEST entry: send inline keyboard
         if (
-            event.state == ScreenState.TOOL_REQUEST
-            and prev != ScreenState.TOOL_REQUEST
+            event.state == TerminalView.TOOL_REQUEST
+            and prev != TerminalView.TOOL_REQUEST
         ):
             await self._send_tool_approval(event)
 
@@ -278,7 +278,7 @@ class SessionProcessor:
     @staticmethod
     def _extraction_mode(
         event: ScreenEvent,
-        prev: ScreenState,
+        prev: TerminalView,
         changed: list[str],
         streaming,
     ) -> ExtractionMode:
@@ -289,17 +289,17 @@ class SessionProcessor:
         ultra_fast = (
             not incomplete_cycle
             and changed
-            and prev not in (ScreenState.IDLE, ScreenState.STARTUP, None)
+            and prev not in (TerminalView.IDLE, TerminalView.STARTUP, None)
         )
         should_extract = event.state in _CONTENT_STATES or (
-            event.state == ScreenState.IDLE
+            event.state == TerminalView.IDLE
             and (incomplete_cycle or ultra_fast)
         )
         if not should_extract:
             return ExtractionMode.NONE
 
         fast_idle = (
-            event.state == ScreenState.IDLE
+            event.state == TerminalView.IDLE
             and streaming.state == StreamingState.THINKING
         )
         if fast_idle:
@@ -398,7 +398,7 @@ class SessionProcessor:
     def _log_state(
         self,
         event: ScreenEvent,
-        prev: ScreenState,
+        prev: TerminalView,
         display: list[str],
     ) -> None:
         """Log state transitions."""
