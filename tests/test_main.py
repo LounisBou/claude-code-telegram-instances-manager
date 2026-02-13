@@ -17,6 +17,7 @@ class TestOnStartup:
             "config": MagicMock(
                 telegram=MagicMock(authorized_users=[111]),
             ),
+            "session_manager": MagicMock(),
         }
         app.bot.set_my_commands = AsyncMock()
         app.bot.send_message = AsyncMock()
@@ -116,6 +117,7 @@ class TestBuildApp:
             "config": MagicMock(
                 telegram=MagicMock(authorized_users=[111]),
             ),
+            "session_manager": MagicMock(),
         }
         app.bot.set_my_commands = AsyncMock()
         app.bot.send_message = AsyncMock()

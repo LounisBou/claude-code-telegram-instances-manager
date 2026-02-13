@@ -269,3 +269,48 @@ class TestSessionManagerLogging:
             with caplog.at_level(logging.DEBUG, logger="src.session_manager"):
                 await sm.create_session(111, "test-project", "/tmp/test")
         assert any("create_session" in r.message for r in caplog.records)
+
+
+class TestClaudeSessionPipeline:
+    def test_session_has_pipeline_default_none(self):
+        session = ClaudeSession(
+            session_id=1, user_id=111, project_name="proj",
+            project_path="/a", process=MagicMock(),
+        )
+        assert session.pipeline is None
+
+    def test_session_accepts_pipeline(self):
+        from src.telegram.pipeline_state import PipelineState
+        ps = MagicMock(spec=PipelineState)
+        session = ClaudeSession(
+            session_id=1, user_id=111, project_name="proj",
+            project_path="/a", process=MagicMock(), pipeline=ps,
+        )
+        assert session.pipeline is ps
+
+
+class TestSetBot:
+    def test_set_bot_stores_bot(self, manager):
+        bot = MagicMock()
+        manager.set_bot(bot, edit_rate_limit=5)
+        assert manager._bot is bot
+        assert manager._edit_rate_limit == 5
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_bot_creates_pipeline(self, manager):
+        bot = AsyncMock()
+        manager.set_bot(bot, edit_rate_limit=3)
+        with patch("src.session_manager.ClaudeProcess") as MockProc:
+            MockProc.return_value = _mock_process()
+            session = await manager.create_session(111, "proj", "/a/proj")
+        assert session.pipeline is not None
+        from src.telegram.pipeline_state import PipelinePhase
+        assert session.pipeline.phase == PipelinePhase.DORMANT
+
+    @pytest.mark.asyncio
+    async def test_create_session_without_bot_has_no_pipeline(self, manager):
+        # manager fixture doesn't call set_bot, so _bot is None
+        with patch("src.session_manager.ClaudeProcess") as MockProc:
+            MockProc.return_value = _mock_process()
+            session = await manager.create_session(111, "proj", "/a/proj")
+        assert session.pipeline is None

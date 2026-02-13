@@ -138,6 +138,10 @@ async def _on_startup(app: Application) -> None:
         except Exception as exc:
             logger.warning("Failed to send startup message to %d: %s", user_id, exc)
 
+    # Wire bot reference so new sessions get PipelineState
+    session_manager = app.bot_data["session_manager"]
+    session_manager.set_bot(app.bot, config.telegram.edit_rate_limit)
+
 
 async def _send_shutdown_message(bot, config, session_manager) -> None:
     """Send shutdown notification to all authorized users.

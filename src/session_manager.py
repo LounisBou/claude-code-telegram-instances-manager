@@ -10,6 +10,7 @@ from src.core.database import Database
 from src.file_handler import FileHandler
 from src.core.log_setup import TRACE
 from src.telegram.output_state import cleanup as _cleanup_output_state
+from src.telegram.pipeline_state import PipelineState
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class ClaudeSession:
     project_name: str
     project_path: str
     process: ClaudeProcess
+    pipeline: PipelineState | None = None
     status: str = "active"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     db_session_id: int = 0
@@ -67,6 +69,13 @@ class SessionManager:
         # {user_id: active_session_id}
         self._active: dict[int, int] = {}
         self._next_id: dict[int, int] = {}
+        self._bot = None
+        self._edit_rate_limit: int = 3
+
+    def set_bot(self, bot, edit_rate_limit: int = 3) -> None:
+        """Store bot reference for creating PipelineState on new sessions."""
+        self._bot = bot
+        self._edit_rate_limit = edit_rate_limit
 
     async def create_session(
         self, user_id: int, project_name: str, project_path: str
@@ -108,12 +117,24 @@ class SessionManager:
             user_id=user_id, project=project_name, project_path=project_path
         )
 
+        pipeline = None
+        if self._bot is not None:
+            from src.parsing.terminal_emulator import TerminalEmulator
+            from src.telegram.streaming_message import StreamingMessage
+            pipeline = PipelineState(
+                emulator=TerminalEmulator(),
+                streaming=StreamingMessage(
+                    bot=self._bot, chat_id=user_id, edit_rate_limit=self._edit_rate_limit,
+                ),
+            )
+
         session = ClaudeSession(
             session_id=session_id,
             user_id=user_id,
             project_name=project_name,
             project_path=project_path,
             process=process,
+            pipeline=pipeline,
             db_session_id=db_id,
         )
 
