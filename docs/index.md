@@ -44,8 +44,8 @@ graph LR
     CP --> PTY["Claude Code PTY"]
     PTY --> TE["terminal_emulator.py<br/>(pyte)"]
     TE --> SC["screen_classifier.py"]
-    SC --> EC["extract_content()"]
-    EC --> FMT["formatter.py"]
+    SC --> PR["pipeline_runner.py"]
+    PR --> FMT["formatter.py"]
     FMT --> TG
 ```
 
@@ -55,7 +55,7 @@ graph LR
 
 ```
 src/
-  parsing/          # PTY bytes -> ScreenState (terminal_emulator, ui_patterns, detectors, screen_classifier)
+  parsing/          # PTY bytes -> TerminalView (terminal_emulator, ui_patterns, detectors, screen_classifier)
   telegram/         # Telegram interaction (formatter, keyboards, handlers, commands, output)
   core/             # Shared infra (config, database, log_setup)
   main.py           # Entry point & app wiring

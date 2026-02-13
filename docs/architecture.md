@@ -8,9 +8,14 @@ graph TB
 
     subgraph "src/telegram/"
         H["handlers.py"]
+        CB["callbacks.py"]
         CMD["commands.py"]
         KB["keyboards.py"]
         OUT["output.py"]
+        PR["pipeline_runner.py"]
+        PS["pipeline_state.py"]
+        OP["output_pipeline.py"]
+        STR["streaming_message.py"]
         FMT["formatter.py"]
     end
 
@@ -24,6 +29,8 @@ graph TB
         SC["screen_classifier.py"]
         DET["detectors.py"]
         UP["ui_patterns.py"]
+        CC["content_classifier.py"]
+        MOD["models.py"]
     end
 
     subgraph "src/core/"
@@ -33,11 +40,18 @@ graph TB
     end
 
     TG <--> H
+    TG <--> CB
     TG <--> CMD
     H --> SM
     CMD --> SM
-    OUT --> SM
-    OUT --> FMT
+    CB --> SM
+    OUT --> PR
+    PR --> PS
+    PR --> OP
+    PR --> FMT
+    PR --> KB
+    OP --> CC
+    OP --> FMT
     SM <--> CP
     SM --> DB
     CP --> TE
@@ -47,7 +61,7 @@ graph TB
 ```
 
 User messages flow left to right: Telegram -> bot handlers -> session manager -> Claude CLI process.
-Responses flow right to left: PTY output -> pyte terminal -> parser/classifier -> Telegram message.
+Responses flow right to left: PTY output -> pyte terminal -> screen classifier -> PipelineRunner -> StreamingMessage -> Telegram.
 
 ## Module Responsibilities
 
@@ -55,22 +69,29 @@ Responses flow right to left: PTY output -> pyte terminal -> parser/classifier -
 |---|---|
 | `src/main.py` | Application wiring, startup, signal handling, and entry point |
 | **src/telegram/** | |
-| `src/telegram/handlers.py` | Core Telegram handlers: `/start`, `/sessions`, `/exit`, text messages, callback queries |
+| `src/telegram/handlers.py` | Core Telegram handlers: `/start`, `/sessions`, `/exit`, text messages, unknown commands |
+| `src/telegram/callbacks.py` | Inline keyboard callback query dispatch by prefix (`project:`, `switch:`, `kill:`, `update:`, `tool:`, `page:`) |
 | `src/telegram/commands.py` | Extended command handlers: `/history`, `/git`, `/context`, `/download`, `/update_claude`, file uploads |
 | `src/telegram/keyboards.py` | Authorization gate, `BOT_COMMANDS` list, inline keyboard builders, history formatting |
-| `src/telegram/output.py` | `poll_output()` async loop -- polls sessions, classifies state, streams to Telegram |
-| `src/telegram/formatter.py` | Telegram MarkdownV2 escaping, message splitting, screen state rendering |
+| `src/telegram/output.py` | `poll_output()` thin async loop — reads PTY, classifies screen, dispatches to `PipelineRunner` |
+| `src/telegram/pipeline_runner.py` | Transition-table-driven event processor: `(PipelinePhase, TerminalView) → (next_phase, actions)` |
+| `src/telegram/pipeline_state.py` | `PipelinePhase` enum (4 values), `PipelineState` per-session state, `mark_tool_acted`/`is_tool_request_pending` helpers |
+| `src/telegram/output_pipeline.py` | Span manipulation utilities, `render_ansi` ANSI-aware rendering pipeline, `strip_response_markers` |
+| `src/telegram/streaming_message.py` | `StreamingMessage` edit-in-place Telegram message with rate limiting, overflow handling |
+| `src/telegram/formatter.py` | HTML formatting (`format_html`), text reflowing (`reflow_text`), region rendering (`render_regions`), message splitting for 4096-char limit |
 | **src/parsing/** | |
-| `src/parsing/terminal_emulator.py` | pyte-based virtual terminal; `get_display()` (full screen) and `get_changes()` (delta) |
-| `src/parsing/ui_patterns.py` | `ScreenState` enum (13 states), compiled regex patterns, `classify_line()` for 14 line types |
+| `src/parsing/terminal_emulator.py` | pyte-based virtual terminal; `get_display()` (full screen), `get_attributed_changes()` (incremental delta with ANSI attributes) |
+| `src/parsing/ui_patterns.py` | Compiled regex patterns, `classify_text_line()` for 15 line types, `CHROME_CATEGORIES` constant |
+| `src/parsing/models.py` | Shared data types: `TerminalView` enum (14 observations), `ScreenEvent` dataclass |
+| `src/parsing/content_classifier.py` | ANSI-aware semantic region classifier using pyte character attributes; produces `ContentRegion` objects |
 | `src/parsing/detectors.py` | Structured detectors for tool requests, TODO lists, parallel agents, thinking, background tasks |
-| `src/parsing/screen_classifier.py` | `classify_screen_state()` -- 3-pass priority classifier returning a single `ScreenState` |
+| `src/parsing/screen_classifier.py` | `classify_screen_state()` — 3-pass priority classifier returning a `ScreenEvent` |
 | **src/core/** | |
 | `src/core/config.py` | YAML config loading and validation with typed dataclasses |
 | `src/core/database.py` | Async SQLite wrapper for persisting session records |
 | `src/core/log_setup.py` | Custom TRACE level (5), console/file handler setup |
 | **Top-level src/** | |
-| `src/session_manager.py` | Per-user session lifecycle management and output buffering |
+| `src/session_manager.py` | Per-user session lifecycle management; owns `PipelineState` per session |
 | `src/claude_process.py` | Async wrapper around pexpect-managed Claude Code CLI subprocess |
 | `src/project_scanner.py` | Project discovery by scanning for `.git`/`.claude` directories |
 | `src/git_info.py` | Git branch and GitHub PR metadata retrieval |
@@ -119,9 +140,8 @@ sequenceDiagram
     participant CP as ClaudeProcess
     participant EMU as terminal_emulator.py (pyte)
     participant CLS as screen_classifier.py
-    participant EXT as extract_content (ui_patterns.py)
-    participant OUT as output.py (OutputBuffer)
-    participant FMT as formatter.py
+    participant PR as PipelineRunner
+    participant STR as StreamingMessage
     participant T as Telegram API
 
     loop Every 300ms (poll_output in output.py)
@@ -131,31 +151,77 @@ sequenceDiagram
             EMU->>EMU: feed(raw) — update pyte screen
             EMU-->>CLS: get_display() — full 40x120 grid
             CLS->>CLS: 3-pass priority detection
-            CLS-->>OUT: ScreenState + payload
+            CLS-->>PR: ScreenEvent(state=TerminalView.XXX)
 
-            EMU-->>EXT: get_changes() — only changed lines
-            EXT->>EXT: Filter UI chrome, keep content
-            EXT-->>OUT: Extracted text
+            PR->>PR: Look up (current_phase, observation)<br/>in transition table
+            PR->>PR: Execute actions in order
 
-            Note over EXT,OUT: Only _CONTENT_STATES produce output:<br/>STREAMING, TOOL_REQUEST, TOOL_RUNNING,<br/>TOOL_RESULT, ERROR, TODO_LIST,<br/>PARALLEL_AGENTS, BACKGROUND_TASK
-
-            alt Buffer ready (debounce expired or max size)
-                OUT->>FMT: format_output(text, state)
-                FMT-->>OUT: MarkdownV2 message
-                OUT->>T: send_message(text)
+            alt extract_and_send action
+                EMU-->>PR: get_attributed_changes() — delta spans with ANSI attrs
+                PR->>PR: strip_response_markers → classify_regions → render_regions
+                PR->>STR: append_content(html)
+                STR->>T: edit_message (throttled)
             end
+
+            alt finalize action
+                EMU-->>PR: get_full_display() + get_full_attributed_lines()
+                PR->>PR: render_ansi() — full re-render
+                PR->>STR: replace_content(html) + finalize()
+                STR->>T: final edit_message
+            end
+
+            PR->>PR: Advance phase to next_phase
         end
     end
 ```
 
-**Two separate reads from the emulator per cycle** (in `src/telegram/output.py`):
-1. `get_display()` returns the full screen for state classification via `src/parsing/screen_classifier.py` (needs full context)
-2. `get_changes()` returns only lines that changed since last read (incremental delta for content extraction via `src/parsing/ui_patterns.py`, avoids re-sending the entire screen every cycle)
+**Two separate read patterns from the emulator:**
+1. `get_display()` returns the full 40x120 screen for state classification (the classifier needs spatial context to detect screen-wide patterns like tool approval menus)
+2. `get_attributed_changes()` returns only lines that changed since last read, **with ANSI color attributes** — used for incremental content extraction and rendering. This avoids re-sending the entire screen every cycle.
 
-## Screen State Machine
+**Finalize re-render:** When a response completes (STREAMING → IDLE), the pipeline does a full re-render from the complete screen via `render_ansi()`. This corrects any artifacts from incremental streaming (e.g., partial code blocks, missed formatting) and produces the final clean message.
 
-The classifier recognizes 13 distinct screen states. States in green produce
-content sent to Telegram; states in grey are suppressed (UI chrome, transient).
+## Terminal Observation and Pipeline Phase
+
+The output path uses two complementary enums:
+
+**`TerminalView`** (14 values, `src/parsing/models.py`) — pure observation of what the terminal screen looks like right now. One observation is produced per poll cycle by `classify_screen_state()`.
+
+**`PipelinePhase`** (4 values, `src/telegram/pipeline_state.py`) — behavioral state of the bot for one session:
+- **DORMANT** — idle, no pending Telegram message
+- **THINKING** — "Thinking..." placeholder sent, typing indicator active
+- **STREAMING** — content flowing, editing message in place
+- **TOOL_PENDING** — tool approval keyboard sent, waiting for user action
+
+The `PipelineRunner` transition table maps every `(PipelinePhase, TerminalView)` pair to a `(next_phase, actions)` tuple. Actions are method name suffixes dispatched in order:
+
+| Action | What it does |
+|--------|-------------|
+| `send_thinking` | Start typing indicator, send "Thinking..." placeholder |
+| `extract_and_send` | Get attributed delta, strip markers, classify regions, render HTML, append to streaming message |
+| `finalize` | Full re-render from complete screen, finalize streaming message |
+| `send_keyboard` | Build and send tool approval inline keyboard |
+| `send_auth_warning` | Send auth warning, kill session (one-shot guard) |
+
+Per-action error isolation: each action is wrapped in `try/except` so partial failures don't prevent subsequent actions from executing. The phase always advances after all actions complete.
+
+### Key transitions
+
+| From | Observation | To | Actions | Why |
+|------|-------------|-----|---------|-----|
+| DORMANT | THINKING | THINKING | send_thinking | Claude started processing |
+| DORMANT | STREAMING | STREAMING | extract_and_send | Immediate content (no thinking phase) |
+| THINKING | STREAMING | STREAMING | extract_and_send | Response content appeared |
+| THINKING | IDLE | DORMANT | extract_and_send, finalize | Fast response within one poll cycle |
+| STREAMING | IDLE | DORMANT | finalize | Response complete |
+| STREAMING | TOOL_REQUEST | TOOL_PENDING | finalize, send_keyboard | Tool needs approval |
+| STREAMING | THINKING | THINKING | finalize, send_thinking | Claude paused to think mid-response |
+| TOOL_PENDING | TOOL_RUNNING | STREAMING | *(none)* | User approved, tool executing |
+
+## Screen Classifier
+
+The classifier recognizes 14 distinct terminal observations. The `PipelineRunner`
+determines what to do with each observation based on the current `PipelinePhase`.
 
 ```mermaid
 stateDiagram-v2
@@ -183,18 +249,15 @@ stateDiagram-v2
     STREAMING --> PARALLEL_AGENTS: Launches agents
     STREAMING --> BACKGROUND_TASK: Background work
 
-    state "Sent to Telegram (_CONTENT_STATES)" as content {
+    state "Content-bearing (trigger extract_and_send)" as content {
         STREAMING
-        TOOL_REQUEST
-        TOOL_RUNNING
-        TOOL_RESULT
         ERROR
         TODO_LIST
         PARALLEL_AGENTS
         BACKGROUND_TASK
     }
 
-    state "Suppressed (UI chrome)" as suppressed {
+    state "Suppressed (no actions from DORMANT)" as suppressed {
         STARTUP
         IDLE
         USER_MESSAGE
@@ -202,8 +265,18 @@ stateDiagram-v2
     }
 
     note right of THINKING
-        Sends "_Thinking..._" once
-        on transition, then suppressed
+        Sends "Thinking..." once
+        on transition to THINKING phase
+    end note
+
+    note right of TOOL_REQUEST
+        Sends inline keyboard once
+        on transition to TOOL_PENDING phase
+    end note
+
+    note right of AUTH_REQUIRED
+        Sends auth warning once
+        (one-shot guard), kills session
     end note
 ```
 
@@ -212,9 +285,10 @@ stateDiagram-v2
 The classifier uses a 3-pass priority system to resolve ambiguity when multiple
 patterns are present on screen simultaneously:
 
-| Pass | Step | State | Detection Method |
-|------|------|-------|-----------------|
+| Pass | Step | Observation | Detection Method |
+|------|------|-------------|-----------------|
 | 1 (screen-wide) | 1 | TOOL_REQUEST | Selection menu with ❯ cursor + numbered options |
+| 1 | 1b | AUTH_REQUIRED | Login/auth prompt patterns |
 | 1 | 2 | TODO_LIST | Task count header + checkbox items |
 | 1 | 3 | PARALLEL_AGENTS | Agent launch count + tree items |
 | 2 (bottom-up) | 4 | THINKING | Star character + ellipsis in bottom 8 lines |
@@ -231,14 +305,33 @@ patterns are present on screen simultaneously:
 **pyte banner persistence:** The Claude Code startup banner (logo + version)
 stays at the top of pyte's screen buffer permanently because the TUI redraws
 in-place rather than scrolling. Step 11 guards against this by skipping STARTUP
-when a `⏺` response marker exists anywhere on screen. The poll loop has an
-additional guard that converts STARTUP to UNKNOWN once the session has left
-the STARTUP state.
+when a `⏺` response marker exists anywhere on screen.
 
-## Content Extraction
+## Content Extraction and Rendering
 
-`extract_content()` (in `src/parsing/ui_patterns.py`) filters display lines through `classify_line()` which
-recognizes 14 line types:
+Content extraction uses the ANSI-aware pipeline rather than plain-text filtering.
+The pipeline operates on `CharSpan` objects from the pyte terminal emulator, which
+carry text along with foreground color, bold, and italic attributes.
+
+### Streaming extraction (incremental)
+
+During streaming, `_extract_and_send` in `PipelineRunner`:
+1. Calls `emulator.get_attributed_changes()` — returns only lines changed since last read, as `list[list[CharSpan]]`
+2. `strip_response_markers()` — filters terminal chrome lines and strips `⏺`/`⎿` markers using `classify_text_line()`
+3. `classify_regions()` — groups spans into semantic regions (code blocks, prose, headings, lists) using ANSI color attributes
+4. `render_regions()` → `reflow_text()` → `format_html()` — produces Telegram HTML
+
+### Full re-render (finalize)
+
+When a response completes, `_finalize` does a full re-render:
+1. Calls `emulator.get_full_display()` and `get_full_attributed_lines()` — complete screen
+2. `filter_response_attr()` — filters to response content only, strips prompt lines and chrome
+3. `classify_regions()` → `render_regions()` → `reflow_text()` → `format_html()`
+4. Replaces the streaming message content with the clean final render
+
+### Line classification
+
+`classify_text_line()` in `src/parsing/ui_patterns.py` recognizes 15 line types:
 
 | Kept (sent to user) | Stripped (UI chrome) |
 |---------------------|---------------------|
@@ -253,6 +346,7 @@ recognizes 14 line types:
 | | `diff_delimiter` — ╌ lines |
 | | `todo_item` — ◻◼✔ checkboxes |
 | | `agent_tree` — ├└─ tree items |
+| | `tool_running` — running/waiting status |
 
 ## Startup & Shutdown
 
@@ -270,6 +364,7 @@ sequenceDiagram
     M->>DB: db.initialize()
     M->>DB: mark_active_sessions_lost()
     M->>A: set_my_commands(BOT_COMMANDS)
+    M->>SM: set_bot(app.bot, edit_rate_limit)
     M->>A: app.start() + updater.start_polling()
     M->>PO: asyncio.create_task(poll_output)
     M->>M: await stop_event (SIGINT/SIGTERM)
@@ -289,19 +384,34 @@ callback only fires with `run_polling()` or `run_webhook()`. This application
 uses manual startup (`initialize()` + `start()` + `updater.start_polling()`)
 for signal handling control, so `_on_startup()` must be called explicitly.
 
+**`set_bot()` wiring:** `session_manager.set_bot(bot, edit_rate_limit)` is called
+during startup so that sessions created later automatically get a `PipelineState`
+(with terminal emulator + streaming message). Without this call, sessions have
+`pipeline=None` and output streaming is disabled.
+
 ## Key Design Decisions
 
-### 1. ScreenState Classifier
+### 1. Transition-Table-Driven Pipeline
 
-The parser uses a 13-state enum (`ScreenState` in `src/parsing/ui_patterns.py`) to classify the full terminal screen rather than reacting to individual lines. Classification runs a 3-pass priority detection in `classify_screen_state()` (`src/parsing/screen_classifier.py`):
+The output pipeline uses a single `(PipelinePhase, TerminalView) → (next_phase, actions)` transition table in `src/telegram/pipeline_runner.py`. This replaces an earlier design with three interacting state machines.
 
-- **Pass 1 (screen-wide):** tool approval menus, TODO lists, parallel agents.
+Benefits:
+- **All behavior is visible in one table** — no hidden interactions between state machines.
+- **Adding new observations** (e.g., a new Claude Code UI element) requires adding one row per phase to the table.
+- **Import-time validation** ensures every action string in the table maps to a real method on `PipelineRunner`.
+- **Per-action error isolation** — each action is wrapped in try/except, so partial failures don't block subsequent actions or prevent phase advancement.
+
+### 2. TerminalView Classifier
+
+The parser uses a 14-value `TerminalView` enum (`src/parsing/models.py`) to classify the full terminal screen rather than reacting to individual lines. Classification runs a 3-pass priority detection in `classify_screen_state()` (`src/parsing/screen_classifier.py`):
+
+- **Pass 1 (screen-wide):** tool approval menus, auth screens, TODO lists, parallel agents.
 - **Pass 2 (bottom-up):** thinking indicators, running tools, tool results, background tasks.
-- **Pass 3 (last line):** idle prompt, streaming, user message, startup, error, unknown.
+- **Pass 3 (last line + fallback):** idle prompt, streaming, user message, startup, error, unknown.
 
-Five dedicated detector functions in `src/parsing/detectors.py` feed into `classify_screen_state()`, which returns a single authoritative state used by downstream formatting and control logic.
+Five dedicated detector functions in `src/parsing/detectors.py` feed into `classify_screen_state()`, which returns a `ScreenEvent` used by the `PipelineRunner` transition table.
 
-### 2. Capture-Driven Parsing
+### 3. Capture-Driven Parsing
 
 Every parser change is validated against a corpus of real terminal snapshots captured from live Claude Code sessions using `scripts/capture_claude_ui.py`. This ensures:
 
@@ -309,23 +419,24 @@ Every parser change is validated against a corpus of real terminal snapshots cap
 - Regressions from pyte rendering artifacts (e.g., trailing U+FFFD on separator lines) are caught immediately.
 - New Claude Code UI patterns are added to the test corpus before parser code is modified.
 
-### 3. Tool Approval Forwarding
+### 4. Tool Approval Forwarding
 
-All tool approval prompts detected by the screen state classifier (`src/parsing/screen_classifier.py`) are forwarded to the Telegram user as interactive inline keyboards (built by `src/telegram/keyboards.py`). The bot never auto-approves any tool use. This gives the human operator full control over file writes, command execution, and other side-effecting actions initiated by Claude Code.
+All tool approval prompts detected by the screen state classifier are forwarded to the Telegram user as interactive inline keyboards (built by `src/telegram/keyboards.py`). The bot never auto-approves any tool use. This gives the human operator full control over file writes, command execution, and other side-effecting actions initiated by Claude Code.
 
-### 4. pyte Terminal Emulator
+### 5. pyte Terminal Emulator
 
 Instead of regex-stripping ANSI escape sequences from raw PTY output, `src/parsing/terminal_emulator.py` feeds bytes into a real virtual terminal emulator (`pyte.Screen`). This approach:
 
 - Correctly handles cursor movement, screen redraws, and partial overwrites that Claude Code's TUI produces.
 - Provides a stable 2D character grid to read from, eliminating an entire class of escape-sequence parsing bugs.
-- Trades some performance for correctness -- the pyte screen is the single source of truth for what the user would see in a real terminal.
+- Preserves ANSI color attributes on each character, which the content classifier uses to distinguish code blocks from prose.
+- Trades some performance for correctness — the pyte screen is the single source of truth for what the user would see in a real terminal.
 
-### 5. Incremental Content Extraction
+### 6. Dual-Read Pattern
 
-The output pipeline (`src/telegram/output.py`) uses two separate reads from the terminal emulator (`src/parsing/terminal_emulator.py`) each cycle:
+The output pipeline uses two separate reads from the terminal emulator each cycle:
 
-- `get_display()` returns the full 40x120 screen for state classification via `src/parsing/screen_classifier.py` (the classifier needs full context to detect screen-wide patterns like tool approval menus).
-- `get_changes()` returns only lines that changed since the last read, used for content extraction via `src/parsing/ui_patterns.py`. This prevents re-sending the entire visible screen every 300ms.
+- `get_display()` returns the full 40x120 screen for state classification (the classifier needs full spatial context to detect screen-wide patterns like tool approval menus).
+- `get_attributed_changes()` returns only lines that changed since the last read, **with ANSI attributes** — used for incremental content extraction. This prevents re-sending the entire visible screen every 300ms.
 
 This separation is critical: classification needs the full picture, but content extraction must be incremental to avoid duplicate messages in Telegram.
