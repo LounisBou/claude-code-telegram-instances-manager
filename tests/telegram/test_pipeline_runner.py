@@ -24,6 +24,8 @@ def _make_pipeline_state(phase: PipelinePhase = PipelinePhase.DORMANT):
     emu.get_full_attributed_lines.return_value = [[] for _ in range(40)]
     streaming = AsyncMock()
     streaming.accumulated = ""
+    # replace_content is sync on the real StreamingMessage
+    streaming.replace_content = MagicMock()
     ps = PipelineState(emulator=emu, streaming=streaming)
     ps.phase = phase
     return ps
@@ -464,3 +466,78 @@ class TestActionDetails:
         with patch.object(runner, "_extract_and_send", new_callable=AsyncMock) as mock_extract:
             await runner.process(_event(TerminalView.ERROR))
             mock_extract.assert_called_once()
+
+
+# ===================================================================
+# Integration tests: real extraction & finalization
+# ===================================================================
+
+
+class TestExtractAndSendIntegration:
+    """Test _extract_and_send with real rendering."""
+
+    @pytest.mark.asyncio
+    async def test_no_changes_skips_send(self):
+        runner, ps, _, _ = _make_runner(PipelinePhase.STREAMING)
+        ps.emulator.get_attributed_changes.return_value = []
+        await runner._extract_and_send(_event(TerminalView.STREAMING))
+        ps.streaming.append_content.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chrome_only_skips_send(self):
+        """Changes that are all chrome (separators) produce no output."""
+        from src.parsing.terminal_emulator import CharSpan
+        runner, ps, _, _ = _make_runner(PipelinePhase.STREAMING)
+        ps.emulator.get_attributed_changes.return_value = [
+            [CharSpan(text="─" * 60, fg="default", bold=False, italic=False)]
+        ]
+        await runner._extract_and_send(_event(TerminalView.STREAMING))
+        ps.streaming.append_content.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_content_changes_sent(self):
+        """Real content changes produce output."""
+        from src.parsing.terminal_emulator import CharSpan
+        runner, ps, _, _ = _make_runner(PipelinePhase.STREAMING)
+        ps.emulator.get_attributed_changes.return_value = [
+            [CharSpan(text="Hello world", fg="default", bold=False, italic=False)]
+        ]
+        await runner._extract_and_send(_event(TerminalView.STREAMING))
+        ps.streaming.append_content.assert_called_once()
+        html_arg = ps.streaming.append_content.call_args[0][0]
+        assert "Hello" in html_arg
+
+
+class TestFinalizeIntegration:
+    """Test _finalize with real ANSI re-render."""
+
+    @pytest.mark.asyncio
+    async def test_finalize_clears_history(self):
+        runner, ps, _, _ = _make_runner(PipelinePhase.STREAMING)
+        ps.streaming.accumulated = ""
+        await runner._finalize(_event(TerminalView.IDLE))
+        ps.streaming.finalize.assert_called_once()
+        ps.emulator.clear_history.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_finalize_rerenders_when_has_content(self):
+        from src.parsing.terminal_emulator import CharSpan
+        runner, ps, _, _ = _make_runner(PipelinePhase.STREAMING)
+        ps.streaming.accumulated = "previous content"
+        ps.emulator.get_full_display.return_value = ["❯ hello", "⏺ Response text", ""]
+        ps.emulator.get_full_attributed_lines.return_value = [
+            [CharSpan(text="❯ hello", fg="default", bold=False, italic=False)],
+            [CharSpan(text="⏺ Response text", fg="default", bold=False, italic=False)],
+            [CharSpan(text="", fg="default", bold=False, italic=False)],
+        ]
+        await runner._finalize(_event(TerminalView.IDLE))
+        ps.streaming.replace_content.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_finalize_skips_rerender_when_no_accumulated(self):
+        runner, ps, _, _ = _make_runner(PipelinePhase.STREAMING)
+        ps.streaming.accumulated = ""
+        await runner._finalize(_event(TerminalView.IDLE))
+        ps.streaming.replace_content.assert_not_called()
+        ps.streaming.finalize.assert_called_once()
+        ps.emulator.clear_history.assert_called_once()

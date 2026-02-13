@@ -14,6 +14,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.parsing.models import ScreenEvent, TerminalView
 from src.telegram.keyboards import build_tool_approval_keyboard
+from src.parsing.content_classifier import classify_regions
+from src.telegram.formatter import format_html, reflow_text, render_regions
+from src.telegram.output_pipeline import render_ansi, strip_response_markers
 from src.telegram.pipeline_state import PipelinePhase, PipelineState
 
 if TYPE_CHECKING:
@@ -221,16 +224,41 @@ class PipelineRunner:
         )
 
     async def _extract_and_send(self, event: ScreenEvent) -> None:
-        """Extract content changes and send to Telegram (stub).
+        """Extract content changes via ANSI pipeline and send to Telegram."""
+        emu = self.state.emulator
 
-        Full ANSI rendering will be wired in Phase 5.
-        """
-        logger.debug(
-            "extract_and_send stub: user=%d sid=%d view=%s",
-            self.user_id, self.session_id, event.state.name,
-        )
+        # Get attributed delta lines (changed since last check)
+        attr_changes = emu.get_attributed_changes()
+        if not attr_changes:
+            return
+
+        # Filter chrome and strip markers
+        filtered = strip_response_markers(attr_changes)
+        if not filtered:
+            return
+
+        # Render through ANSI pipeline
+        regions = classify_regions(filtered)
+        rendered = render_regions(regions)
+        html = format_html(reflow_text(rendered))
+
+        if not html.strip():
+            return
+
+        await self.state.streaming.append_content(html)
 
     async def _finalize(self, event: ScreenEvent) -> None:
-        """Finalize the current streaming message and clear emulator history."""
-        await self.state.streaming.finalize()
-        self.state.emulator.clear_history()
+        """Finalize: optionally re-render via full ANSI pipeline, then finalize message."""
+        emu = self.state.emulator
+        streaming = self.state.streaming
+
+        # Only re-render if we have accumulated streaming content
+        if streaming.accumulated:
+            source = emu.get_full_display()
+            attr = emu.get_full_attributed_lines()
+            html = render_ansi(source, attr)
+            if html.strip():
+                streaming.replace_content(html)
+
+        await streaming.finalize()
+        emu.clear_history()

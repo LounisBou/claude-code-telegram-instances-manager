@@ -11,6 +11,7 @@ from src.telegram.output_pipeline import (
     render_ansi,
     render_heuristic,
     strip_marker_from_spans,
+    strip_response_markers,
 )
 
 
@@ -220,3 +221,50 @@ class TestRenderAnsi:
         attr = [[_span("  "), _span("def", fg="blue"), _span(" foo():")]]
         result = render_ansi(source, attr)
         assert "def" in result
+
+
+class TestStripResponseMarkers:
+    """strip_response_markers filters chrome and strips markers from delta lines."""
+
+    def test_strips_response_marker(self):
+        lines = [[_span("⏺ Hello", fg="default")]]
+        result = strip_response_markers(lines)
+        text = "".join(s.text for s in result[0])
+        assert "⏺" not in text
+        assert "Hello" in text
+
+    def test_strips_tool_connector(self):
+        lines = [[_span("  ⎿ Output", fg="default")]]
+        result = strip_response_markers(lines)
+        text = "".join(s.text for s in result[0])
+        assert "⎿" not in text
+
+    def test_preserves_plain_content(self):
+        lines = [[_span("Just text", fg="default")]]
+        result = strip_response_markers(lines)
+        assert result[0][0].text == "Just text"
+
+    def test_filters_separator_chrome(self):
+        lines = [
+            [_span("─" * 60)],
+            [_span("⏺ Real content", fg="default")],
+        ]
+        result = strip_response_markers(lines)
+        assert len(result) == 1
+
+    def test_filters_thinking_chrome(self):
+        lines = [[_span("✶ Thinking…")]]
+        result = strip_response_markers(lines)
+        assert len(result) == 0
+
+    def test_empty_input(self):
+        result = strip_response_markers([])
+        assert result == []
+
+    def test_all_chrome_returns_empty(self):
+        lines = [
+            [_span("─" * 60)],
+            [_span("❯ user prompt")],
+        ]
+        result = strip_response_markers(lines)
+        assert result == []
