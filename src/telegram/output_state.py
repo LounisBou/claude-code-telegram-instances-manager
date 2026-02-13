@@ -105,18 +105,20 @@ class ContentDeduplicator:
             Filtered and dedented content string, or empty string.
         """
         snap = self.thinking_snapshot if use_snapshot else set()
+        lines = content.split("\n")
         new_lines = []
-        for line in content.split("\n"):
+        for line in lines:
             stripped = line.strip()
             if not stripped:
                 new_lines.append(line)
             elif stripped not in self.sent_lines and stripped not in snap:
                 new_lines.append(line)
-        # Record all content lines as sent AFTER the full batch
-        for line in content.split("\n"):
-            stripped = line.strip()
-            if stripped:
-                self.sent_lines.add(stripped)
+        # Record all content lines as sent AFTER the full batch so that
+        # repeated lines within the same response (e.g. multiple
+        # ``return False``) are preserved.
+        self.sent_lines.update(
+            stripped for line in lines if (stripped := line.strip())
+        )
         if not new_lines:
             return ""
         return textwrap.dedent("\n".join(new_lines)).strip()
