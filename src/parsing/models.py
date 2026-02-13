@@ -32,4 +32,3 @@ class ScreenEvent:
     state: ScreenState
     payload: dict = field(default_factory=dict)
     raw_lines: list[str] = field(default_factory=list)
-    timestamp: float = 0.0

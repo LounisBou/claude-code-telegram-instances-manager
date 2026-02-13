@@ -28,6 +28,7 @@ def _make_state(
     streaming = AsyncMock()
     streaming.state = StreamingState.IDLE
     streaming.accumulated = ""
+    streaming.replace_content = MagicMock()
     state = SessionOutputState(emulator=emu, streaming=streaming)
     state.prev_state = prev
     return state
@@ -323,7 +324,7 @@ class TestExtractAndSend:
             return_value="<b>Response text</b>",
         ):
             await proc._extract_and_send(
-                ExtractionMode.FAST_IDLE, [], [], emu, streaming,
+                ExtractionMode.FAST_IDLE, [], emu, streaming,
             )
         streaming.append_content.assert_called_once()
         emu.clear_history.assert_called()
@@ -339,7 +340,7 @@ class TestExtractAndSend:
             "src.telegram.output_processor.extract_content", return_value="",
         ):
             await proc._extract_and_send(
-                ExtractionMode.STREAMING, ["changed"], [], MagicMock(), streaming,
+                ExtractionMode.STREAMING, ["changed"], MagicMock(), streaming,
             )
         streaming.append_content.assert_not_called()
 
@@ -356,7 +357,7 @@ class TestExtractAndSend:
             return_value="already seen",
         ):
             await proc._extract_and_send(
-                ExtractionMode.STREAMING, ["changed"], [], MagicMock(), streaming,
+                ExtractionMode.STREAMING, ["changed"], MagicMock(), streaming,
             )
         streaming.append_content.assert_not_called()
 

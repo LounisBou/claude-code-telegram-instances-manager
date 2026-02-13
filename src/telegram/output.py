@@ -17,10 +17,7 @@ import logging
 from telegram import Bot
 
 from src.telegram.output_processor import SessionProcessor
-from src.telegram.output_state import (
-    cleanup,  # noqa: F401 — re-exported for session cleanup
-    get_or_create,
-)
+from src.telegram.output_state import get_or_create
 
 logger = logging.getLogger(__name__)
 

@@ -216,8 +216,10 @@ class TestStreamingMessageEdgeErrors:
 
     @pytest.mark.asyncio
     async def test_edit_failure_logged_not_raised(self):
+        from telegram.error import NetworkError
+
         bot = AsyncMock()
-        bot.edit_message_text.side_effect = Exception("Bad request")
+        bot.edit_message_text.side_effect = NetworkError("Connection failed")
         sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
         sm.message_id = 42
         sm.state = StreamingState.STREAMING
@@ -247,8 +249,10 @@ class TestStreamingMessageEdgeErrors:
     @pytest.mark.asyncio
     async def test_message_not_modified_suppressed(self):
         """'Message is not modified' error must be silently suppressed."""
+        from telegram.error import BadRequest
+
         bot = AsyncMock()
-        bot.edit_message_text.side_effect = Exception(
+        bot.edit_message_text.side_effect = BadRequest(
             "Message is not modified: specified new message content and reply "
             "markup are exactly the same as a current content and reply markup "
             "of the message"
@@ -358,11 +362,13 @@ class TestEditEdgeCases:
     @pytest.mark.asyncio
     async def test_edit_plain_fallback_also_fails(self):
         """When HTML parse fails and plain-text fallback also fails, logs warning."""
+        from telegram.error import BadRequest
+
         bot = AsyncMock()
         bot.edit_message_text = AsyncMock(
             side_effect=[
-                Exception("Can't parse entities"),
-                Exception("Network error"),
+                BadRequest("Can't parse entities"),
+                BadRequest("Some other failure"),
             ]
         )
         sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
