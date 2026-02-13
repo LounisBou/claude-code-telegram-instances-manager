@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
-class ScreenState(Enum):
-    """Possible states of the Claude Code terminal screen."""
+class TerminalView(Enum):
+    """Possible observations of the Claude Code terminal screen."""
 
     STARTUP = "startup"
     IDLE = "idle"
@@ -29,6 +29,6 @@ class ScreenState(Enum):
 class ScreenEvent:
     """Classified screen state with extracted payload and raw lines."""
 
-    state: ScreenState
+    state: TerminalView
     payload: dict = field(default_factory=dict)
     raw_lines: list[str] = field(default_factory=list)

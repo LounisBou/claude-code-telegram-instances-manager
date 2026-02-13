@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from src.claude_process import ClaudeProcess
 from src.core.database import Database
 from src.file_handler import FileHandler
-from src.core.log_setup import TRACE
-from src.telegram.output_state import cleanup as _cleanup_output_state
+from src.telegram.pipeline_state import PipelineState
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +27,7 @@ class ClaudeSession:
     project_name: str
     project_path: str
     process: ClaudeProcess
+    pipeline: PipelineState | None = None
     status: str = "active"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     db_session_id: int = 0
@@ -67,6 +66,13 @@ class SessionManager:
         # {user_id: active_session_id}
         self._active: dict[int, int] = {}
         self._next_id: dict[int, int] = {}
+        self._bot = None
+        self._edit_rate_limit: int = 3
+
+    def set_bot(self, bot, edit_rate_limit: int = 3) -> None:
+        """Store bot reference for creating PipelineState on new sessions."""
+        self._bot = bot
+        self._edit_rate_limit = edit_rate_limit
 
     async def create_session(
         self, user_id: int, project_name: str, project_path: str
@@ -108,12 +114,30 @@ class SessionManager:
             user_id=user_id, project=project_name, project_path=project_path
         )
 
+        pipeline = None
+        if self._bot is not None:
+            from src.parsing.terminal_emulator import TerminalEmulator
+            from src.telegram.streaming_message import StreamingMessage
+            pipeline = PipelineState(
+                emulator=TerminalEmulator(),
+                streaming=StreamingMessage(
+                    bot=self._bot, chat_id=user_id, edit_rate_limit=self._edit_rate_limit,
+                ),
+            )
+        else:
+            logger.warning(
+                "Creating session without pipeline (set_bot() not called) "
+                "-- output streaming disabled for user=%d",
+                user_id,
+            )
+
         session = ClaudeSession(
             session_id=session_id,
             user_id=user_id,
             project_name=project_name,
             project_path=project_path,
             process=process,
+            pipeline=pipeline,
             db_session_id=db_id,
         )
 
@@ -192,7 +216,6 @@ class SessionManager:
             session.db_session_id, exit_code=exit_code, status="ended"
         )
         self._file_handler.cleanup_session(session.project_name, session_id)
-        _cleanup_output_state(user_id, session_id)
         del self._sessions[user_id][session_id]
 
         # Auto-promote another session to active so user isn't left with no active session
@@ -225,61 +248,3 @@ class SessionManager:
             Count of sessions currently tracked by the manager.
         """
         return sum(len(s) for s in self._sessions.values())
-
-
-class OutputBuffer:
-    """Accumulate incremental output and flush when ready."""
-
-    def __init__(self, debounce_ms: int, max_buffer: int) -> None:
-        """Initialize the output buffer.
-
-        Args:
-            debounce_ms: Minimum quiet period in milliseconds before
-                the buffer is considered ready to flush.
-            max_buffer: Character count threshold that forces an
-                immediate flush regardless of the debounce timer.
-        """
-        self._debounce_s = debounce_ms / 1000.0
-        self._max_buffer = max_buffer
-        self._buffer: str = ""
-        self._last_append: float = 0
-
-    def append(self, text: str) -> None:
-        """Add text to the internal buffer and reset the debounce timer.
-
-        Args:
-            text: Output fragment to accumulate.
-        """
-        self._buffer += text
-        self._last_append = time.monotonic()
-        logger.log(TRACE, "OutputBuffer append len=%d total=%d", len(text), len(self._buffer))
-
-    def flush(self) -> str:
-        """Drain the buffer and return its contents.
-
-        Returns:
-            The accumulated text. The buffer is empty after this call.
-        """
-        result = self._buffer
-        logger.debug("OutputBuffer flush len=%d", len(result))
-        self._buffer = ""
-        self._last_append = 0
-        return result
-
-    def is_ready(self) -> bool:
-        """Check whether the buffer should be flushed.
-
-        The buffer is ready when it exceeds the max size limit or when
-        the debounce period has elapsed since the last append.
-
-        Returns:
-            True if the buffer has content that should be flushed.
-        """
-        if not self._buffer:
-            return False
-        # Force-flush large bursts immediately, even if debounce hasn't elapsed
-        if len(self._buffer) >= self._max_buffer:
-            return True
-        if self._last_append and (time.monotonic() - self._last_append) >= self._debounce_s:
-            return True
-        return False

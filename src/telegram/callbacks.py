@@ -26,7 +26,7 @@ from src.telegram.keyboards import (
 )
 from src.git_info import get_git_info
 from src.project_scanner import scan_projects
-from src.telegram.output_state import mark_tool_acted
+from src.telegram.pipeline_state import mark_tool_acted
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ async def _handle_tool(query, user_id, data, session_manager) -> None:
         else:
             await session.process.write("\x1b")
             label = "Denied"
-    mark_tool_acted(user_id, session_id)
+    mark_tool_acted(session.pipeline)
     await query.answer(label)
     original_text = query.message.text or query.message.caption or ""
     await query.edit_message_text(

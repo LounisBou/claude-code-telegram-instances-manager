@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.session_manager import ClaudeSession, OutputBuffer, SessionError, SessionManager
+from src.session_manager import ClaudeSession, SessionError, SessionManager
 
 
 @pytest.fixture
@@ -118,16 +118,6 @@ class TestSessionManager:
             assert len(manager.list_sessions(111)) == 0
             mock_db.end_session.assert_called_once()
             mock_file_handler.cleanup_session.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_kill_session_cleans_output_state(self, manager):
-        with patch("src.session_manager.ClaudeProcess") as MockProc, \
-             patch("src.session_manager._cleanup_output_state") as mock_cleanup:
-            MockProc.return_value = _mock_process()
-            session = await manager.create_session(111, "proj", "/a/proj")
-            await manager.kill_session(111, session.session_id)
-            mock_cleanup.assert_called_once_with(111, session.session_id)
-
     @pytest.mark.asyncio
     async def test_kill_session_not_found(self, manager):
         with pytest.raises(SessionError, match="not found"):
@@ -220,39 +210,6 @@ class TestSessionManagerShutdown:
         assert manager.active_session_count() == 0
 
 
-class TestOutputBuffer:
-    def test_buffer_accumulates(self):
-        buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
-        buf.append("hello ")
-        buf.append("world")
-        text = buf.flush()
-        assert text == "hello world"
-
-    def test_flush_clears_buffer(self):
-        buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
-        buf.append("hello")
-        buf.flush()
-        assert buf.flush() == ""
-
-    def test_is_ready_after_debounce(self):
-        import time as t
-
-        buf = OutputBuffer(debounce_ms=50, max_buffer=2000)
-        buf.append("data")
-        assert buf.is_ready() is False
-        t.sleep(0.06)
-        assert buf.is_ready() is True
-
-    def test_is_ready_when_max_buffer_exceeded(self):
-        buf = OutputBuffer(debounce_ms=5000, max_buffer=10)
-        buf.append("A" * 15)
-        assert buf.is_ready() is True
-
-    def test_empty_buffer_not_ready(self):
-        buf = OutputBuffer(debounce_ms=100, max_buffer=2000)
-        assert buf.is_ready() is False
-
-
 class TestSessionManagerLogging:
     @pytest.mark.asyncio
     async def test_create_session_logs(self, caplog):
@@ -269,3 +226,48 @@ class TestSessionManagerLogging:
             with caplog.at_level(logging.DEBUG, logger="src.session_manager"):
                 await sm.create_session(111, "test-project", "/tmp/test")
         assert any("create_session" in r.message for r in caplog.records)
+
+
+class TestClaudeSessionPipeline:
+    def test_session_has_pipeline_default_none(self):
+        session = ClaudeSession(
+            session_id=1, user_id=111, project_name="proj",
+            project_path="/a", process=MagicMock(),
+        )
+        assert session.pipeline is None
+
+    def test_session_accepts_pipeline(self):
+        from src.telegram.pipeline_state import PipelineState
+        ps = MagicMock(spec=PipelineState)
+        session = ClaudeSession(
+            session_id=1, user_id=111, project_name="proj",
+            project_path="/a", process=MagicMock(), pipeline=ps,
+        )
+        assert session.pipeline is ps
+
+
+class TestSetBot:
+    def test_set_bot_stores_bot(self, manager):
+        bot = MagicMock()
+        manager.set_bot(bot, edit_rate_limit=5)
+        assert manager._bot is bot
+        assert manager._edit_rate_limit == 5
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_bot_creates_pipeline(self, manager):
+        bot = AsyncMock()
+        manager.set_bot(bot, edit_rate_limit=3)
+        with patch("src.session_manager.ClaudeProcess") as MockProc:
+            MockProc.return_value = _mock_process()
+            session = await manager.create_session(111, "proj", "/a/proj")
+        assert session.pipeline is not None
+        from src.telegram.pipeline_state import PipelinePhase
+        assert session.pipeline.phase == PipelinePhase.DORMANT
+
+    @pytest.mark.asyncio
+    async def test_create_session_without_bot_has_no_pipeline(self, manager):
+        # manager fixture doesn't call set_bot, so _bot is None
+        with patch("src.session_manager.ClaudeProcess") as MockProc:
+            MockProc.return_value = _mock_process()
+            session = await manager.create_session(111, "proj", "/a/proj")
+        assert session.pipeline is None

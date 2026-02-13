@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import re
-import textwrap
 
-from src.parsing.models import ScreenEvent, ScreenState  # noqa: F401 — re-exported
+from src.parsing.models import ScreenEvent, TerminalView  # noqa: F401 — re-exported
 
 
 # --- UI element classification ---
@@ -201,71 +200,3 @@ def classify_text_line(line: str) -> str:
             return "logo"
     return "content"
 
-
-def extract_content(lines: list[str]) -> str:
-    """Extract meaningful content from screen lines, filtering UI chrome.
-
-    Keeps lines classified as 'content', 'response' (⏺ prefix replaced),
-    and 'tool_connector' (⎿ prefix replaced) by classify_text_line.
-
-    Preserves relative indentation by replacing Unicode markers (⏺, ⎿)
-    with spaces of equal width instead of stripping them. After collection,
-    ``textwrap.dedent`` removes the common terminal margin while keeping
-    code structure (e.g. Python indentation) intact.
-
-    Tracks prompt continuation state: lines between a ❯ prompt line and
-    the next ⏺ response / ⎿ tool connector / tool header are the user's
-    wrapped input and must be skipped.
-
-    Args:
-        lines: List of terminal screen lines to filter.
-
-    Returns:
-        Newline-joined string of content lines with common margin removed
-        but relative indentation preserved.
-    """
-    content_lines = []
-    in_prompt = False
-    for line in lines:
-        cls = classify_text_line(line)
-        # Start skipping after a ❯ prompt line — continuation lines
-        # (wrapped user input) are classified as 'content' but belong
-        # to the prompt, not to Claude's response.
-        if cls == "prompt":
-            in_prompt = True
-            continue
-        # End prompt continuation when we hit a response marker or
-        # another structured element that signals Claude's output.
-        if in_prompt:
-            if cls in (
-                "response", "tool_connector", "tool_header",
-                "thinking", "separator",
-            ):
-                in_prompt = False
-            else:
-                # Still in prompt continuation — skip this line.
-                continue
-        if cls == "content":
-            # Preserve leading whitespace (indentation); strip only trailing.
-            content_lines.append(line.rstrip())
-        elif cls == "response":
-            # ⏺ lines carry Claude's response text — replace the marker
-            # with spaces to preserve column alignment for dedent.
-            replaced = re.sub(
-                r"⏺\s?", lambda m: " " * len(m.group(0)), line, count=1,
-            )
-            if replaced.strip():
-                content_lines.append(replaced.rstrip())
-        elif cls == "tool_connector":
-            # ⎿ lines carry tool output (file contents, command results).
-            # Replace the connector prefix with spaces to preserve alignment.
-            replaced = re.sub(
-                r"⎿\s*", lambda m: " " * len(m.group(0)), line, count=1,
-            )
-            if replaced.strip():
-                content_lines.append(replaced.rstrip())
-    # Remove common leading whitespace (terminal margin) while
-    # preserving relative indentation (e.g. Python code structure).
-    joined = "\n".join(content_lines)
-    dedented = textwrap.dedent(joined)
-    return dedented.strip()

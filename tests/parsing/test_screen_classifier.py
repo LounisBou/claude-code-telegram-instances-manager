@@ -1,5 +1,5 @@
 from src.parsing.screen_classifier import classify_screen_state
-from src.parsing.ui_patterns import ScreenEvent, ScreenState
+from src.parsing.ui_patterns import ScreenEvent, TerminalView
 from tests.parsing.conftest import (
     REAL_AUTH_SCREEN,
     REAL_BACKGROUND_SCREEN,
@@ -17,75 +17,75 @@ from tests.parsing.conftest import (
 )
 
 
-class TestClassifyScreenState:
+class TestClassifyTerminalView:
     def test_idle_screen(self):
         event = classify_screen_state(REAL_IDLE_SCREEN)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
         assert "placeholder" in event.payload
 
     def test_thinking_screen(self):
         event = classify_screen_state(REAL_THINKING_SCREEN)
-        assert event.state == ScreenState.THINKING
+        assert event.state == TerminalView.THINKING
         assert "Activating sleeper agents…" in event.payload["text"]
 
     def test_streaming_screen(self):
         event = classify_screen_state(REAL_STREAMING_SCREEN)
-        assert event.state == ScreenState.STREAMING
+        assert event.state == TerminalView.STREAMING
         assert "The answer is 4" in event.payload["text"]
 
     def test_tool_request_screen(self):
         event = classify_screen_state(REAL_TOOL_REQUEST_SCREEN)
-        assert event.state == ScreenState.TOOL_REQUEST
+        assert event.state == TerminalView.TOOL_REQUEST
         assert len(event.payload["options"]) == 3
         assert event.payload["options"][0] == "Yes"
 
     def test_tool_running_screen(self):
         event = classify_screen_state(REAL_TOOL_RUNNING_SCREEN)
-        assert event.state == ScreenState.TOOL_RUNNING
+        assert event.state == TerminalView.TOOL_RUNNING
         assert event.payload.get("tool") == "Bash"
 
     def test_tool_result_screen(self):
         event = classify_screen_state(REAL_TOOL_RESULT_SCREEN)
-        assert event.state == ScreenState.TOOL_RESULT
+        assert event.state == TerminalView.TOOL_RESULT
         assert event.payload["added"] == 4
         assert event.payload["removed"] == 1
 
     def test_todo_list_screen(self):
         event = classify_screen_state(REAL_TODO_LIST_SCREEN)
-        assert event.state == ScreenState.TODO_LIST
+        assert event.state == TerminalView.TODO_LIST
         assert event.payload["total"] == 5
         assert len(event.payload["items"]) == 5
 
     def test_parallel_agents_screen(self):
         event = classify_screen_state(REAL_PARALLEL_AGENTS_SCREEN)
-        assert event.state == ScreenState.PARALLEL_AGENTS
+        assert event.state == TerminalView.PARALLEL_AGENTS
         assert event.payload["count"] == 4
 
     def test_background_task_screen(self):
         event = classify_screen_state(REAL_BACKGROUND_SCREEN)
-        assert event.state == ScreenState.BACKGROUND_TASK
+        assert event.state == TerminalView.BACKGROUND_TASK
 
     def test_startup_screen(self):
         event = classify_screen_state(REAL_STARTUP_SCREEN)
-        assert event.state == ScreenState.STARTUP
+        assert event.state == TerminalView.STARTUP
 
     def test_user_message_screen(self):
         event = classify_screen_state(REAL_USER_MESSAGE_SCREEN)
-        assert event.state == ScreenState.USER_MESSAGE
+        assert event.state == TerminalView.USER_MESSAGE
         assert "2+2" in event.payload["text"]
 
     def test_error_screen(self):
         event = classify_screen_state(REAL_ERROR_SCREEN)
-        assert event.state == ScreenState.ERROR
+        assert event.state == TerminalView.ERROR
         assert "MCP server failed" in event.payload["text"]
 
     def test_empty_screen(self):
         event = classify_screen_state(["", "", ""])
-        assert event.state == ScreenState.UNKNOWN
+        assert event.state == TerminalView.UNKNOWN
 
     def test_unknown_content(self):
         event = classify_screen_state(["Some random content that matches nothing"])
-        assert event.state == ScreenState.UNKNOWN
+        assert event.state == TerminalView.UNKNOWN
 
     def test_preserves_raw_lines(self):
         event = classify_screen_state(REAL_IDLE_SCREEN)
@@ -99,7 +99,7 @@ class TestClassifyScreenState:
         lines[7] = "─" * 40
         lines[8] = "  my-project │ ⎇ main │ Usage: 5% ▋░░░░░░░░░"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
         assert event.payload["placeholder"] == ""
 
     def test_idle_separator_with_trailing_fffd_artifacts(self):
@@ -110,7 +110,7 @@ class TestClassifyScreenState:
         lines[7] = "─" * 40
         lines[8] = "  my-project │ ⎇ main │ Usage: 5% ▋░░░░░░░░░"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
         assert event.payload["placeholder"] == "Try something"
 
     def test_idle_with_artifact_between_separator_and_prompt(self):
@@ -122,7 +122,7 @@ class TestClassifyScreenState:
         lines[8] = "─" * 40
         lines[9] = "  my-project │ ⎇ main │ Usage: 5% ▋░░░░░░░░░"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
 
     def test_idle_with_startup_logo_and_prompt(self):
         """Regression: startup_raw has both logo and idle prompt — should be IDLE."""
@@ -137,7 +137,7 @@ class TestClassifyScreenState:
         lines[10] = "─" * 40
         lines[11] = "  my-project │ ⎇ main │ Usage: 6% ▋░░░░░░░░░"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
 
     def test_idle_with_tip_line_below_separator(self):
         """Regression: tip line below separator must be skipped by bottom-up scan.
@@ -153,7 +153,7 @@ class TestClassifyScreenState:
         lines[8] = "Tip: Run /help for more info"
         lines[9] = "  my-project │ ⎇ main │ Usage: 5%"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
 
     def test_idle_with_time_and_hint_below_separator(self):
         """Regression: bare time and claude hints must be skipped by scan."""
@@ -165,7 +165,7 @@ class TestClassifyScreenState:
         lines[9] = "claude --continue to resume"
         lines[10] = "  my-project │ ⎇ main │ Usage: 5%"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
 
     def test_idle_with_separator_prefix_overlay(self):
         """Regression: separator with trailing text overlay (pyte bleed)."""
@@ -175,7 +175,7 @@ class TestClassifyScreenState:
         lines[7] = "─" * 40
         lines[8] = "  my-project │ ⎇ main │ Usage: 5%"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
 
     def test_idle_with_pr_indicator_below_separator(self):
         """Regression: PR indicator in status area must be skipped by bottom-up scan."""
@@ -186,7 +186,7 @@ class TestClassifyScreenState:
         lines[8] = "  my-project │ ⎇ main │ Usage: 5%"
         lines[9] = "PR #13"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.IDLE
+        assert event.state == TerminalView.IDLE
 
     def test_user_echo_with_old_response_not_streaming(self):
         """Regression: user message echo must NOT trigger STREAMING from old ⏺.
@@ -209,7 +209,7 @@ class TestClassifyScreenState:
         lines[9] = "PR #13"
         event = classify_screen_state(lines)
         # Should NOT be STREAMING (old ⏺ is above the ❯ prompt)
-        assert event.state != ScreenState.STREAMING
+        assert event.state != TerminalView.STREAMING
 
     def test_streaming_with_content_below_response_marker(self):
         """Regression: ⏺ not on last line — content lines below must still detect STREAMING."""
@@ -223,7 +223,7 @@ class TestClassifyScreenState:
         lines[10] = "─" * 40
         lines[11] = "  my-project │ ⎇ main │ Usage: 7%"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.STREAMING
+        assert event.state == TerminalView.STREAMING
 
     def test_streaming_with_response_below_user_prompt(self):
         """STREAMING correctly detected when ⏺ is below the user's ❯ prompt."""
@@ -235,7 +235,7 @@ class TestClassifyScreenState:
         lines[8] = "─" * 40
         lines[9] = "  my-project │ ⎇ main │ Usage: 50%"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.STREAMING
+        assert event.state == TerminalView.STREAMING
 
     def test_startup_suppressed_when_response_marker_visible(self):
         """Regression: banner persists in pyte — STARTUP must not fire if ⏺ is visible."""
@@ -246,7 +246,7 @@ class TestClassifyScreenState:
         lines[5] = "⏺ Hello!"
         event = classify_screen_state(lines)
         # Must NOT be STARTUP — the ⏺ marker means Claude already responded
-        assert event.state != ScreenState.STARTUP
+        assert event.state != TerminalView.STARTUP
 
     def test_streaming_long_response_marker_far_above(self):
         """Regression: ⏺ scrolled far above last content line must still detect STREAMING."""
@@ -260,7 +260,7 @@ class TestClassifyScreenState:
         lines[15] = "─" * 40
         lines[16] = "  my-project │ ⎇ main │ Usage: 7%"
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.STREAMING
+        assert event.state == TerminalView.STREAMING
 
     def test_separator_classify_text_line_with_fffd(self):
         """Regression: classify_text_line should return 'separator' for artifact separators."""
@@ -268,7 +268,7 @@ class TestClassifyScreenState:
         assert classify_text_line("─" * 38 + "\uFFFD\uFFFD") == "separator"
 
 
-class TestClassifyScreenStateLogging:
+class TestClassifyTerminalViewLogging:
     def test_classify_logs_result_at_trace(self, caplog):
         from src.core.log_setup import TRACE, setup_logging
         setup_logging(debug=False, trace=False, verbose=False)
@@ -297,7 +297,7 @@ class TestAuthScreenDetection:
     def test_oauth_login_screen_detected(self):
         """Real OAuth login screen (captured from PTY) must be AUTH_REQUIRED."""
         event = classify_screen_state(REAL_AUTH_SCREEN)
-        assert event.state == ScreenState.AUTH_REQUIRED
+        assert event.state == TerminalView.AUTH_REQUIRED
         assert "url" in event.payload
         assert "claude.ai/oauth/authorize" in event.payload["url"]
 
@@ -308,7 +308,7 @@ class TestAuthScreenDetection:
             "https://claude.ai/oauth/authorize?code=true&client_id=abc",
         ]
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.AUTH_REQUIRED
+        assert event.state == TerminalView.AUTH_REQUIRED
 
     def test_auth_screen_with_paste_code_prompt(self):
         """Auth screen with 'Paste code here' prompt and OAuth URL."""
@@ -318,7 +318,7 @@ class TestAuthScreenDetection:
             " Paste code here if prompted >",
         ]
         event = classify_screen_state(lines)
-        assert event.state == ScreenState.AUTH_REQUIRED
+        assert event.state == TerminalView.AUTH_REQUIRED
 
     def test_no_auth_without_oauth_url(self):
         """Sign-in text without an OAuth URL must NOT trigger AUTH_REQUIRED."""
@@ -327,7 +327,7 @@ class TestAuthScreenDetection:
             "Some other content",
         ]
         event = classify_screen_state(lines)
-        assert event.state != ScreenState.AUTH_REQUIRED
+        assert event.state != TerminalView.AUTH_REQUIRED
 
     def test_no_auth_without_sign_in_text(self):
         """OAuth URL alone without sign-in/paste-code text is not AUTH_REQUIRED."""
@@ -335,4 +335,4 @@ class TestAuthScreenDetection:
             "Visit https://claude.ai/oauth/authorize?code=true",
         ]
         event = classify_screen_state(lines)
-        assert event.state != ScreenState.AUTH_REQUIRED
+        assert event.state != TerminalView.AUTH_REQUIRED

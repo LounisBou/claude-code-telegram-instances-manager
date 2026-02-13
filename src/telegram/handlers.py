@@ -15,7 +15,7 @@ from src.telegram.keyboards import (
     is_authorized,
 )
 from src.project_scanner import scan_projects
-from src.telegram.output_state import is_tool_request_pending
+from src.telegram.pipeline_state import is_tool_request_pending
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ async def handle_text_message(
         await update.message.reply_text("No active session. Use /start to begin one.")
         return
 
-    if is_tool_request_pending(user_id, active.session_id):
+    if is_tool_request_pending(active.pipeline):
         await update.message.reply_text(
             "A tool approval is pending. Please respond to it first."
         )
@@ -202,7 +202,7 @@ async def handle_unknown_command(
     session_manager = context.bot_data["session_manager"]
     active = session_manager.get_active_session(user_id)
     if active:
-        if is_tool_request_pending(user_id, active.session_id):
+        if is_tool_request_pending(active.pipeline):
             await update.message.reply_text(
                 "A tool approval is pending. Please respond to it first."
             )

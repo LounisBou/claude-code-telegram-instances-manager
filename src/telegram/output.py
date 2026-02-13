@@ -1,12 +1,8 @@
 """Background loop that reads Claude output and streams it to Telegram.
 
-Thin orchestration loop using :class:`~src.telegram.output_processor.SessionProcessor`
-for the actual event processing.  Each poll cycle (300ms) reads raw PTY bytes
-from all active sessions and delegates to the processor's 3-phase pipeline:
-
-1. Pre-extraction — state entry side effects (typing indicator, dedup, auth)
-2. Extraction — content dedup, render, send to Telegram
-3. Finalization — ANSI re-render, clear history, finalize message (IDLE only)
+Thin orchestration loop that polls active sessions every 300ms, feeds PTY
+bytes to the terminal emulator, classifies the screen, and dispatches
+transitions through PipelineRunner.
 """
 
 from __future__ import annotations
@@ -15,50 +11,60 @@ import asyncio
 import logging
 
 from telegram import Bot
+from telegram.error import Forbidden
 
-from src.telegram.output_processor import SessionProcessor
-from src.telegram.output_state import get_or_create
+from src.parsing.screen_classifier import classify_screen_state
+from src.telegram.pipeline_runner import PipelineRunner
 
 logger = logging.getLogger(__name__)
 
 
 async def poll_output(
-    bot: Bot, session_manager, *, edit_rate_limit: int = 3,
+    bot: Bot, session_manager,
 ) -> None:
-    """Background loop that reads Claude output and streams it to Telegram.
-
-    Creates a :class:`SessionProcessor` per session and delegates each
-    poll cycle to its ``process_cycle`` method.
-
-    Args:
-        bot: Telegram Bot instance for sending messages.
-        session_manager: SessionManager with active sessions.
-        edit_rate_limit: Maximum Telegram edit_message calls per second.
-    """
+    """Background loop that reads Claude output and streams it to Telegram."""
     while True:
         await asyncio.sleep(0.3)
         for user_id, sessions in list(session_manager._sessions.items()):
             for sid, session in list(sessions.items()):
               try:
-                state = get_or_create(
-                    user_id, sid, bot, edit_rate_limit,
-                )
+                if session.pipeline is None:
+                    continue
+                pipeline = session.pipeline
 
                 raw = session.process.read_available()
                 if not raw:
                     continue
 
-                processor = SessionProcessor(
-                    state=state,
+                pipeline.emulator.feed(raw)
+                display = pipeline.emulator.get_display()
+                event = classify_screen_state(display, pipeline.prev_view)
+
+                runner = PipelineRunner(
+                    state=pipeline,
                     user_id=user_id,
                     session_id=sid,
                     bot=bot,
                     session_manager=session_manager,
                 )
-                await processor.process_cycle(raw)
+                await runner.process(event)
 
               except asyncio.CancelledError:
                 raise
+              except Forbidden:
+                logger.warning(
+                    "User %d blocked the bot — killing session %d",
+                    user_id, sid,
+                )
+                try:
+                    await session_manager.kill_session(user_id, sid)
+                except Exception:
+                    logger.debug(
+                        "kill_session failed during Forbidden cleanup "
+                        "for user=%d sid=%d",
+                        user_id, sid,
+                        exc_info=True,
+                    )
               except Exception:
                 logger.exception(
                     "poll_output crash for user=%d sid=%d — will retry next cycle",

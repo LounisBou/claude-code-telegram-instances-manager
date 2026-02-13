@@ -1,5 +1,5 @@
 """Terminal output parsing pipeline: emulator → patterns → detectors → classifier → content_classifier."""
 
-from src.parsing.models import ScreenEvent, ScreenState  # noqa: F401
+from src.parsing.models import ScreenEvent, TerminalView  # noqa: F401
 
-__all__ = ["ScreenEvent", "ScreenState"]
+__all__ = ["ScreenEvent", "TerminalView"]

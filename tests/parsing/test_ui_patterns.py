@@ -1,40 +1,40 @@
-from src.parsing.ui_patterns import ScreenEvent, ScreenState, classify_text_line, extract_content
+from src.parsing.ui_patterns import ScreenEvent, TerminalView, classify_text_line
 
 
-class TestScreenState:
+class TestTerminalView:
     def test_all_states_exist(self):
-        assert ScreenState.STARTUP.value == "startup"
-        assert ScreenState.IDLE.value == "idle"
-        assert ScreenState.THINKING.value == "thinking"
-        assert ScreenState.STREAMING.value == "streaming"
-        assert ScreenState.USER_MESSAGE.value == "user_message"
-        assert ScreenState.TOOL_REQUEST.value == "tool_request"
-        assert ScreenState.TOOL_RUNNING.value == "tool_running"
-        assert ScreenState.TOOL_RESULT.value == "tool_result"
-        assert ScreenState.BACKGROUND_TASK.value == "background_task"
-        assert ScreenState.PARALLEL_AGENTS.value == "parallel_agents"
-        assert ScreenState.TODO_LIST.value == "todo_list"
-        assert ScreenState.ERROR.value == "error"
-        assert ScreenState.UNKNOWN.value == "unknown"
+        assert TerminalView.STARTUP.value == "startup"
+        assert TerminalView.IDLE.value == "idle"
+        assert TerminalView.THINKING.value == "thinking"
+        assert TerminalView.STREAMING.value == "streaming"
+        assert TerminalView.USER_MESSAGE.value == "user_message"
+        assert TerminalView.TOOL_REQUEST.value == "tool_request"
+        assert TerminalView.TOOL_RUNNING.value == "tool_running"
+        assert TerminalView.TOOL_RESULT.value == "tool_result"
+        assert TerminalView.BACKGROUND_TASK.value == "background_task"
+        assert TerminalView.PARALLEL_AGENTS.value == "parallel_agents"
+        assert TerminalView.TODO_LIST.value == "todo_list"
+        assert TerminalView.ERROR.value == "error"
+        assert TerminalView.UNKNOWN.value == "unknown"
 
     def test_enum_count(self):
-        assert len(ScreenState) == 14
+        assert len(TerminalView) == 14
 
 
 class TestScreenEvent:
     def test_default_values(self):
-        event = ScreenEvent(state=ScreenState.UNKNOWN)
-        assert event.state == ScreenState.UNKNOWN
+        event = ScreenEvent(state=TerminalView.UNKNOWN)
+        assert event.state == TerminalView.UNKNOWN
         assert event.payload == {}
         assert event.raw_lines == []
 
     def test_with_payload(self):
         event = ScreenEvent(
-            state=ScreenState.THINKING,
+            state=TerminalView.THINKING,
             payload={"text": "Deploying robot army…"},
             raw_lines=["✶ Deploying robot army…"],
         )
-        assert event.state == ScreenState.THINKING
+        assert event.state == TerminalView.THINKING
         assert event.payload["text"] == "Deploying robot army…"
         assert len(event.raw_lines) == 1
 
@@ -175,167 +175,3 @@ class TestClassifyLine:
         assert classify_text_line("4") == "content"
         assert classify_text_line("The answer is 42.") == "content"
 
-
-class TestExtractContent:
-    def test_filters_ui_chrome(self):
-        lines = [
-            "────────────────────────────────",
-            "claude-instance-manager │ ⎇ main │ Usage: 32%",
-            "❯ Try something",
-            "",
-            "⏺ Hello, this is actual content",
-            "More content here",
-            "",
-            "────────────────────────────────",
-        ]
-        result = extract_content(lines)
-        assert "Hello, this is actual content" in result
-        assert "More content here" in result
-        assert "────" not in result
-        assert "claude-instance-manager" not in result
-        assert "❯" not in result
-
-    def test_filters_startup_banner(self):
-        """Startup banner lines must be filtered out by extract_content."""
-        lines = [
-            "Claude Code v2.1.39",
-            "Formatting tip: Keep lines short",
-            "This is the actual response content",
-        ]
-        result = extract_content(lines)
-        assert "Claude Code" not in result
-        assert "This is the actual response content" in result
-        # Tip lines are classified as status_bar, also filtered
-        assert "Formatting tip" not in result
-
-    def test_filters_pr_indicator(self):
-        """PR indicator from status bar must be filtered by extract_content."""
-        lines = [
-            "────────────────────────────────",
-            "❯",
-            "ScreenBuddies │ ⎇ feat/1.2 ⇡2 │ Usage: 48%",
-            "PR #13",
-        ]
-        result = extract_content(lines)
-        assert "PR #13" not in result
-
-    def test_preserves_all_content(self):
-        lines = ["First line", "Second line", "Third line"]
-        result = extract_content(lines)
-        assert "First line" in result
-        assert "Second line" in result
-        assert "Third line" in result
-
-    def test_empty_lines(self):
-        lines = ["", "", ""]
-        assert extract_content(lines) == ""
-
-    def test_includes_response_marker_text(self):
-        """Regression: ⏺ response lines must be included with prefix stripped."""
-        lines = [
-            "⏺ Hello! How can I help?",
-            "  Some follow-up content",
-        ]
-        result = extract_content(lines)
-        assert "Hello! How can I help?" in result
-        assert "⏺" not in result
-        assert "Some follow-up content" in result
-
-    def test_includes_tool_connector_text(self):
-        """Regression: ⎿ tool connector lines must be included with prefix stripped."""
-        lines = [
-            "  Bash(ls)",
-            "  ⎿  src/",
-            "  ⎿  tests/",
-            "  ⎿  README.md",
-        ]
-        result = extract_content(lines)
-        assert "src/" in result
-        assert "tests/" in result
-        assert "README.md" in result
-        assert "⎿" not in result
-
-    def test_excludes_empty_response_marker(self):
-        """⏺ with no text after it should not produce an empty line."""
-        lines = ["⏺ ", "actual content"]
-        result = extract_content(lines)
-        assert result == "actual content"
-
-    def test_mixed_line_types_realistic_screen(self):
-        """Regression: realistic screen with all line types must extract only content."""
-        lines = [
-            " ▐▛███▜▌   Opus 4.6",           # logo -> stripped
-            "▝▜█████▛▘  ~/dev/project",       # logo -> stripped
-            "  ▘▘ ▝▝",                         # logo -> stripped
-            "",                                 # empty -> stripped
-            "⏺ Here is the project tree:",     # response -> kept (prefix stripped)
-            "  Bash(ls -la)",                   # tool_header -> stripped
-            "  ⎿  src/",                       # tool_connector -> kept (prefix stripped)
-            "  ⎿  tests/",                     # tool_connector -> kept
-            "  ⎿  README.md",                  # tool_connector -> kept
-            "The project has 3 directories.",   # content -> kept
-            "─" * 40,                           # separator -> stripped
-            "  my-project │ ⎇ main │ Usage: 7%",  # status_bar -> stripped
-        ]
-        result = extract_content(lines)
-        assert "Here is the project tree:" in result
-        assert "src/" in result
-        assert "tests/" in result
-        assert "README.md" in result
-        assert "The project has 3 directories." in result
-        # Verify chrome is stripped
-        assert "▐▛" not in result
-        assert "Bash(ls" not in result
-        assert "─" * 10 not in result
-        assert "my-project" not in result
-        assert "⏺" not in result
-        assert "⎿" not in result
-
-    def test_filters_extra_status_lines(self):
-        """Regression for issue 003: extra status bar lines must be filtered."""
-        lines = [
-            "⏺ Done. Created /tmp/test.txt with the content.",
-            "────────────────────────────────",
-            "  my-project │ ⎇ main │ Usage: 7%",
-            "4 files +0 -0 · PR #5",
-        ]
-        result = extract_content(lines)
-        assert "Done. Created /tmp/test.txt" in result
-        assert "4 files" not in result
-        assert "PR #5" not in result
-
-    def test_preserves_code_indentation(self):
-        """Regression: Python code indentation must be preserved, not stripped."""
-        # Simulate pyte screen output for a code response.
-        # Claude Code renders ⏺ at column 0, code text at column 2.
-        # Continuation lines are indented to the same base column (2)
-        # plus the Python indentation (4 per level).
-        lines = [
-            "⏺ def fibonacci(n):",       # response: indent 0 after ⏺
-            "      if n <= 1:",            # content: 6 = margin 2 + python indent 4
-            "          return n",           # content: 10 = margin 2 + python indent 8
-            "      return fibonacci(n-1)",  # content: 6 = margin 2 + python indent 4
-        ]
-        result = extract_content(lines)
-        assert "def fibonacci(n):" in result
-        # Indentation must be preserved (4 spaces for level 1, 8 for level 2)
-        assert "    if n <= 1:" in result
-        assert "        return n" in result
-        assert "    return fibonacci(n-1)" in result
-        # No flat lines (old bug: strip() removed all indentation)
-        assert "\nif n <= 1:" not in result
-        assert "\nreturn n" not in result
-
-    def test_prose_not_indented(self):
-        """Normal prose content must not gain spurious indentation."""
-        lines = [
-            "⏺ Hello! Here is my answer.",
-            "The capital of France is Paris.",
-        ]
-        result = extract_content(lines)
-        assert result.startswith("Hello! Here is my answer.")
-        assert "The capital of France is Paris." in result
-        # No leading spaces on prose lines
-        for line in result.split("\n"):
-            if line.strip():
-                assert not line.startswith(" "), f"Unexpected indent: {line!r}"

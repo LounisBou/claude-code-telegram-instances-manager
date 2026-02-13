@@ -138,6 +138,10 @@ async def _on_startup(app: Application) -> None:
         except Exception as exc:
             logger.warning("Failed to send startup message to %d: %s", user_id, exc)
 
+    # Wire bot reference so new sessions get PipelineState
+    session_manager = app.bot_data["session_manager"]
+    session_manager.set_bot(app.bot, config.telegram.edit_rate_limit)
+
 
 async def _send_shutdown_message(bot, config, session_manager) -> None:
     """Send shutdown notification to all authorized users.
@@ -201,7 +205,7 @@ async def main() -> None:
     session_manager = app.bot_data["session_manager"]
     config = app.bot_data["config"]
     poll_task = asyncio.create_task(
-        poll_output(app.bot, session_manager, edit_rate_limit=config.telegram.edit_rate_limit)
+        poll_output(app.bot, session_manager)
     )
 
     logger.info("Bot is running. Press Ctrl+C to stop.")

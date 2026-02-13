@@ -9,7 +9,7 @@ Functions:
     - :func:`dedent_attr_lines` — remove common leading whitespace
     - :func:`filter_response_attr` — filter attributed lines to response content
     - :func:`find_last_prompt` — locate user prompt boundary on display
-    - :func:`render_heuristic` — keyword-based code block detection pipeline
+    - :func:`strip_response_markers` — filter chrome and strip markers from delta lines
     - :func:`render_ansi` — ANSI-aware region classification pipeline
 """
 
@@ -19,7 +19,7 @@ from src.parsing.content_classifier import classify_regions
 from src.parsing.terminal_emulator import CharSpan
 from src.parsing.ui_patterns import classify_text_line
 from src.telegram.formatter import (
-    format_html, reflow_text, render_regions, wrap_code_blocks,
+    format_html, reflow_text, render_regions,
 )
 
 
@@ -208,24 +208,50 @@ def find_last_prompt(display: list[str]) -> int | None:
     return result
 
 
+# Categories that represent actual response content (not chrome).
+_RESPONSE_CATEGORIES = frozenset({
+    "content", "response", "tool_connector",
+})
+
+
+def strip_response_markers(
+    lines: list[list[CharSpan]],
+) -> list[list[CharSpan]]:
+    """Strip response markers and filter chrome from attributed delta lines.
+
+    Used during streaming to clean per-line changes from the emulator
+    before rendering.
+
+    For each line the plain text is classified via
+    :func:`~src.parsing.ui_patterns.classify_text_line`.  Lines whose
+    category is not in :data:`_RESPONSE_CATEGORIES` (i.e. terminal chrome
+    such as separators, status bars, thinking indicators, and prompts) are
+    dropped.  ``⏺`` markers on *response* lines and ``⎿`` markers on
+    *tool_connector* lines are stripped.
+
+    Args:
+        lines: Attributed span lists (one per changed line).
+
+    Returns:
+        Filtered and marker-stripped span lists.
+    """
+    result: list[list[CharSpan]] = []
+    for spans in lines:
+        plain = "".join(s.text for s in spans)
+        cls = classify_text_line(plain)
+        if cls not in _RESPONSE_CATEGORIES:
+            continue
+        if cls == "response":
+            spans = strip_marker_from_spans(spans, "⏺")
+        elif cls == "tool_connector":
+            spans = strip_marker_from_spans(spans, "⎿")
+        result.append(spans)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Rendering pipelines
 # ---------------------------------------------------------------------------
-
-
-def render_heuristic(content: str) -> str:
-    """Render content using the keyword-based heuristic pipeline.
-
-    Applies code block wrapping based on keyword detection, then reflowing
-    and HTML formatting.
-
-    Args:
-        content: Plain text content extracted from terminal.
-
-    Returns:
-        Telegram HTML string.
-    """
-    return format_html(reflow_text(wrap_code_blocks(content)))
 
 
 def render_ansi(
