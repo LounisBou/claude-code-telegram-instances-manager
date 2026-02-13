@@ -9,7 +9,7 @@ from telegram.error import Forbidden
 
 from src.parsing.models import ScreenEvent, TerminalView
 from src.telegram.pipeline_state import PipelinePhase, PipelineState
-from src.telegram.pipeline_runner import PipelineRunner
+from src.telegram.pipeline_runner import PipelineRunner, _TRANSITIONS
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,8 @@ class TestDormantTransitions:
         sm.kill_session.assert_called_once_with(1, 2)
 
     @pytest.mark.asyncio
-    async def test_dormant_idle_noop(self):
+    async def test_dormant_idle_stays_dormant(self):
+        """DORMANT + IDLE stays DORMANT (extract_history is no-op without history)."""
         runner, ps, bot, sm = _make_runner(PipelinePhase.DORMANT)
         await runner.process(_event(TerminalView.IDLE))
         assert ps.phase == PipelinePhase.DORMANT
@@ -773,3 +774,193 @@ class TestFinalizeIntegration:
         ps.streaming.replace_content.assert_not_called()
         ps.streaming.finalize.assert_called_once()
         ps.emulator.clear_history.assert_called_once()
+
+
+# ===================================================================
+# Transition table completeness — Issue 002 regression
+# ===================================================================
+
+
+class TestTransitionTableCompleteness:
+    """Regression: Issue 002 — missing transitions produce WARNING logs."""
+
+    def test_all_phases_have_idle_transition(self):
+        """Every pipeline phase must handle TerminalView.IDLE.
+
+        IDLE is the most common resting state; a missing entry
+        causes 'No transition for (PHASE, IDLE)' warnings.
+        """
+        for phase in PipelinePhase:
+            key = (phase, TerminalView.IDLE)
+            assert key in _TRANSITIONS, (
+                f"Missing transition for ({phase.name}, IDLE)"
+            )
+
+    def test_dormant_idle_fires_extract_history(self):
+        """(DORMANT, IDLE) must fire extract_history action.
+
+        Regression guard: removing extract_history from this transition
+        silently drops large single-write outputs (e.g. /context).
+        """
+        _, actions = _TRANSITIONS[(PipelinePhase.DORMANT, TerminalView.IDLE)]
+        assert "extract_history" in actions
+
+
+# ===================================================================
+# _extract_history regression tests — Issue 001
+# ===================================================================
+
+
+class TestExtractHistoryIntegration:
+    """Regression: Issue 001 — /context output not relayed to Telegram.
+
+    Root cause: large single-write PTY outputs scroll into pyte's
+    scrollback history buffer before any poll cycle can capture them
+    on screen.  The _extract_history action must read history and send.
+    """
+
+    @staticmethod
+    def _make_history_row(text: str, cols: int = 80):
+        """Create a mock pyte history row (dict mapping col index to Char)."""
+        row = {}
+        for i in range(cols):
+            char = MagicMock()
+            char.data = text[i] if i < len(text) else " "
+            row[i] = char
+        return row
+
+    @pytest.mark.asyncio
+    async def test_scrollback_content_sent_to_telegram(self):
+        """Scrollback history content must be extracted and sent."""
+        from src.parsing.terminal_emulator import CharSpan
+
+        runner, ps, _, _ = _make_runner(PipelinePhase.DORMANT)
+        emu = ps.emulator
+        cols = 80
+        emu.cols = cols
+
+        row = self._make_history_row("Hello from scrollback history", cols)
+        emu.screen.history.top = [row]
+        emu._row_to_spans.return_value = [
+            CharSpan(
+                text="Hello from scrollback history",
+                fg="default", bold=False, italic=False,
+            )
+        ]
+
+        ps.streaming.state.value = "idle"
+
+        await runner._extract_history(_event(TerminalView.IDLE))
+
+        ps.streaming.append_content.assert_called_once()
+        html = ps.streaming.append_content.call_args[0][0]
+        assert "Hello from scrollback history" in html
+        ps.streaming.finalize.assert_called_once()
+        emu.clear_history.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_history_is_noop(self):
+        """No scrollback history → no Telegram message."""
+        runner, ps, _, _ = _make_runner(PipelinePhase.DORMANT)
+        ps.emulator.screen.history.top = []
+
+        await runner._extract_history(_event(TerminalView.IDLE))
+
+        ps.streaming.append_content.assert_not_called()
+        ps.streaming.finalize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_thinking_called_when_streaming_idle(self):
+        """Must call start_thinking to get message_id for overflow logic.
+
+        Without message_id, append_content sends a raw message that
+        cannot split content > 4096 chars.
+        """
+        from src.parsing.terminal_emulator import CharSpan
+
+        runner, ps, _, _ = _make_runner(PipelinePhase.DORMANT)
+        emu = ps.emulator
+        cols = 80
+        emu.cols = cols
+
+        row = self._make_history_row("Substantial content here", cols)
+        emu.screen.history.top = [row]
+        emu._row_to_spans.return_value = [
+            CharSpan(
+                text="Substantial content here",
+                fg="default", bold=False, italic=False,
+            )
+        ]
+
+        ps.streaming.state.value = "idle"
+
+        await runner._extract_history(_event(TerminalView.IDLE))
+
+        ps.streaming.start_thinking.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_leading_noise_lines_stripped(self):
+        """Short leading lines (pyte command-echo artifacts) must be stripped."""
+        from src.parsing.terminal_emulator import CharSpan
+
+        runner, ps, _, _ = _make_runner(PipelinePhase.DORMANT)
+        emu = ps.emulator
+        cols = 80
+        emu.cols = cols
+
+        noise_row = self._make_history_row("u", cols)
+        content_row = self._make_history_row("Real content after noise", cols)
+        emu.screen.history.top = [noise_row, content_row]
+        emu._row_to_spans.side_effect = [
+            [CharSpan(text="u", fg="default", bold=False, italic=False)],
+            [CharSpan(
+                text="Real content after noise",
+                fg="default", bold=False, italic=False,
+            )],
+        ]
+
+        ps.streaming.state.value = "idle"
+
+        await runner._extract_history(_event(TerminalView.IDLE))
+
+        ps.streaming.append_content.assert_called_once()
+        html = ps.streaming.append_content.call_args[0][0]
+        assert "Real content after noise" in html
+        # Leading "u" noise must not appear at the start of the output.
+        assert not html.lstrip().startswith("u")
+
+
+# ===================================================================
+# _extract_and_send content filter — Issue 001 regression
+# ===================================================================
+
+
+class TestExtractAndSendContentFilter:
+    """Single-char pyte artifacts must be filtered out of streaming output."""
+
+    @pytest.mark.asyncio
+    async def test_single_char_content_filtered(self):
+        """Content shorter than 3 chars must be suppressed."""
+        from src.parsing.terminal_emulator import CharSpan
+
+        runner, ps, _, _ = _make_runner(PipelinePhase.STREAMING)
+        ps.emulator.get_attributed_changes.return_value = [
+            [CharSpan(text="u", fg="default", bold=False, italic=False)]
+        ]
+        await runner._extract_and_send(_event(TerminalView.STREAMING))
+        ps.streaming.append_content.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_real_content_passes_filter(self):
+        """Content >= 3 chars must still be sent."""
+        from src.parsing.terminal_emulator import CharSpan
+
+        runner, ps, _, _ = _make_runner(PipelinePhase.STREAMING)
+        ps.emulator.get_attributed_changes.return_value = [
+            [CharSpan(
+                text="Real response text",
+                fg="default", bold=False, italic=False,
+            )]
+        ]
+        await runner._extract_and_send(_event(TerminalView.STREAMING))
+        ps.streaming.append_content.assert_called_once()
