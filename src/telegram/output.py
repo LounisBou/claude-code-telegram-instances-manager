@@ -64,13 +64,15 @@ _session_tool_acted: dict[tuple[int, int], bool] = {}
 def is_tool_request_pending(user_id: int, session_id: int) -> bool:
     """Check whether the session is currently showing a tool approval menu.
 
-    Wrapper that checks both the real SessionOutputState and the
-    backward-compat module-level dict (for tests that set state directly).
+    Checks real SessionOutputState first.  Falls back to compat dicts
+    for tests that set ``_session_prev_state`` / ``_session_tool_acted``
+    directly (without a real state entry in output_state._states).
+    The two paths cannot contradict because :func:`mark_tool_acted`
+    updates both atomically.
     """
-    result = _is_pending_impl(user_id, session_id)
-    if result:
+    if _is_pending_impl(user_id, session_id):
         return True
-    # Fallback: check compat dicts (tests may set _session_prev_state directly)
+    # Fallback for tests that bypass real state
     key = (user_id, session_id)
     if _session_tool_acted.get(key):
         return False
