@@ -2,139 +2,113 @@ from __future__ import annotations
 
 import re
 import textwrap
-from dataclasses import dataclass, field
-from enum import Enum
 
-
-# --- Screen state model ---
-
-
-class ScreenState(Enum):
-    """Possible states of the Claude Code terminal screen."""
-
-    STARTUP = "startup"
-    IDLE = "idle"
-    THINKING = "thinking"
-    STREAMING = "streaming"
-    USER_MESSAGE = "user_message"
-    TOOL_REQUEST = "tool_request"
-    TOOL_RUNNING = "tool_running"
-    TOOL_RESULT = "tool_result"
-    BACKGROUND_TASK = "background_task"
-    PARALLEL_AGENTS = "parallel_agents"
-    TODO_LIST = "todo_list"
-    AUTH_REQUIRED = "auth_required"
-    ERROR = "error"
-    UNKNOWN = "unknown"
-
-
-@dataclass
-class ScreenEvent:
-    """Classified screen state with extracted payload and raw lines."""
-
-    state: ScreenState
-    payload: dict = field(default_factory=dict)
-    raw_lines: list[str] = field(default_factory=list)
-    timestamp: float = 0.0
+from src.parsing.models import ScreenEvent, ScreenState  # noqa: F401 — re-exported
 
 
 # --- UI element classification ---
 
 # Trailing \uFFFD allowed because pyte renders partial ANSI sequences as replacement chars
-_SEPARATOR_RE = re.compile(r"^[─━═]{4,}\uFFFD*$")
+SEPARATOR_RE = re.compile(r"^[─━═]{4,}\uFFFD*$")
 # Separator with trailing text overlay from pyte (status text bleeds into separator row)
-_SEPARATOR_PREFIX_RE = re.compile(r"^[─━═]{20,}")
-_DIFF_DELIMITER_RE = re.compile(r"^[╌]{4,}\uFFFD*$")
-_STATUS_BAR_RE = re.compile(
+SEPARATOR_PREFIX_RE = re.compile(r"^[─━═]{20,}")
+DIFF_DELIMITER_RE = re.compile(r"^[╌]{4,}\uFFFD*$")
+STATUS_BAR_RE = re.compile(
     r"(?P<project>[\w\-]+)\s*│\s*"
     r"(?:⎇\s*(?P<branch>[\w\-/]+)(?P<dirty>\*)?)?\s*"
     r"(?:⇡(?P<ahead>\d+)\s*)?│?\s*"
     r"(?:Usage:\s*(?P<usage>\d+)%)?"
 )
-_TIMER_RE = re.compile(r"↻\s*([\d:]+)")
+TIMER_RE = re.compile(r"↻\s*([\d:]+)")
 # (?:\s|$) instead of \s to handle bare ❯ at end of line without trailing space
-_PROMPT_MARKER_RE = re.compile(r"^❯(?:\s|$)")
-_BOX_CHAR_RE = re.compile(r"[╭╮╰╯│├┤┬┴┼┌┐└┘]")
-_LOGO_RE = re.compile(r"[▐▛▜▌▝▘█▞▚]")
+PROMPT_MARKER_RE = re.compile(r"^❯(?:\s|$)")
+BOX_CHAR_RE = re.compile(r"[╭╮╰╯│├┤┬┴┼┌┐└┘]")
+LOGO_RE = re.compile(r"[▐▛▜▌▝▘█▞▚]")
 
 # Thinking stars: ✶✳✻✽✢· followed by text ending with …
-_THINKING_STAR_RE = re.compile(r"^[✶✳✻✽✢·]\s+(.+…(?:\s*\(.+\))?)$")
+THINKING_STAR_RE = re.compile(r"^[✶✳✻✽✢·]\s+(.+…(?:\s*\(.+\))?)$")
 
 # Claude response marker
-_RESPONSE_MARKER_RE = re.compile(r"^⏺\s+(.*)")
+RESPONSE_MARKER_RE = re.compile(r"^⏺\s+(.*)")
 
 # Auth/login screen indicators
-_AUTH_SIGN_IN_RE = re.compile(r"sign in|log in", re.IGNORECASE)
-_AUTH_PASTE_CODE_RE = re.compile(r"Paste code here", re.IGNORECASE)
-_AUTH_OAUTH_URL_RE = re.compile(r"claude\.ai/oauth/authorize")
+AUTH_SIGN_IN_RE = re.compile(r"sign in|log in", re.IGNORECASE)
+AUTH_PASTE_CODE_RE = re.compile(r"Paste code here", re.IGNORECASE)
+AUTH_OAUTH_URL_RE = re.compile(r"claude\.ai/oauth/authorize")
 
 # Tool connector
-_TOOL_CONNECTOR_RE = re.compile(r"^\s*⎿")
+TOOL_CONNECTOR_RE = re.compile(r"^\s*⎿")
 
 # Tool running/waiting status
-_TOOL_STATUS_RE = re.compile(r"^\s*⎿\s+(Running|Waiting)…")
-_TOOL_HOOKS_RE = re.compile(r"^\s*⎿\s+Running \w+ hooks…")
+TOOL_STATUS_RE = re.compile(r"^\s*⎿\s+(Running|Waiting)…")
+TOOL_HOOKS_RE = re.compile(r"^\s*⎿\s+Running \w+ hooks…")
 
 # Tool diff result
-_TOOL_DIFF_RE = re.compile(r"^\s*⎿\s+Added (\d+) lines?, removed (\d+) lines?")
+TOOL_DIFF_RE = re.compile(r"^\s*⎿\s+Added (\d+) lines?, removed (\d+) lines?")
 
 # Tool header patterns
 # Optional ⏺ prefix: Claude sometimes wraps tool calls inside response markers
-_TOOL_HEADER_LINE_RE = re.compile(
+TOOL_HEADER_LINE_RE = re.compile(
     r"^\s*(?:⏺\s+)?"
     r"(?:Bash\(|Write\(|Update\(|Read(?:ing)?\s*[\d(]|Searched\s+for\s)"
 )
-_TOOL_BASH_RE = re.compile(r"Bash\((.+?)\)")
-_TOOL_FILE_RE = re.compile(r"(?:Write|Update|Read(?:ing)?)\((.+?)\)")
-_TOOL_READ_COLLAPSED_RE = re.compile(r"Read (\d+) files? \(ctrl\+o")
-_TOOL_SEARCH_COLLAPSED_RE = re.compile(r"Searched for (.+?) \(ctrl\+o")
+TOOL_BASH_RE = re.compile(r"Bash\((.+?)\)")
+TOOL_FILE_RE = re.compile(r"(?:Write|Update|Read(?:ing)?)\((.+?)\)")
+TOOL_READ_COLLAPSED_RE = re.compile(r"Read (\d+) files? \(ctrl\+o")
+TOOL_SEARCH_COLLAPSED_RE = re.compile(r"Searched for (.+?) \(ctrl\+o")
 
 # Selection menu
-_SELECTION_SELECTED_RE = re.compile(r"^\s*❯\s+(\d+)\.\s+(.+)$")
-_SELECTION_UNSELECTED_RE = re.compile(r"^\s+(\d+)\.\s+(.+)$")
-_SELECTION_HINT_RE = re.compile(r"Esc to cancel")
+SELECTION_SELECTED_RE = re.compile(r"^\s*❯\s+(\d+)\.\s+(.+)$")
+SELECTION_UNSELECTED_RE = re.compile(r"^\s+(\d+)\.\s+(.+)$")
+SELECTION_HINT_RE = re.compile(r"Esc to cancel")
 
 # Background task
-_BACKGROUND_RE = re.compile(r"in the background")
+BACKGROUND_RE = re.compile(r"in the background")
 
 # Parallel agents
-_AGENTS_LAUNCHED_RE = re.compile(r"(\d+) agents? launched")
-_AGENT_TREE_ITEM_RE = re.compile(r"^\s*[├└]\s*─\s*(.*)")
-_AGENT_COMPLETE_RE = re.compile(r'Agent "(.+?)" completed')
-_LOCAL_AGENTS_RE = re.compile(r"(\d+) local agents?")
+AGENTS_LAUNCHED_RE = re.compile(r"(\d+) agents? launched")
+AGENT_TREE_ITEM_RE = re.compile(r"^\s*[├└]\s*─\s*(.*)")
+AGENT_COMPLETE_RE = re.compile(r'Agent "(.+?)" completed')
+LOCAL_AGENTS_RE = re.compile(r"(\d+) local agents?")
 
 # TODO list
-_TODO_HEADER_RE = re.compile(
+TODO_HEADER_RE = re.compile(
     r"(\d+) tasks? \((\d+) done(?:, (\d+) in progress)?, (\d+) open\)"
 )
-_TODO_ITEM_RE = re.compile(r"^[◻◼✔]\s+")
+TODO_ITEM_RE = re.compile(r"^[◻◼✔]\s+")
 
 # Error patterns
-_ERROR_RE = re.compile(
+ERROR_RE = re.compile(
     r"MCP server failed|(?:^|\s)Error:|ENOENT|EPERM", re.IGNORECASE
 )
 
 # Startup
-_STARTUP_RE = re.compile(r"Claude Code v[\d.]+")
+STARTUP_RE = re.compile(r"Claude Code v[\d.]+")
 
 # Status bar tip / hint lines
-_TIP_RE = re.compile(r"^(?:\w+\s+)?[Tt]ip:\s")
-_BARE_TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
-_CLAUDE_HINT_RE = re.compile(r"claude\s+--(?:continue|resume)")
+TIP_RE = re.compile(r"^(?:\w+\s+)?[Tt]ip:\s")
+BARE_TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
+CLAUDE_HINT_RE = re.compile(r"claude\s+--(?:continue|resume)")
 
 # PR indicator in status bar area (standalone "PR #13" line)
-_PR_INDICATOR_RE = re.compile(r"^PR\s*#\d+$")
+PR_INDICATOR_RE = re.compile(r"^PR\s*#\d+$")
 
 # Context window progress bar (block elements) and/or timer (↻ HH:MM)
-_CONTEXT_TIMER_RE = re.compile(r"↻\s*\d+:\d+")
-_PROGRESS_BAR_RE = re.compile(r"^[▊▉█▌▍▎▏░▒▓\s]+$")
+CONTEXT_TIMER_RE = re.compile(r"↻\s*\d+:\d+")
+PROGRESS_BAR_RE = re.compile(r"^[▊▉█▌▍▎▏░▒▓\s]+$")
 
 # Extra status line
-_EXTRA_BASH_RE = re.compile(r"(\d+) bash")
-_EXTRA_AGENTS_RE = re.compile(r"(\d+) local agents?")
-_EXTRA_FILES_RE = re.compile(r"(\d+) files? \+(\d+) -(\d+)")
+EXTRA_BASH_RE = re.compile(r"(\d+) bash")
+EXTRA_AGENTS_RE = re.compile(r"(\d+) local agents?")
+EXTRA_FILES_RE = re.compile(r"(\d+) files? \+(\d+) -(\d+)")
 
-def classify_line(line: str) -> str:
+CHROME_CATEGORIES = frozenset({
+    "separator", "diff_delimiter", "status_bar", "prompt",
+    "thinking", "startup", "logo", "box", "empty",
+})
+
+
+def classify_text_line(line: str) -> str:
     """Classify a screen line as a UI element or content.
 
     Checks the line against known Claude Code UI patterns (separators,
@@ -154,75 +128,75 @@ def classify_line(line: str) -> str:
     stripped = line.strip()
     if not stripped:
         return "empty"
-    if _SEPARATOR_RE.match(stripped):
+    if SEPARATOR_RE.match(stripped):
         return "separator"
     # Separator with trailing text overlay (pyte bleed from adjacent columns)
-    if _SEPARATOR_PREFIX_RE.match(stripped):
+    if SEPARATOR_PREFIX_RE.match(stripped):
         return "separator"
-    if _DIFF_DELIMITER_RE.match(stripped):
+    if DIFF_DELIMITER_RE.match(stripped):
         return "diff_delimiter"
     # Startup banner line (e.g. "Claude Code v2.1.39") — must be filtered
     # to prevent leaking into response content when pyte redraws the screen.
-    if _STARTUP_RE.search(stripped):
+    if STARTUP_RE.search(stripped):
         return "startup"
     # Pre-check: require distinctive status bar markers (⎇ branch or Usage:)
     # to avoid false positives on table data rows containing │
-    if ("⎇" in stripped or "Usage:" in stripped) and _STATUS_BAR_RE.search(stripped):
+    if ("⎇" in stripped or "Usage:" in stripped) and STATUS_BAR_RE.search(stripped):
         return "status_bar"
     # Tip/hint lines from Claude Code UI
-    if _TIP_RE.match(stripped):
+    if TIP_RE.match(stripped):
         return "status_bar"
-    if _BARE_TIME_RE.match(stripped):
+    if BARE_TIME_RE.match(stripped):
         return "status_bar"
-    if _CLAUDE_HINT_RE.search(stripped):
+    if CLAUDE_HINT_RE.search(stripped):
         return "status_bar"
-    if _PR_INDICATOR_RE.match(stripped):
+    if PR_INDICATOR_RE.match(stripped):
         return "status_bar"
     # Extra status line: "4 files +0 -0 · PR #5", "1 bash · 1 file +194 -192"
-    # These are Claude Code's bottom-row status counters.  _EXTRA_FILES_RE
+    # These are Claude Code's bottom-row status counters.  EXTRA_FILES_RE
     # has a very specific format (N files? +N -N) that doesn't appear in prose.
-    # _EXTRA_BASH_RE / _EXTRA_AGENTS_RE require a · separator to avoid false
+    # EXTRA_BASH_RE / EXTRA_AGENTS_RE require a · separator to avoid false
     # positives on prose containing "bash" or "local agents".
-    if _EXTRA_FILES_RE.search(stripped):
+    if EXTRA_FILES_RE.search(stripped):
         return "status_bar"
     if "\u00b7" in stripped and (
-        _EXTRA_BASH_RE.search(stripped)
-        or _EXTRA_AGENTS_RE.search(stripped)
+        EXTRA_BASH_RE.search(stripped)
+        or EXTRA_AGENTS_RE.search(stripped)
     ):
         return "status_bar"
     # Context window progress bar and/or timer (e.g. "▊░░░░░░░░░ ↻ 11:00")
-    if _CONTEXT_TIMER_RE.search(stripped):
+    if CONTEXT_TIMER_RE.search(stripped):
         return "status_bar"
-    if _PROGRESS_BAR_RE.match(stripped):
+    if PROGRESS_BAR_RE.match(stripped):
         return "status_bar"
-    if _THINKING_STAR_RE.match(stripped):
+    if THINKING_STAR_RE.match(stripped):
         return "thinking"
-    if _TOOL_HEADER_LINE_RE.match(stripped):
+    if TOOL_HEADER_LINE_RE.match(stripped):
         return "tool_header"
     if stripped.startswith("⏺"):
         return "response"
-    if _TOOL_CONNECTOR_RE.match(stripped):
+    if TOOL_CONNECTOR_RE.match(stripped):
         return "tool_connector"
-    if _TODO_ITEM_RE.match(stripped):
+    if TODO_ITEM_RE.match(stripped):
         return "todo_item"
     # Agent tree: ├─ name or └─ name (must have text after dash, not pure border)
     if re.match(r"^[├└]\s*─+\s+\w", stripped):
         return "agent_tree"
-    if _PROMPT_MARKER_RE.match(stripped):
+    if PROMPT_MARKER_RE.match(stripped):
         return "prompt"
     # Box detection: require 2+ box-drawing chars AND length > 10.
     # But only classify as "box" if the line is mostly structural (borders).
     # Lines with substantial alphabetic content between box chars are table
     # data rows from Claude's response — keep those as "content".
-    if _BOX_CHAR_RE.search(stripped) and len(stripped) > 10:
-        box_chars = sum(1 for c in stripped if _BOX_CHAR_RE.match(c))
+    if BOX_CHAR_RE.search(stripped) and len(stripped) > 10:
+        box_chars = sum(1 for c in stripped if BOX_CHAR_RE.match(c))
         if box_chars >= 2:
             alpha_chars = sum(1 for c in stripped if c.isalpha())
             if alpha_chars <= 3:
                 return "box"
     # Require 3+ block-element chars to distinguish logo from occasional Unicode in content
-    if _LOGO_RE.search(stripped):
-        logo_chars = sum(1 for c in stripped if _LOGO_RE.match(c))
+    if LOGO_RE.search(stripped):
+        logo_chars = sum(1 for c in stripped if LOGO_RE.match(c))
         if logo_chars >= 3:
             return "logo"
     return "content"
@@ -232,7 +206,7 @@ def extract_content(lines: list[str]) -> str:
     """Extract meaningful content from screen lines, filtering UI chrome.
 
     Keeps lines classified as 'content', 'response' (⏺ prefix replaced),
-    and 'tool_connector' (⎿ prefix replaced) by classify_line.
+    and 'tool_connector' (⎿ prefix replaced) by classify_text_line.
 
     Preserves relative indentation by replacing Unicode markers (⏺, ⎿)
     with spaces of equal width instead of stripping them. After collection,
@@ -253,7 +227,7 @@ def extract_content(lines: list[str]) -> str:
     content_lines = []
     in_prompt = False
     for line in lines:
-        cls = classify_line(line)
+        cls = classify_text_line(line)
         # Start skipping after a ❯ prompt line — continuation lines
         # (wrapped user input) are classified as 'content' but belong
         # to the prompt, not to Claude's response.

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.telegram.output import StreamingMessage, StreamingState
+from src.telegram.streaming_message import StreamingMessage, StreamingState
 
 
 class TestStreamingMessageInit:
@@ -330,3 +330,91 @@ class TestStreamingMessageSafetyNets:
         # No edit_message_text called (nothing to finalize)
         bot.edit_message_text.assert_not_called()
         assert sm.state == StreamingState.THINKING
+
+
+class TestEditEdgeCases:
+    """Cover _edit edge cases: early return, parse error fallback failure."""
+
+    @pytest.mark.asyncio
+    async def test_edit_noop_when_no_message_id(self):
+        """_edit returns immediately when message_id is None."""
+        bot = AsyncMock()
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        sm.message_id = None
+        sm.accumulated = "content"
+        await sm._edit()
+        bot.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_noop_when_no_accumulated(self):
+        """_edit returns immediately when accumulated is empty."""
+        bot = AsyncMock()
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        sm.message_id = 42
+        sm.accumulated = ""
+        await sm._edit()
+        bot.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_plain_fallback_also_fails(self):
+        """When HTML parse fails and plain-text fallback also fails, logs warning."""
+        bot = AsyncMock()
+        bot.edit_message_text = AsyncMock(
+            side_effect=[
+                Exception("Can't parse entities"),
+                Exception("Network error"),
+            ]
+        )
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        sm.message_id = 42
+        sm.accumulated = "<b>bad html"
+        # Should not raise — just logs
+        await sm._edit()
+        assert bot.edit_message_text.call_count == 2
+
+
+class TestOverflowEdgeCases:
+    """Cover _overflow when no newline found in first 4096 chars."""
+
+    @pytest.mark.asyncio
+    async def test_overflow_no_newline_splits_at_4000(self):
+        """When no newline in first 4096 chars, splits at 4000."""
+        bot = AsyncMock()
+        bot.edit_message_text = AsyncMock()
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=99))
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+        sm.message_id = 42
+        sm.accumulated = "A" * 5000  # No newlines at all
+        await sm._overflow()
+        # First 4000 chars edited in place, rest sent as new message
+        bot.edit_message_text.assert_called_once()
+        bot.send_message.assert_called_once()
+        assert sm.message_id == 99
+
+
+class TestTypingLoop:
+    """Cover _typing_loop send_chat_action and cancellation."""
+
+    @pytest.mark.asyncio
+    async def test_typing_loop_sends_action_and_cancels(self):
+        """_typing_loop sends typing action, then catches CancelledError."""
+        bot = AsyncMock()
+        sm = StreamingMessage(bot=bot, chat_id=123, edit_rate_limit=3)
+
+        call_count = 0
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                # Let the first iteration run, cancel on second
+                raise asyncio.CancelledError()
+            await original_sleep(0)
+
+        with patch("asyncio.sleep", side_effect=fast_sleep):
+            await sm._typing_loop()
+
+        bot.send_chat_action.assert_called_once_with(
+            chat_id=123, action="typing",
+        )

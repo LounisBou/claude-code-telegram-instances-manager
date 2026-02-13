@@ -5,20 +5,20 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.parsing.ui_patterns import (
-    _AGENTS_LAUNCHED_RE,
-    _AGENT_COMPLETE_RE,
-    _AGENT_TREE_ITEM_RE,
-    _BACKGROUND_RE,
-    _EXTRA_AGENTS_RE,
-    _EXTRA_BASH_RE,
-    _EXTRA_FILES_RE,
-    _SELECTION_HINT_RE,
-    _SELECTION_SELECTED_RE,
-    _SELECTION_UNSELECTED_RE,
-    _STATUS_BAR_RE,
-    _THINKING_STAR_RE,
-    _TIMER_RE,
-    _TODO_HEADER_RE,
+    AGENTS_LAUNCHED_RE,
+    AGENT_COMPLETE_RE,
+    AGENT_TREE_ITEM_RE,
+    BACKGROUND_RE,
+    EXTRA_AGENTS_RE,
+    EXTRA_BASH_RE,
+    EXTRA_FILES_RE,
+    SELECTION_HINT_RE,
+    SELECTION_SELECTED_RE,
+    SELECTION_UNSELECTED_RE,
+    STATUS_BAR_RE,
+    THINKING_STAR_RE,
+    TIMER_RE,
+    TODO_HEADER_RE,
 )
 
 
@@ -198,7 +198,7 @@ def parse_status_bar(text: str) -> StatusBar | None:
     """
     if not text.strip():
         return None
-    match = _STATUS_BAR_RE.search(text)
+    match = STATUS_BAR_RE.search(text)
     if not match:
         return None
     project = match.group("project")
@@ -208,7 +208,7 @@ def parse_status_bar(text: str) -> StatusBar | None:
         return None
     dirty = bool(match.group("dirty"))
     ahead = match.group("ahead")
-    timer_match = _TIMER_RE.search(text)
+    timer_match = TIMER_RE.search(text)
     return StatusBar(
         project=project,
         branch=branch,
@@ -237,13 +237,13 @@ def parse_extra_status(text: str) -> dict:
         if no patterns match.
     """
     result: dict = {}
-    m = _EXTRA_BASH_RE.search(text)
+    m = EXTRA_BASH_RE.search(text)
     if m:
         result["bash_tasks"] = int(m.group(1))
-    m = _EXTRA_AGENTS_RE.search(text)
+    m = EXTRA_AGENTS_RE.search(text)
     if m:
         result["local_agents"] = int(m.group(1))
-    m = _EXTRA_FILES_RE.search(text)
+    m = EXTRA_FILES_RE.search(text)
     if m:
         result["files_changed"] = int(m.group(1))
         result["lines_added"] = int(m.group(2))
@@ -297,7 +297,7 @@ def detect_thinking(lines: list[str]) -> dict | None:
         or None), or None if no thinking indicator is found.
     """
     for line in lines:
-        m = _THINKING_STAR_RE.match(line.strip())
+        m = THINKING_STAR_RE.match(line.strip())
         if m:
             text = m.group(1)
             elapsed = None
@@ -335,7 +335,7 @@ def detect_tool_request(lines: list[str]) -> dict | None:
             question = stripped
 
         # Selected option: ❯ N. text
-        m = _SELECTION_SELECTED_RE.match(stripped)
+        m = SELECTION_SELECTED_RE.match(stripped)
         if m:
             has_selection = True
             idx = int(m.group(1))
@@ -345,13 +345,13 @@ def detect_tool_request(lines: list[str]) -> dict | None:
 
         # Match on raw line (not stripped) — indentation distinguishes menu items
         # from other numbered lists in content
-        m = _SELECTION_UNSELECTED_RE.match(line)
+        m = SELECTION_UNSELECTED_RE.match(line)
         if m and has_selection:
             options.append((int(m.group(1)), m.group(2).strip()))
             continue
 
         # Hint line
-        if _SELECTION_HINT_RE.search(stripped):
+        if SELECTION_HINT_RE.search(stripped):
             has_hint = True
 
     if has_selection and len(options) >= 2:
@@ -385,7 +385,7 @@ def detect_todo_list(lines: list[str]) -> dict | None:
     for line in lines:
         stripped = line.strip()
 
-        m = _TODO_HEADER_RE.search(stripped)
+        m = TODO_HEADER_RE.search(stripped)
         if m:
             header = {
                 "total": int(m.group(1)),
@@ -428,7 +428,7 @@ def detect_background_task(lines: list[str]) -> dict | None:
         background task indicator is found.
     """
     for line in lines:
-        if _BACKGROUND_RE.search(line):
+        if BACKGROUND_RE.search(line):
             return {"raw": line.strip()}
     return None
 
@@ -454,18 +454,18 @@ def detect_parallel_agents(lines: list[str]) -> dict | None:
     for line in lines:
         stripped = line.strip()
 
-        m = _AGENTS_LAUNCHED_RE.search(stripped)
+        m = AGENTS_LAUNCHED_RE.search(stripped)
         if m:
             count = int(m.group(1))
             continue
 
-        m = _AGENT_COMPLETE_RE.search(stripped)
+        m = AGENT_COMPLETE_RE.search(stripped)
         if m:
             completed.append(m.group(1))
             continue
 
         # Agent tree items: ├─ name (description)
-        m = _AGENT_TREE_ITEM_RE.match(stripped)
+        m = AGENT_TREE_ITEM_RE.match(stripped)
         if m and m.group(1).strip():
             agents.append(m.group(1).strip())
 

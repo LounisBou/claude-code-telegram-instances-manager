@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 
 from src.telegram.keyboards import format_history_entry, is_authorized
 from src.git_info import get_git_info
-from src.telegram.output import is_tool_request_pending
+from src.telegram.output_state import is_tool_request_pending
 
 logger = logging.getLogger(__name__)
 

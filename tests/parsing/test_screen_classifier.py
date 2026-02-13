@@ -262,10 +262,10 @@ class TestClassifyScreenState:
         event = classify_screen_state(lines)
         assert event.state == ScreenState.STREAMING
 
-    def test_separator_classify_line_with_fffd(self):
-        """Regression: classify_line should return 'separator' for artifact separators."""
-        from src.parsing.ui_patterns import classify_line as _classify_line
-        assert _classify_line("─" * 38 + "\uFFFD\uFFFD") == "separator"
+    def test_separator_classify_text_line_with_fffd(self):
+        """Regression: classify_text_line should return 'separator' for artifact separators."""
+        from src.parsing.ui_patterns import classify_text_line
+        assert classify_text_line("─" * 38 + "\uFFFD\uFFFD") == "separator"
 
 
 class TestClassifyScreenStateLogging:

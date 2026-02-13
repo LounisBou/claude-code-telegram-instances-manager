@@ -91,7 +91,7 @@ LineType = Literal[
 ]
 
 
-def classify_line(spans: list[CharSpan]) -> LineType:
+def classify_attr_line(spans: list[CharSpan]) -> LineType:
     """Classify a single line (list of CharSpan) into a semantic type.
 
     Args:
@@ -196,7 +196,7 @@ def classify_regions(
     line_texts: list[str] = []
 
     for spans in attributed_lines:
-        lt = classify_line(spans)
+        lt = classify_attr_line(spans)
         line_types.append(lt)
         # For prose lines, insert inline code markers
         if lt == "prose":

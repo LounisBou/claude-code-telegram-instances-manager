@@ -256,7 +256,7 @@ class TestHandleCallbackQuery:
         session = MagicMock(session_id=1, project_name="my-project")
         sm.create_session = AsyncMock(return_value=session)
         context.bot_data = {"config": config, "session_manager": sm}
-        with patch("src.telegram.handlers.get_git_info", new_callable=AsyncMock) as mock_git:
+        with patch("src.telegram.callbacks.get_git_info", new_callable=AsyncMock) as mock_git:
             mock_git.return_value = MagicMock(
                 format=MagicMock(return_value="Branch: main")
             )
@@ -323,7 +323,7 @@ class TestHandleCallbackQuery:
         config.claude.update_command = "echo done"
         context.bot_data = {"config": config, "session_manager": MagicMock()}
         with patch(
-            "src.telegram.handlers._run_update_command", new_callable=AsyncMock
+            "src.telegram.callbacks._run_update_command", new_callable=AsyncMock
         ) as mock_run:
             mock_run.return_value = "OK: done"
             await handle_callback_query(update, context)
@@ -358,7 +358,7 @@ class TestHandleCallbackQuery:
         config.claude.update_command = "echo done"
         context.bot_data = {"config": config, "session_manager": MagicMock()}
         with patch(
-            "src.telegram.handlers._run_update_command", new_callable=AsyncMock
+            "src.telegram.callbacks._run_update_command", new_callable=AsyncMock
         ) as mock_run:
             mock_run.return_value = "OK: done"
             await handle_callback_query(update, context)
@@ -382,7 +382,7 @@ class TestHandleCallbackQuery:
         config.claude.update_command = "brew upgrade claude-code"
         context.bot_data = {"config": config, "session_manager": MagicMock()}
         with patch(
-            "src.telegram.handlers._run_update_command", new_callable=AsyncMock
+            "src.telegram.callbacks._run_update_command", new_callable=AsyncMock
         ) as mock_run:
             mock_run.return_value = (
                 "FAILED (exit 1): Error: /opt/homebrew/Cellar not writable"
@@ -407,7 +407,7 @@ class TestHandleCallbackQuery:
         config.projects.root = "/tmp"
         config.projects.scan_depth = 1
         context.bot_data = {"config": config, "session_manager": MagicMock()}
-        with patch("src.telegram.handlers.scan_projects") as mock_scan:
+        with patch("src.telegram.callbacks.scan_projects") as mock_scan:
             mock_scan.return_value = [
                 Project(name=f"p{i}", path=f"/a/p{i}") for i in range(12)
             ]
@@ -584,7 +584,7 @@ class TestToolCallbackMarksActed:
         session.process.write = AsyncMock()
         sm._sessions = {111: {1: session}}
         context.bot_data = {"config": config, "session_manager": sm}
-        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+        with patch("src.telegram.callbacks.mark_tool_acted") as mock_mark:
             await handle_callback_query(update, context)
             mock_mark.assert_called_once_with(111, 1)
 
@@ -605,7 +605,7 @@ class TestToolCallbackMarksActed:
         session.process.write = AsyncMock()
         sm._sessions = {111: {1: session}}
         context.bot_data = {"config": config, "session_manager": sm}
-        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+        with patch("src.telegram.callbacks.mark_tool_acted") as mock_mark:
             await handle_callback_query(update, context)
             mock_mark.assert_called_once_with(111, 1)
 
@@ -626,7 +626,7 @@ class TestToolCallbackMarksActed:
         session.process.write = AsyncMock()
         sm._sessions = {111: {5: session}}
         context.bot_data = {"config": config, "session_manager": sm}
-        with patch("src.telegram.handlers.mark_tool_acted") as mock_mark:
+        with patch("src.telegram.callbacks.mark_tool_acted") as mock_mark:
             await handle_callback_query(update, context)
             mock_mark.assert_called_once_with(111, 5)
 
@@ -738,7 +738,7 @@ class TestSpawnErrorReporting:
         sm = AsyncMock()
         sm.create_session = AsyncMock(side_effect=OSError("bad"))
         context.bot_data = {"config": config, "session_manager": sm}
-        with patch("src.telegram.handlers.get_git_info", new_callable=AsyncMock) as mock_git:
+        with patch("src.telegram.callbacks.get_git_info", new_callable=AsyncMock) as mock_git:
             await handle_callback_query(update, context)
             mock_git.assert_not_called()
 

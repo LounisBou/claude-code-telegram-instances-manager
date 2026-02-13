@@ -14,30 +14,30 @@ from src.core.log_setup import TRACE
 from src.parsing.ui_patterns import (
     ScreenEvent,
     ScreenState,
-    _AUTH_OAUTH_URL_RE,
-    _AUTH_PASTE_CODE_RE,
-    _AUTH_SIGN_IN_RE,
-    _BARE_TIME_RE,
-    _CLAUDE_HINT_RE,
-    _ERROR_RE,
-    _EXTRA_AGENTS_RE,
-    _EXTRA_BASH_RE,
-    _EXTRA_FILES_RE,
-    _LOGO_RE,
-    _PR_INDICATOR_RE,
-    _PROMPT_MARKER_RE,
-    _RESPONSE_MARKER_RE,
-    _SEPARATOR_PREFIX_RE,
-    _SEPARATOR_RE,
-    _STARTUP_RE,
-    _STATUS_BAR_RE,
-    _TIMER_RE,
-    _TIP_RE,
-    _TOOL_BASH_RE,
-    _TOOL_DIFF_RE,
-    _TOOL_FILE_RE,
-    _TOOL_HOOKS_RE,
-    _TOOL_STATUS_RE,
+    AUTH_OAUTH_URL_RE,
+    AUTH_PASTE_CODE_RE,
+    AUTH_SIGN_IN_RE,
+    BARE_TIME_RE,
+    CLAUDE_HINT_RE,
+    ERROR_RE,
+    EXTRA_AGENTS_RE,
+    EXTRA_BASH_RE,
+    EXTRA_FILES_RE,
+    LOGO_RE,
+    PR_INDICATOR_RE,
+    PROMPT_MARKER_RE,
+    RESPONSE_MARKER_RE,
+    SEPARATOR_PREFIX_RE,
+    SEPARATOR_RE,
+    STARTUP_RE,
+    STATUS_BAR_RE,
+    TIMER_RE,
+    TIP_RE,
+    TOOL_BASH_RE,
+    TOOL_DIFF_RE,
+    TOOL_FILE_RE,
+    TOOL_HOOKS_RE,
+    TOOL_STATUS_RE,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,10 +57,10 @@ def _extract_tool_info(lines: list[str]) -> dict:
         (for file tools). Empty dict if no tool header is found.
     """
     for line in lines:
-        m = _TOOL_BASH_RE.search(line)
+        m = TOOL_BASH_RE.search(line)
         if m:
             return {"tool": "Bash", "command": m.group(1)}
-        m = _TOOL_FILE_RE.search(line)
+        m = TOOL_FILE_RE.search(line)
         if m:
             tool_name = "Write" if "Write" in line else "Update" if "Update" in line else "Read"
             return {"tool": tool_name, "target": m.group(1)}
@@ -113,9 +113,9 @@ def classify_screen_state(
     auth_url = ""
     for line in non_empty:
         stripped = line.strip()
-        if _AUTH_PASTE_CODE_RE.search(stripped) or _AUTH_SIGN_IN_RE.search(stripped):
+        if AUTH_PASTE_CODE_RE.search(stripped) or AUTH_SIGN_IN_RE.search(stripped):
             has_auth_indicator = True
-        m = _AUTH_OAUTH_URL_RE.search(stripped)
+        m = AUTH_OAUTH_URL_RE.search(stripped)
         if m:
             auth_url = stripped
     if has_auth_indicator and auth_url:
@@ -138,9 +138,9 @@ def classify_screen_state(
     # --- Second pass: bottom-up scan for current activity ---
 
     # Find last meaningful line (skip status bar, separators, empty lines).
-    # Must skip ALL patterns that classify_line() considers non-content UI:
+    # Must skip ALL patterns that classify_text_line() considers non-content UI:
     # tips, bare times, claude hints, timer lines, and separators with
-    # trailing text overlay (_SEPARATOR_PREFIX_RE).  Missing any of these
+    # trailing text overlay (SEPARATOR_PREFIX_RE).  Missing any of these
     # makes the scan stop on a UI chrome line, which breaks IDLE detection
     # (the prompt ❯ never becomes last_line).
     active_idx = len(lines) - 1
@@ -148,17 +148,17 @@ def classify_screen_state(
         stripped = lines[active_idx].strip()
         if (
             stripped
-            and not _STATUS_BAR_RE.search(stripped)
-            and not _SEPARATOR_RE.match(stripped)
-            and not _SEPARATOR_PREFIX_RE.match(stripped)
-            and not _TIP_RE.match(stripped)
-            and not _BARE_TIME_RE.match(stripped)
-            and not _CLAUDE_HINT_RE.search(stripped)
-            and not _TIMER_RE.search(stripped)
-            and not _EXTRA_BASH_RE.search(stripped)
-            and not _EXTRA_AGENTS_RE.search(stripped)
-            and not _EXTRA_FILES_RE.search(stripped)
-            and not _PR_INDICATOR_RE.match(stripped)
+            and not STATUS_BAR_RE.search(stripped)
+            and not SEPARATOR_RE.match(stripped)
+            and not SEPARATOR_PREFIX_RE.match(stripped)
+            and not TIP_RE.match(stripped)
+            and not BARE_TIME_RE.match(stripped)
+            and not CLAUDE_HINT_RE.search(stripped)
+            and not TIMER_RE.search(stripped)
+            and not EXTRA_BASH_RE.search(stripped)
+            and not EXTRA_AGENTS_RE.search(stripped)
+            and not EXTRA_FILES_RE.search(stripped)
+            and not PR_INDICATOR_RE.match(stripped)
         ):
             break
         active_idx -= 1
@@ -177,7 +177,7 @@ def classify_screen_state(
 
     # 5. Tool running/waiting
     for line in reversed(bottom_lines):
-        if _TOOL_STATUS_RE.search(line) or _TOOL_HOOKS_RE.search(line):
+        if TOOL_STATUS_RE.search(line) or TOOL_HOOKS_RE.search(line):
             tool_info = _extract_tool_info(lines)
             return _return(ScreenEvent(
                 state=ScreenState.TOOL_RUNNING, payload=tool_info, raw_lines=lines
@@ -185,7 +185,7 @@ def classify_screen_state(
 
     # 6. Tool result (diff summary)
     for line in reversed(bottom_lines):
-        m = _TOOL_DIFF_RE.search(line)
+        m = TOOL_DIFF_RE.search(line)
         if m:
             return _return(ScreenEvent(
                 state=ScreenState.TOOL_RESULT,
@@ -206,21 +206,21 @@ def classify_screen_state(
 
     # 8. IDLE: ❯ between separators — 3-line gap tolerance because pyte
     #    may insert blank/artifact lines between the separator and prompt.
-    #    Check both _SEPARATOR_RE (pure separator) and _SEPARATOR_PREFIX_RE
+    #    Check both SEPARATOR_RE (pure separator) and SEPARATOR_PREFIX_RE
     #    (separator with trailing text overlay from pyte column bleed).
-    if _PROMPT_MARKER_RE.match(last_line):
+    if PROMPT_MARKER_RE.match(last_line):
         found_sep_above = False
         for i in range(active_idx - 1, max(-1, active_idx - 4), -1):
             if i < 0:
                 break
             s = lines[i].strip()
-            if s and (_SEPARATOR_RE.match(s) or _SEPARATOR_PREFIX_RE.match(s)):
+            if s and (SEPARATOR_RE.match(s) or SEPARATOR_PREFIX_RE.match(s)):
                 found_sep_above = True
                 break
         found_sep_below = False
         for i in range(active_idx + 1, min(len(lines), active_idx + 4)):
             s = lines[i].strip()
-            if s and (_SEPARATOR_RE.match(s) or _SEPARATOR_PREFIX_RE.match(s)):
+            if s and (SEPARATOR_RE.match(s) or SEPARATOR_PREFIX_RE.match(s)):
                 found_sep_below = True
                 break
         if found_sep_above and found_sep_below:
@@ -239,14 +239,14 @@ def classify_screen_state(
     # from the previous response is still visible above the new ❯ line.
     last_prompt_idx = -1
     for i, line in enumerate(lines):
-        if _PROMPT_MARKER_RE.match(line.strip()):
+        if PROMPT_MARKER_RE.match(line.strip()):
             last_prompt_idx = i
 
     for line in lines[last_prompt_idx + 1 :]:
         stripped = line.strip()
         if not stripped:
             continue
-        m = _RESPONSE_MARKER_RE.match(stripped)
+        m = RESPONSE_MARKER_RE.match(stripped)
         if m:
             return _return(ScreenEvent(
                 state=ScreenState.STREAMING,
@@ -255,7 +255,7 @@ def classify_screen_state(
             ))
 
     # 10. User message: ❯ followed by text (not between separators)
-    if _PROMPT_MARKER_RE.match(last_line):
+    if PROMPT_MARKER_RE.match(last_line):
         user_text = re.sub(r"^❯\s*", "", last_line)
         return _return(ScreenEvent(
             state=ScreenState.USER_MESSAGE,
@@ -267,18 +267,18 @@ def classify_screen_state(
     # pyte never clears the banner (logo + version) because Claude Code
     # redraws in-place rather than scrolling. Without this guard, every
     # screen after startup would match STARTUP as a fallback.
-    has_response = any(_RESPONSE_MARKER_RE.match(l.strip()) for l in non_empty)
+    has_response = any(RESPONSE_MARKER_RE.match(l.strip()) for l in non_empty)
     if not has_response:
         for line in non_empty[:10]:
-            if _STARTUP_RE.search(line):
+            if STARTUP_RE.search(line):
                 return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
             stripped = line.strip()
-            if _LOGO_RE.search(stripped) and sum(1 for c in stripped if _LOGO_RE.match(c)) >= 3:
+            if LOGO_RE.search(stripped) and sum(1 for c in stripped if LOGO_RE.match(c)) >= 3:
                 return _return(ScreenEvent(state=ScreenState.STARTUP, raw_lines=lines))
 
     # 12. Error
     for line in non_empty:
-        if _ERROR_RE.search(line):
+        if ERROR_RE.search(line):
             return _return(ScreenEvent(
                 state=ScreenState.ERROR,
                 payload={"text": line.strip()},
