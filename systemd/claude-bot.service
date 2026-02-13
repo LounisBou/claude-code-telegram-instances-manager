@@ -4,7 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=lounis
+# TODO: Replace YOUR_USERNAME with the account that will run the bot
+User=YOUR_USERNAME
+# TODO: Replace /opt/claude-instance-manager with your actual install path
 WorkingDirectory=/opt/claude-instance-manager
 ExecStart=/opt/claude-instance-manager/.venv/bin/python -m src.main /opt/claude-instance-manager/config.yaml
 Restart=on-failure
