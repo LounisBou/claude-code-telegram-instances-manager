@@ -24,12 +24,10 @@ from src.telegram.output_state import (
     mark_tool_acted as _mark_tool_acted_impl,
 )
 
-# Backward-compat re-exports consumed by existing code.
-# These will be removed once callers import from the new modules directly.
+# Re-exports consumed only by test_output.py (will be removed in Phase 7b).
 from src.parsing.models import ScreenEvent, ScreenState  # noqa: F401
 from src.parsing.ui_patterns import CHROME_CATEGORIES as _CHROME_CATEGORIES  # noqa: F401
 from src.telegram.output_pipeline import (  # noqa: F401
-    CONTENT_STATES as _CONTENT_STATES_STRINGS,
     dedent_attr_lines as _dedent_attr_lines,
     filter_response_attr as _filter_response_attr,
     find_last_prompt as _find_last_prompt,
