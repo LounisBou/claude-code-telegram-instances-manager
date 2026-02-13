@@ -294,6 +294,73 @@ class TestFinalizeResponse:
         emu.get_full_display.assert_called()
 
 
+class TestExtractAndSend:
+    """_extract_and_send covers all extraction branches."""
+
+    @pytest.mark.asyncio
+    async def test_fast_idle_with_prompt_found(self):
+        """FAST_IDLE with find_last_prompt returning an index slices source."""
+        state = _make_state()
+        proc = _make_processor(state=state)
+        emu = state.emulator
+        streaming = state.streaming
+        streaming.state = StreamingState.STREAMING
+        emu.get_full_display.return_value = [
+            "❯ Previous prompt", "⏺ Response text", ""
+        ]
+        emu.get_full_attributed_lines.return_value = [
+            [MagicMock(text="❯ Previous prompt", fg="default", bold=False, italic=False)],
+            [MagicMock(text="⏺ Response text", fg="default", bold=False, italic=False)],
+            [MagicMock(text="", fg="default", bold=False, italic=False)],
+        ]
+        with patch(
+            "src.telegram.output_processor.find_last_prompt", return_value=0,
+        ), patch(
+            "src.telegram.output_processor.extract_content",
+            return_value="Response text",
+        ), patch(
+            "src.telegram.output_processor.render_ansi",
+            return_value="<b>Response text</b>",
+        ):
+            await proc._extract_and_send(
+                ExtractionMode.FAST_IDLE, [], [], emu, streaming,
+            )
+        streaming.append_content.assert_called_once()
+        emu.clear_history.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_empty_content(self):
+        """Early return when extract_content produces nothing."""
+        state = _make_state()
+        proc = _make_processor(state=state)
+        streaming = state.streaming
+        streaming.state = StreamingState.STREAMING
+        with patch(
+            "src.telegram.output_processor.extract_content", return_value="",
+        ):
+            await proc._extract_and_send(
+                ExtractionMode.STREAMING, ["changed"], [], MagicMock(), streaming,
+            )
+        streaming.append_content.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dedup_returns_empty(self):
+        """Early return when dedup filters everything out."""
+        state = _make_state()
+        state.dedup.sent_lines.add("already seen")
+        proc = _make_processor(state=state)
+        streaming = state.streaming
+        streaming.state = StreamingState.STREAMING
+        with patch(
+            "src.telegram.output_processor.extract_content",
+            return_value="already seen",
+        ):
+            await proc._extract_and_send(
+                ExtractionMode.STREAMING, ["changed"], [], MagicMock(), streaming,
+            )
+        streaming.append_content.assert_not_called()
+
+
 class TestProcessCycle:
     """Integration test for process_cycle."""
 

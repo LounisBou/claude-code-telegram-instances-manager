@@ -207,6 +207,19 @@ class TestRenderHeuristic:
         assert "Hello world" in result
 
 
+class TestFilterResponseAttrToolConnector:
+    """filter_response_attr handles tool_connector lines (⎿ prefix)."""
+
+    def test_tool_connector_included_with_marker_stripped(self):
+        source = ["  ⏺ Response", "    ⎿ output line"]
+        attr = [
+            [_span("  ⏺ Response")],
+            [_span("    ⎿ output line")],
+        ]
+        result = filter_response_attr(source, attr)
+        assert len(result) == 2
+
+
 class TestRenderAnsi:
     """render_ansi produces HTML from attributed spans."""
 

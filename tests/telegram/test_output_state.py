@@ -114,3 +114,20 @@ class TestToolActedFunctions:
 
     def test_is_tool_request_pending_false_when_missing(self):
         assert is_tool_request_pending(user_id=99, session_id=99) is False
+
+
+class TestOutputWrapperPending:
+    """Test the output.py wrapper delegates to real state first."""
+
+    def test_wrapper_returns_true_from_real_state(self):
+        from src.telegram.output import (
+            is_tool_request_pending as wrapper_pending,
+        )
+
+        bot = AsyncMock()
+        state = get_or_create(user_id=50, session_id=60, bot=bot)
+        state.prev_state = ScreenState.TOOL_REQUEST
+        state.tool_acted = False
+        assert wrapper_pending(50, 60) is True
+        # Cleanup
+        cleanup(50, 60)
